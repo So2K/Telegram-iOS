@@ -251,8 +251,12 @@ private func generateCenterImage(topColor: UIColor, bottomColor: UIColor) -> UII
         let gradientColors = [topColor.cgColor, bottomColor.cgColor] as CFArray
         var locations: [CGFloat] = [0.0, 1.0]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 10.0), end: CGPoint(x: 0.0, y: size.height - 10.0), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 10.0), end: CGPoint(x: 0.0, y: size.height - 10.0), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(topColor.cgColor)
+            context.fill(bounds)
+        }
     })
 }
 

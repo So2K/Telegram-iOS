@@ -12,11 +12,19 @@ import FFMpegBinding
 import CoreMedia
 
 private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<UniversalSoftwareVideoSourceImpl>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+
+    let context = Unmanaged<UniversalSoftwareVideoSourceImpl>.fromOpaque(userData).takeUnretainedValue()
     
     let data: Signal<(Data, Bool), NoError>
     
-    let readCount = min(256 * 1024, Int64(bufferSize))
+    let availableSize = max(0, context.size - context.readingOffset)
+    let readCount = min(256 * 1024, Int64(bufferSize), availableSize)
+    if readCount <= 0 {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
     let requestRange: Range<Int64> = context.readingOffset ..< (context.readingOffset + readCount)
     
     context.currentNumberOfReads += 1
@@ -63,17 +71,18 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
     fetchDisposable.dispose()
     
     if let fetchedData = fetchedData {
+        let copyCount = min(fetchedData.count, Int(readCount), Int(bufferSize))
+        if copyCount == 0 {
+            return FFMPEG_CONSTANT_AVERROR_EOF
+        }
         fetchedData.withUnsafeBytes { byteBuffer -> Void in
             guard let bytes = byteBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return
             }
-            memcpy(buffer, bytes, fetchedData.count)
+            memcpy(buffer, bytes, copyCount)
         }
-        let fetchedCount = Int32(fetchedData.count)
+        let fetchedCount = Int32(copyCount)
         context.readingOffset += Int64(fetchedCount)
-        if fetchedCount == 0 {
-            return FFMPEG_CONSTANT_AVERROR_EOF
-        }
         return fetchedCount
     } else {
         return FFMPEG_CONSTANT_AVERROR_EOF
@@ -81,12 +90,17 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
 }
 
 private func seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<UniversalSoftwareVideoSourceImpl>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+
+    let context = Unmanaged<UniversalSoftwareVideoSourceImpl>.fromOpaque(userData).takeUnretainedValue()
     if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
         return Int64(context.size)
     } else {
-        context.readingOffset = offset
-        return offset
+        let boundedOffset = max(0, min(offset, context.size))
+        context.readingOffset = boundedOffset
+        return boundedOffset
     }
 }
 
@@ -367,7 +381,10 @@ private final class UniversalSoftwareVideoSourceThread: NSObject {
         let timer = Timer(fireAt: .distantFuture, interval: 0.0, target: UniversalSoftwareVideoSourceThread.self, selector: #selector(UniversalSoftwareVideoSourceThread.none), userInfo: nil, repeats: false)
         runLoop.add(timer, forMode: .common)
         
-        let source = UniversalSoftwareVideoSourceImpl(mediaBox: params.mediaBox, source: params.source, state: params.state, cancelInitialization: params.cancelInitialization, automaticallyFetchHeader: params.automaticallyFetchHeader)
+        let source = UniversalSoftwareVideoSourceImpl(mediaBox: params.mediaBox, source: params.source, state: params.state, cancelInitialization: params.cancelInitialization, automaticallyFetchHeader: params.automaticallyFetchHeader, hintVP9: params.hintVP9)
+        if source == nil {
+            params.state.set(.failed)
+        }
         Thread.current.threadDictionary["source"] = source
         
         while true {

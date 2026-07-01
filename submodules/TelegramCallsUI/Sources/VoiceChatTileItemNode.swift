@@ -121,7 +121,9 @@ var tileFadeImage: UIImage? = {
         
         let colorsArray = [fadeColor.withAlphaComponent(0.0).cgColor, fadeColor.cgColor] as CFArray
         var locations: [CGFloat] = [1.0, 0.0]
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+            return
+        }
         context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     })
 }()
@@ -841,7 +843,9 @@ final class ShimmerEffectForegroundNode: ASDisplayNode {
             let colors: [CGColor] = [transparentColor, peakColor, transparentColor]
             
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+            guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+                return
+            }
             
             context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
         })

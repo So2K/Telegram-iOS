@@ -45,9 +45,25 @@ public class TDLibClient: TDLibApi, Equatable {
             var extra: String? = nil
             if let completion = completion {
                 extra = UUID().uuidString
-                self.awaitingCompletions[extra!] = completion
+                if let extra {
+                    self.awaitingCompletions[extra] = completion
+                }
             }
-            let data = try! query.make(with: extra)
+            let data: Data
+            do {
+                data = try query.make(with: extra)
+            } catch {
+                if let extra {
+                    let _ = self.awaitingCompletions.removeValue(forKey: extra)
+                }
+                let errorText = "ERROR! Unable to encode query data: \(error)"
+                if let strongLogger = self.logger {
+                    strongLogger.log("[\(self.id)] " + errorText, type: .send)
+                } else {
+                    print(errorText)
+                }
+                return
+            }
             if let str = String(data: data, encoding: .utf8) {
                 self.logger?.log("[\(self.id)] " + str, type: .send)
                 td_send(self.id, str)
@@ -66,14 +82,20 @@ public class TDLibClient: TDLibApi, Equatable {
     override public func execute(query: TdQuery) throws -> [String:Any]? {
         do {
             let data = try query.make(with: nil)
-            let str = String(data: data, encoding: .utf8)!
+            guard let str = String(data: data, encoding: .utf8) else {
+                throw TDError(code: 400, message: "Unable to encode query data")
+            }
             logger?.log(str, type: .execute)
             if let res = td_execute(str) {
                 let resString = String(cString: res)
                 logger?.log(resString, type: .receive)
-                let resData = resString.data(using: .utf8)
-                let json = try JSONSerialization.jsonObject(with: resData!, options:[])
-                let dictionary = json as! [String:Any]
+                guard let resData = resString.data(using: .utf8) else {
+                    throw TDError(code: 400, message: "Unable to decode TDLib response")
+                }
+                let json = try JSONSerialization.jsonObject(with: resData, options:[])
+                guard let dictionary = json as? [String:Any] else {
+                    throw TDError(code: 400, message: "Unexpected TDLib response")
+                }
                 return dictionary
             } else {
                 throw TDError(code: 404, message: "Empty response from TDLib")
@@ -96,7 +118,7 @@ open class TDLibClientManager {
     private let receiveQueue = DispatchQueue(label: "app.swiftgram.TDLibKit.receive")
     /// 'queryQueue' is a separate queue that will decode update string and lookup for possible completions in existing ``self.clients``. 'queryQueue' exists to quickly switch back to 'receiveQueue' and call next ``td_receive``
     private let queryQueue = DispatchQueue(label: "app.swiftgram.TDLibKit.query")
-    public private(set) var clients = ConcurrentDictionary<Int32,TDLibClient>()
+    public private(set) var clients = ConcurrentDictionary<Int32, TDLibClient>()
     private let logger: TDLibLogger?
     
     

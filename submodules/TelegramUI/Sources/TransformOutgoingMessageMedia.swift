@@ -65,7 +65,7 @@ public func transformOutgoingMessageMedia(postbox: Postbox, network: Network, me
                             
                                     if let scaledImage = generateImage(image.size.fitted(CGSize(width: 320.0, height: 320.0)), contextGenerator: { size, context in
                                         context.setBlendMode(.copy)
-                                        drawImage(context: context, image: image.cgImage!, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
+                                        drawImage(context: context, image: cgImage, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
                                     }, scale: 1.0), let thumbnailData = scaledImage.jpegData(compressionQuality: 0.6) {
                                         let imageDimensions = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
                                         

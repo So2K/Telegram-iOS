@@ -307,8 +307,8 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
             }
         }
         
-        if allPersonsAlreadyMatched && filteredPersons.count == 1 {
-            completion([.success(filteredPersons[0])])
+        if allPersonsAlreadyMatched && filteredPersons.count == 1, let person = filteredPersons.first {
+            completion([.success(person)])
             return
         }
         
@@ -614,7 +614,7 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
             if let identifiers = intent.identifiers {
                 for identifier in identifiers {
                     let components = identifier.components(separatedBy: "_")
-                    if let first = components.first, let peerId = Int64(first), let namespace = Int32(components[1]), let id = Int32(components[2]) {
+                    if components.count == 3, let first = components.first, let peerId = Int64(first), let namespace = Int32(components[1]), let id = Int32(components[2]) {
                         let peerId = PeerId(peerId)
                         let messageId = MessageId(peerId: peerId, namespace: namespace, id: id)
                         if let currentMessageId = maxMessageIdsToApply[peerId] {
@@ -848,8 +848,8 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
                 let filteredSections = accountResults.filter { section in
                     return !section.items.isEmpty
                 }
-                if filteredSections.count == 1 {
-                    return INObjectCollection<Friend>(items: filteredSections[0].items)
+                if filteredSections.count == 1, let section = filteredSections.first {
+                    return INObjectCollection<Friend>(items: section.items)
                 } else {
                     return INObjectCollection<Friend>(sections: filteredSections)
                 }
@@ -1021,8 +1021,8 @@ private final class WidgetIntentHandler {
                 let filteredSections = accountResults.filter { section in
                     return !section.items.isEmpty
                 }
-                if filteredSections.count == 1 {
-                    return INObjectCollection<Friend>(items: filteredSections[0].items)
+                if filteredSections.count == 1, let section = filteredSections.first {
+                    return INObjectCollection<Friend>(items: section.items)
                 } else {
                     return INObjectCollection<Friend>(sections: filteredSections)
                 }
@@ -1149,22 +1149,46 @@ enum AvatarClipStyle {
 }
 private func avatarRoundImage(size: CGSize, source: UIImage, style: AvatarClipStyle) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     
-    context?.beginPath()
+    context.beginPath()
     switch style {
     case .round:
-        context?.addEllipse(in: CGRect(origin: .zero, size: size))
+        context.addEllipse(in: CGRect(origin: .zero, size: size))
     case .roundedRect:
-        context?.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
+        context.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
     }
-    context?.clip()
+    context.clip()
     
     source.draw(in: CGRect(origin: CGPoint(), size: size))
     
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
+}
+
+private func fallbackAvatarImage(size: CGSize, style: AvatarClipStyle) -> UIImage {
+    UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    if let context = UIGraphicsGetCurrentContext() {
+        context.beginPath()
+        switch style {
+        case .round:
+            context.addEllipse(in: CGRect(origin: .zero, size: size))
+        case .roundedRect:
+            context.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
+        }
+        context.clip()
+        context.setFillColor(UIColor(rgb: 0x8e8e93).cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+    }
+    return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
 }
 
 private let deviceColorSpace: CGColorSpace = {
@@ -1197,21 +1221,28 @@ private let gradientColors: [NSArray] = [
 
 private func avatarViewLettersImage(size: CGSize, peerId: Int64, accountPeerId: Int64, letters: [String]) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 2.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     
-    context?.beginPath()
-    context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-    context?.clip()
+    context.beginPath()
+    context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    context.clip()
     
     let colorIndex = abs(Int(accountPeerId + peerId))
     
     let colorsArray = gradientColors[colorIndex % gradientColors.count]
     var locations: [CGFloat] = [1.0, 0.0]
-    let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+    guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+        return nil
+    }
     
-    context?.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     
-    context?.setBlendMode(.normal)
+    context.setBlendMode(.normal)
     
     let string = letters.count == 0 ? "" : (letters[0] + (letters.count == 1 ? "" : letters[1]))
     let attributedString = NSAttributedString(string: string, attributes: [NSAttributedString.Key.font: UIFont.systemFont(ofSize: 20.0), NSAttributedString.Key.foregroundColor: UIColor.white])
@@ -1222,18 +1253,15 @@ private func avatarViewLettersImage(size: CGSize, peerId: Int64, accountPeerId: 
     let lineOffset = CGPoint(x: string == "B" ? 1.0 : 0.0, y: 0.0)
     let lineOrigin = CGPoint(x: floor(-lineBounds.origin.x + (size.width - lineBounds.size.width) / 2.0) + lineOffset.x, y: floor(-lineBounds.origin.y + (size.height - lineBounds.size.height) / 2.0))
     
-    context?.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-    context?.scaleBy(x: 1.0, y: -1.0)
-    context?.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+    context.scaleBy(x: 1.0, y: -1.0)
+    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
     
-    context?.translateBy(x: lineOrigin.x, y: lineOrigin.y)
-    if let context = context {
-        CTLineDraw(line, context)
-    }
-    context?.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
+    context.translateBy(x: lineOrigin.x, y: lineOrigin.y)
+    CTLineDraw(line, context)
+    context.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
     
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
@@ -1241,18 +1269,21 @@ private func avatarImage(path: String?, peerId: Int64, accountPeerId: Int64, let
     if let path = path, let image = UIImage(contentsOfFile: path), let roundImage = avatarRoundImage(size: size, source: image, style: style) {
         return roundImage
     } else {
-        return avatarViewLettersImage(size: size, peerId: peerId, accountPeerId: accountPeerId, letters: letters)!
+        return avatarViewLettersImage(size: size, peerId: peerId, accountPeerId: accountPeerId, letters: letters) ?? fallbackAvatarImage(size: size, style: style)
     }
 }
 
 private func generateTintedImage(image: UIImage?, color: UIColor, backgroundColor: UIColor? = nil) -> UIImage? {
-    guard let image = image else {
+    guard let image = image, let cgImage = image.cgImage else {
         return nil
     }
     
     let imageSize = image.size
 
     UIGraphicsBeginImageContextWithOptions(imageSize, backgroundColor != nil, image.scale)
+    defer {
+        UIGraphicsEndImageContext()
+    }
     if let context = UIGraphicsGetCurrentContext() {
         if let backgroundColor = backgroundColor {
             context.setFillColor(backgroundColor.cgColor)
@@ -1264,16 +1295,13 @@ private func generateTintedImage(image: UIImage?, color: UIColor, backgroundColo
         context.translateBy(x: imageRect.midX, y: imageRect.midY)
         context.scaleBy(x: 1.0, y: -1.0)
         context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-        context.clip(to: imageRect, mask: image.cgImage!)
+        context.clip(to: imageRect, mask: cgImage)
         context.setFillColor(color.cgColor)
         context.fill(imageRect)
         context.restoreGState()
     }
     
-    let tintedImage = UIGraphicsGetImageFromCurrentImageContext()!
-    UIGraphicsEndImageContext()
-    
-    return tintedImage
+    return UIGraphicsGetImageFromCurrentImageContext()
 }
 
 private let savedMessagesColors: NSArray = [
@@ -1281,35 +1309,39 @@ private let savedMessagesColors: NSArray = [
 ]
 
 private func savedMessagesImage(size: CGSize) -> UIImage? {
-    guard let icon = generateTintedImage(image: UIImage(named: "Intents/SavedMessages"), color: .white) else {
+    guard let icon = generateTintedImage(image: UIImage(named: "Intents/SavedMessages"), color: .white), let iconImage = icon.cgImage else {
         return nil
     }
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     
-    context?.beginPath()
-    context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-    context?.clip()
+    context.beginPath()
+    context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    context.clip()
     
     let colorsArray = savedMessagesColors
     var locations: [CGFloat] = [1.0, 0.0]
-    let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
-    
-    context?.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
-    
-    context?.setBlendMode(.normal)
-    
-    let factor = size.width / 60.0
-    context?.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-    context?.scaleBy(x: factor, y: -factor)
-    context?.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-    
-    if let context = context {
-        context.draw(icon.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
+    guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+        return nil
     }
     
+    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    
+    context.setBlendMode(.normal)
+    
+    let factor = size.width / 60.0
+    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+    context.scaleBy(x: factor, y: -factor)
+    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+    
+    context.draw(iconImage, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
+    
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 

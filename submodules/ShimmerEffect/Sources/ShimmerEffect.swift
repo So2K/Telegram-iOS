@@ -85,9 +85,9 @@ public final class ShimmerEffectForegroundView: UIView {
                 let colors: [CGColor] = [transparentColor, peakColor, transparentColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                }
             })
         } else {
             image = generateImage(CGSize(width: 16.0, height: gradientSize ?? 250.0), opaque: false, scale: 1.0, rotatedContext: { size, context in
@@ -104,9 +104,9 @@ public final class ShimmerEffectForegroundView: UIView {
                 let colors: [CGColor] = [transparentColor, peakColor, transparentColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                }
             })
         }
         self.image.contents = image?.cgImage
@@ -252,9 +252,11 @@ public final class ShimmerEffectForegroundNode: ASDisplayNode {
                         context.rotate(by: CGFloat(i == 0 ? 1.0 : -1.0) * CGFloat.pi * 0.5)
                         let adjustedRect = CGRect(origin: CGPoint(x: -shadowFrame.height * 0.5, y: -shadowFrame.width * 0.5), size: CGSize(width: shadowFrame.height, height: shadowFrame.width))
                         
-                        context.clip(to: adjustedRect, mask: shadowImage.cgImage!)
-                        context.setFillColor(foregroundColor.cgColor)
-                        context.fill(adjustedRect)
+                        if let shadowCgImage = shadowImage.cgImage {
+                            context.clip(to: adjustedRect, mask: shadowCgImage)
+                            context.setFillColor(foregroundColor.cgColor)
+                            context.fill(adjustedRect)
+                        }
                         
                         context.restoreGState()
                     }
@@ -277,9 +279,9 @@ public final class ShimmerEffectForegroundNode: ASDisplayNode {
                 let colors: [CGColor] = [transparentColor, peakColor, transparentColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                }
             })
         }
         self.imageNode.image = image
@@ -501,7 +503,9 @@ public final class StandaloneShimmerEffect {
             let colors: [CGColor] = [transparentColor, peakColor, transparentColor]
 
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+            guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+                return
+            }
 
             context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
         })

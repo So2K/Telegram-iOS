@@ -233,7 +233,9 @@ public class PremiumLimitDisplayComponent: Component {
                     UIColor(rgb: 0xffffff, alpha: 0.0).cgColor,
                 ]
                 var locations: [CGFloat] = [0.0, 0.24, 0.76, 1.0]
-                let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
+                guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) else {
+                    return
+                }
 
                 context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
             })

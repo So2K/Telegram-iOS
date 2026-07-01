@@ -32,7 +32,9 @@ private class ChatChoosingStickerActivityIndicatorNode: ChatTitleActivityIndicat
     }
     
     @objc override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if !isRasterizing {
             context.setBlendMode(.copy)
@@ -55,7 +57,7 @@ private class ChatChoosingStickerActivityIndicatorNode: ChatTitleActivityIndicat
         if heightProgress > 3.0 {
             heightProgress = 4.0 - heightProgress
         } else if heightProgress > 2.0 {
-            heightProgress = heightProgress - 2.0
+            heightProgress -= 2.0
             heightProgress *= heightProgress
         } else if heightProgress > 1.0 {
             heightProgress = 2.0 - heightProgress

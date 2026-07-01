@@ -10,10 +10,14 @@ import SwiftSignalKit
 import FFMpegBinding
 
 private func SoftwareVideoSource_readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<SoftwareVideoSource>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+
+    let context = Unmanaged<SoftwareVideoSource>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         let result = read(fd, buffer, Int(bufferSize))
-        if result == 0 {
+        if result <= 0 {
             return FFMPEG_CONSTANT_AVERROR_EOF
         }
         return Int32(result)
@@ -22,13 +26,18 @@ private func SoftwareVideoSource_readPacketCallback(userData: UnsafeMutableRawPo
 }
 
 private func SoftwareVideoSource_seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<SoftwareVideoSource>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+
+    let context = Unmanaged<SoftwareVideoSource>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
             return Int64(context.size)
         } else {
-            lseek(fd, off_t(offset), SEEK_SET)
-            return offset
+            let boundedOffset = max(0, min(offset, Int64(context.size)))
+            lseek(fd, off_t(boundedOffset), SEEK_SET)
+            return boundedOffset
         }
     }
     return 0
@@ -357,10 +366,14 @@ private final class SoftwareAudioStream {
 }
 
 private func SoftwareAudioSource_readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<SoftwareAudioSource>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+
+    let context = Unmanaged<SoftwareAudioSource>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         let result = read(fd, buffer, Int(bufferSize))
-        if result == 0 {
+        if result <= 0 {
             return FFMPEG_CONSTANT_AVERROR_EOF
         }
         return Int32(result)
@@ -369,13 +382,18 @@ private func SoftwareAudioSource_readPacketCallback(userData: UnsafeMutableRawPo
 }
 
 private func SoftwareAudioSource_seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<SoftwareAudioSource>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+
+    let context = Unmanaged<SoftwareAudioSource>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
             return Int64(context.size)
         } else {
-            lseek(fd, off_t(offset), SEEK_SET)
-            return offset
+            let boundedOffset = max(0, min(offset, Int64(context.size)))
+            lseek(fd, off_t(boundedOffset), SEEK_SET)
+            return boundedOffset
         }
     }
     return 0
@@ -569,10 +587,14 @@ public final class SoftwareAudioSource {
 }
 
 private func SoftwareVideoReader_readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<SoftwareVideoReader>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+
+    let context = Unmanaged<SoftwareVideoReader>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         let result = read(fd, buffer, Int(bufferSize))
-        if result == 0 {
+        if result <= 0 {
             return FFMPEG_CONSTANT_AVERROR_EOF
         }
         return Int32(result)
@@ -581,13 +603,18 @@ private func SoftwareVideoReader_readPacketCallback(userData: UnsafeMutableRawPo
 }
 
 private func SoftwareVideoReader_seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<SoftwareVideoReader>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+
+    let context = Unmanaged<SoftwareVideoReader>.fromOpaque(userData).takeUnretainedValue()
     if let fd = context.fd {
         if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
             return Int64(context.size)
         } else {
-            lseek(fd, off_t(offset), SEEK_SET)
-            return offset
+            let boundedOffset = max(0, min(offset, Int64(context.size)))
+            lseek(fd, off_t(boundedOffset), SEEK_SET)
+            return boundedOffset
         }
     }
     return 0
@@ -848,21 +875,30 @@ private final class FFMpegMediaInfoExtractContext {
 }
 
 private func FFMpegMediaInfoExtractContextReadPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<FFMpegMediaInfoExtractContext>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+
+    let context = Unmanaged<FFMpegMediaInfoExtractContext>.fromOpaque(userData).takeUnretainedValue()
     let result = read(context.fd, buffer, Int(bufferSize))
-    if result == 0 {
+    if result <= 0 {
         return FFMPEG_CONSTANT_AVERROR_EOF
     }
     return Int32(result)
 }
 
 private func FFMpegMediaInfoExtractContextSeekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<FFMpegMediaInfoExtractContext>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+
+    let context = Unmanaged<FFMpegMediaInfoExtractContext>.fromOpaque(userData).takeUnretainedValue()
     if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
         return Int64(context.size)
     } else {
-        lseek(context.fd, off_t(offset), SEEK_SET)
-        return offset
+        let boundedOffset = max(0, min(offset, Int64(context.size)))
+        lseek(context.fd, off_t(boundedOffset), SEEK_SET)
+        return boundedOffset
     }
 }
 

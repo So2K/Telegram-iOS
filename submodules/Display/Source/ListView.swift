@@ -4928,7 +4928,10 @@ open class ListViewImpl: ASDisplayNode, ListView, ASScrollViewDelegate, ASGestur
     }
     
     override open func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let touchesPosition = touches.first!.location(in: self.view)
+        guard let touch = touches.first else {
+            return
+        }
+        let touchesPosition = touch.location(in: self.view)
         
         if let index = self.itemIndexAtPoint(touchesPosition) {
             for i in 0 ..< self.itemNodes.count {
@@ -4958,7 +4961,7 @@ open class ListViewImpl: ASDisplayNode, ListView, ASScrollViewDelegate, ASGestur
         }
         
         if processSelection {
-            self.selectionTouchLocation = touches.first!.location(in: self.view)
+            self.selectionTouchLocation = touchesPosition
             self.selectionTouchDelayTimer?.invalidate()
             self.selectionLongTapDelayTimer?.invalidate()
             self.selectionLongTapDelayTimer = nil
@@ -5210,7 +5213,10 @@ open class ListViewImpl: ASDisplayNode, ListView, ASScrollViewDelegate, ASGestur
 
     override open func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         if let selectionTouchLocation = self.selectionTouchLocation {
-            let location = touches.first!.location(in: self.view)
+            guard let touch = touches.first else {
+                return
+            }
+            let location = touch.location(in: self.view)
             let distance = CGPoint(x: selectionTouchLocation.x - location.x, y: selectionTouchLocation.y - location.y)
             let maxMovementDistance: CGFloat = 4.0
             if distance.x * distance.x + distance.y * distance.y > maxMovementDistance * maxMovementDistance {

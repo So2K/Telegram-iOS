@@ -253,7 +253,9 @@ final class CallControllerReceptionNode : ASDisplayNode {
     }
     
     @objc override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         context.setFillColor(UIColor.white.cgColor)
         
         if let parameters = parameters as? CallControllerReceptionNodeParameters{

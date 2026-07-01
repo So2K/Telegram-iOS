@@ -96,9 +96,9 @@ public final class MediaEditor {
         public let bottom: UIColor
         
         public init(colors: [UIColor]) {
-            if colors.count == 2 || colors.count == 1 {
-                self.top = colors.first!
-                self.bottom = colors.last!
+            if (colors.count == 2 || colors.count == 1), let first = colors.first, let last = colors.last {
+                self.top = first
+                self.bottom = last
             } else {
                 self.top = .black
                 self.bottom = .black

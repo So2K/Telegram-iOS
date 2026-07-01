@@ -1928,9 +1928,9 @@ func sampleBufferFromPixelBuffer(pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? 
         return nil
     }
 
-    let attachments: NSArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true)! as NSArray
-    let dict: NSMutableDictionary = attachments[0] as! NSMutableDictionary
-    dict[kCMSampleAttachmentKey_DisplayImmediately as NSString] = true as NSNumber
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? NSArray, let dict = attachments.firstObject as? NSMutableDictionary {
+        dict[kCMSampleAttachmentKey_DisplayImmediately as NSString] = true as NSNumber
+    }
 
     return sampleBuffer
 }

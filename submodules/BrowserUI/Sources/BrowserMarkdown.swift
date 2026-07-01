@@ -21,8 +21,8 @@ private let markdownInlineHTMLInlineIntent = InlinePresentationIntent(rawValue: 
 private let markdownDefaultBlockImageDimensions = PixelDimensions(width: 1200, height: 900)
 private let markdownDefaultInlineImageDimensions = PixelDimensions(width: 18, height: 18)
 private let markdownImageParsingEnabled = false
-private let markdownRawHTMLTagRegex = try! NSRegularExpression(pattern: #"</?([A-Za-z][A-Za-z0-9:-]*)\b[^>]*?>"#)
-private let markdownFormulaPlaceholderRegex = try! NSRegularExpression(pattern: #"TGMDMATH\d+TGMD"#)
+private let markdownRawHTMLTagRegex = try? NSRegularExpression(pattern: #"</?([A-Za-z][A-Za-z0-9:-]*)\b[^>]*?>"#)
+private let markdownFormulaPlaceholderRegex = try? NSRegularExpression(pattern: #"TGMDMATH\d+TGMD"#)
 private let markdownVoidHTMLTags: Set<String> = [
     "area",
     "base",
@@ -553,6 +553,9 @@ private func markdownIndentWidth(in line: String) -> Int {
 }
 
 private func markdownScanRawHTMLTags(in line: String, limits: MarkdownSafetyLimits, tagCount: inout Int, depth: inout Int) -> Bool {
+    guard let markdownRawHTMLTagRegex else {
+        return true
+    }
     let nsLine = line as NSString
     let matches = markdownRawHTMLTagRegex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
 
@@ -1764,6 +1767,9 @@ private func markdownInlineContent(from attributedString: NSAttributedString, co
 private func markdownInlineTextSegments(from text: String, formulasByPlaceholder: [String: MarkdownFormulaDescriptor]) -> [MarkdownInlineTextSegment] {
     guard !text.isEmpty else {
         return []
+    }
+    guard let markdownFormulaPlaceholderRegex else {
+        return [.plain(text)]
     }
 
     let nsText = text as NSString

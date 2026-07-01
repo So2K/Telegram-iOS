@@ -107,10 +107,10 @@ final class DrawingMetalView: MTKView {
         let size = self.size
         let w = size.width, h = size.height
         let vertices = [
-            Vertex(position: CGPoint(x: 0 , y: 0), texCoord: CGPoint(x: 0, y: 0)),
-            Vertex(position: CGPoint(x: w , y: 0), texCoord: CGPoint(x: 1, y: 0)),
-            Vertex(position: CGPoint(x: 0 , y: h), texCoord: CGPoint(x: 0, y: 1)),
-            Vertex(position: CGPoint(x: w , y: h), texCoord: CGPoint(x: 1, y: 1)),
+            Vertex(position: CGPoint(x: 0, y: 0), texCoord: CGPoint(x: 0, y: 0)),
+            Vertex(position: CGPoint(x: w, y: 0), texCoord: CGPoint(x: 1, y: 0)),
+            Vertex(position: CGPoint(x: 0, y: h), texCoord: CGPoint(x: 0, y: 1)),
+            Vertex(position: CGPoint(x: w, y: h), texCoord: CGPoint(x: 1, y: 1)),
         ]
         self.render_target_vertex = self.device?.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count, options: .cpuCacheModeWriteCombined)
 
@@ -315,7 +315,7 @@ private func alignUp(size: Int, align: Int) -> Int {
 
 private class Brush {
     private(set) var texture: MTLTexture?
-    private(set) var pipelineState: MTLRenderPipelineState!
+    private(set) var pipelineState: MTLRenderPipelineState?
     
     weak var target: DrawingMetalView?
         
@@ -366,20 +366,20 @@ private class Brush {
         attachment?.sourceAlphaBlendFactor = .one
         attachment?.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         
-        self.pipelineState = try! device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
+        self.pipelineState = try? device.makeRenderPipelineState(descriptor: renderPipelineDescriptor)
     }
 
     func render(stroke: Stroke, in drawable: Drawable? = nil) {
         let drawable = drawable ?? target?.drawable
         
-        guard stroke.lines.count > 0, let target = drawable else {
+        guard stroke.lines.count > 0, let target = drawable, let pipelineState = self.pipelineState else {
             return
         }
         
         target.prepareForDraw()
         
         let commandEncoder = target.makeCommandEncoder()
-        commandEncoder?.setRenderPipelineState(self.pipelineState)
+        commandEncoder?.setRenderPipelineState(pipelineState)
         
         if let vertex_buffer = stroke.preparedBuffer(rotation: self.rotation) {
             commandEncoder?.setVertexBuffer(vertex_buffer, offset: 0, index: 0)
@@ -676,7 +676,9 @@ final class Texture {
         )
         let zeroData = [UInt8](repeating: 0, count: self.bytesPerRow * self.height)
         zeroData.withUnsafeBytes { bytes in
-            self.texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: self.bytesPerRow)
+            if let baseAddress = bytes.baseAddress {
+                self.texture.replace(region: region, mipmapLevel: 0, withBytes: baseAddress, bytesPerRow: self.bytesPerRow)
+            }
         }
     }
     

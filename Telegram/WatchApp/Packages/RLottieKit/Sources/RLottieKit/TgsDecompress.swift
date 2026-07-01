@@ -4,6 +4,7 @@ import zlib
 public enum TgsDecompressError: Error {
     case inflateFailed(Int32)
     case emptyInput
+    case bufferUnavailable
 }
 
 /// Inflates a TGS (gzipped lottie JSON) blob into the raw JSON bytes rlottie expects.
@@ -22,13 +23,18 @@ public func decompressTgs(_ data: Data) throws -> Data {
     var buffer = [UInt8](repeating: 0, count: bufferSize)
 
     try data.withUnsafeBytes { (inPtr: UnsafeRawBufferPointer) in
-        let basePtr = inPtr.bindMemory(to: UInt8.self).baseAddress!
+        guard let basePtr = inPtr.bindMemory(to: UInt8.self).baseAddress else {
+            throw TgsDecompressError.bufferUnavailable
+        }
         stream.next_in = UnsafeMutablePointer(mutating: basePtr)
         stream.avail_in = UInt32(data.count)
 
         repeat {
             try buffer.withUnsafeMutableBufferPointer { outBuf in
-                stream.next_out = outBuf.baseAddress
+                guard let outputBaseAddress = outBuf.baseAddress else {
+                    throw TgsDecompressError.bufferUnavailable
+                }
+                stream.next_out = outputBaseAddress
                 stream.avail_out = UInt32(bufferSize)
                 status = inflate(&stream, Z_NO_FLUSH)
                 if status != Z_OK && status != Z_STREAM_END {
@@ -36,7 +42,7 @@ public func decompressTgs(_ data: Data) throws -> Data {
                 }
                 let produced = bufferSize - Int(stream.avail_out)
                 if produced > 0 {
-                    output.append(outBuf.baseAddress!, count: produced)
+                    output.append(outputBaseAddress, count: produced)
                 }
             }
         } while status != Z_STREAM_END

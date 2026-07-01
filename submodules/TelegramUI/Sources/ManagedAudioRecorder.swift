@@ -100,12 +100,21 @@ private func withAudioUnitHolder(_ id: Int32, _ f: (Atomic<AudioUnit?>, Queue) -
 
 private func rendererInputProc(refCon: UnsafeMutableRawPointer, ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>, inTimeStamp: UnsafePointer<AudioTimeStamp>, inBusNumber: UInt32, inNumberFrames: UInt32, ioData: UnsafeMutablePointer<AudioBufferList>?) -> OSStatus {
     let id = Int32(intptr_t(bitPattern: refCon))
+    var resultStatus = noErr
     
     withAudioUnitHolder(id, { (holder, queue) in
         var buffer = AudioBuffer()
-        buffer.mNumberChannels = 1;
-        buffer.mDataByteSize = inNumberFrames * 2;
-        buffer.mData = malloc(Int(inNumberFrames) * 2)
+        buffer.mNumberChannels = 1
+        buffer.mDataByteSize = inNumberFrames * 2
+        let bufferByteCount = Int(buffer.mDataByteSize)
+        if bufferByteCount != 0 {
+            guard let data = malloc(bufferByteCount) else {
+                resultStatus = kAudioUnitErr_FailedInitialization
+                Logger.shared.log("ManagedAudioRecorder", "AudioUnitRender buffer allocation failed")
+                return
+            }
+            buffer.mData = data
+        }
         
         var bufferList = AudioBufferList(mNumberBuffers: 1, mBuffers: buffer)
         
@@ -132,9 +141,10 @@ private func rendererInputProc(refCon: UnsafeMutableRawPointer, ioActionFlags: U
             free(buffer.mData)
             Logger.shared.log("ManagedAudioRecorder", "AudioUnitRender returned \(status)")
         }
+        resultStatus = status
     })
     
-    return noErr
+    return resultStatus
 }
 
 private let beginToneData: TonePlayerData? = {
@@ -254,14 +264,23 @@ final class ManagedAudioRecorderContext {
                 if let takeRange = takeRange {
                     var blockBuffer: CMBlockBuffer?
                     
-                    let bytes = malloc(takeRange.count)!
-                    toneData.withUnsafeBytes { rawDataBytes -> Void in
-                        let dataBytes = rawDataBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
-
+                    guard let bytes = malloc(takeRange.count) else {
+                        return .finished
+                    }
+                    let copiedBytes = toneData.withUnsafeBytes { rawDataBytes -> Bool in
+                        guard let dataBytes = rawDataBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                            return false
+                        }
                         memcpy(bytes, dataBytes.advanced(by: takeRange.lowerBound), takeRange.count)
+                        return true
+                    }
+                    guard copiedBytes else {
+                        free(bytes)
+                        return .finished
                     }
                     let status = CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: bytes, blockLength: takeRange.count, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: takeRange.count, flags: 0, blockBufferOut: &blockBuffer)
                     if status != noErr {
+                        free(bytes)
                         return .finished
                     }
                     
@@ -582,7 +601,9 @@ final class ManagedAudioRecorderContext {
         let millisecondsPerPacket = 60
         let encoderPacketSizeInBytes = 16000 / 1000 * millisecondsPerPacket * 2
         
-        let currentEncoderPacket = malloc(encoderPacketSizeInBytes)!
+        guard let currentEncoderPacket = malloc(encoderPacketSizeInBytes) else {
+            return
+        }
         defer {
             free(currentEncoderPacket)
         }
@@ -596,10 +617,15 @@ final class ManagedAudioRecorderContext {
                 if self.audioBuffer.count != 0 {
                     let takenBytes = min(self.audioBuffer.count, encoderPacketSizeInBytes - currentEncoderPacketSize)
                     if takenBytes != 0 {
-                        self.audioBuffer.withUnsafeBytes { rawBytes -> Void in
-                            let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: Int8.self)
-
+                        let copiedBytes = self.audioBuffer.withUnsafeBytes { rawBytes -> Bool in
+                            guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: Int8.self) else {
+                                return false
+                            }
                             memcpy(currentEncoderPacket.advanced(by: currentEncoderPacketSize), bytes, takenBytes)
+                            return true
+                        }
+                        guard copiedBytes else {
+                            return
                         }
                         self.audioBuffer.replaceSubrange(0 ..< takenBytes, with: Data())
                         currentEncoderPacketSize += takenBytes
@@ -607,7 +633,10 @@ final class ManagedAudioRecorderContext {
                 } else if bufferOffset < Int(buffer.mDataByteSize) {
                     let takenBytes = min(Int(buffer.mDataByteSize) - bufferOffset, encoderPacketSizeInBytes - currentEncoderPacketSize)
                     if takenBytes != 0 {
-                        memcpy(currentEncoderPacket.advanced(by: currentEncoderPacketSize), buffer.mData?.advanced(by: bufferOffset), takenBytes)
+                        guard let sourceData = buffer.mData else {
+                            return
+                        }
+                        memcpy(currentEncoderPacket.advanced(by: currentEncoderPacketSize), sourceData.advanced(by: bufferOffset), takenBytes)
 
                         bufferOffset += takenBytes
                         currentEncoderPacketSize += takenBytes
@@ -657,16 +686,20 @@ final class ManagedAudioRecorderContext {
                 
                 let compressedSampleCount = self.compressedWaveformSamples.count / 2
                 if compressedSampleCount == 200 {
-                    self.compressedWaveformSamples.withUnsafeMutableBytes { rawCompressedSamples -> Void in
-                        let compressedSamples = rawCompressedSamples.baseAddress!.assumingMemoryBound(to: Int16.self)
-
+                    let compressed = self.compressedWaveformSamples.withUnsafeMutableBytes { rawCompressedSamples -> Bool in
+                        guard let compressedSamples = rawCompressedSamples.bindMemory(to: Int16.self).baseAddress else {
+                            return false
+                        }
                         for i in 0 ..< 100 {
                             let maxSample = Int64(max(compressedSamples[i * 2 + 0], compressedSamples[i * 2 + 1]))
                             compressedSamples[i] = Int16(maxSample)
                         }
+                        return true
                     }
-                    self.compressedWaveformSamples.count = 100 * 2
-                    self.peakCompressionFactor *= 2
+                    if compressed {
+                        self.compressedWaveformSamples.count = 100 * 2
+                        self.peakCompressionFactor *= 2
+                    }
                 }
             }
             
@@ -692,23 +725,33 @@ final class ManagedAudioRecorderContext {
     
     func takeData() -> RecordedAudioData? {
         if self.oggWriter.writeFrame(nil, frameByteCount: 0) {
-            let scaledSamplesMemory = malloc(100 * 2)!
-            let scaledSamples: UnsafeMutablePointer<Int16> = scaledSamplesMemory.assumingMemoryBound(to: Int16.self)
-            defer {
-                free(scaledSamplesMemory)
-            }
-            memset(scaledSamples, 0, 100 * 2);
             var waveform: Data?
             
-            let count = self.compressedWaveformSamples.count / 2
-            self.compressedWaveformSamples.withUnsafeMutableBytes { rawSamples -> Void in
-                let samples = rawSamples.baseAddress!.assumingMemoryBound(to: Int16.self)
+            if let scaledSamplesMemory = malloc(100 * 2) {
+                let scaledSamples: UnsafeMutablePointer<Int16> = scaledSamplesMemory.assumingMemoryBound(to: Int16.self)
+                defer {
+                    free(scaledSamplesMemory)
+                }
+                memset(scaledSamples, 0, 100 * 2)
 
-                for i in 0 ..< count {
-                    let sample = samples[i]
-                    let index = i * 100 / count
-                    if (scaledSamples[index] < sample) {
-                        scaledSamples[index] = sample;
+                let count = self.compressedWaveformSamples.count / 2
+                if count != 0 {
+                    let copiedSamples = self.compressedWaveformSamples.withUnsafeMutableBytes { rawSamples -> Bool in
+                        guard let samples = rawSamples.bindMemory(to: Int16.self).baseAddress else {
+                            return false
+                        }
+
+                        for i in 0 ..< count {
+                            let sample = samples[i]
+                            let index = i * 100 / count
+                            if scaledSamples[index] < sample {
+                                scaledSamples[index] = sample
+                            }
+                        }
+                        return true
+                    }
+                    if !copiedSamples {
+                        waveform = nil
                     }
                 }
                 

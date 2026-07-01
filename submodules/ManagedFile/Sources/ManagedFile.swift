@@ -154,7 +154,10 @@ public extension ManagedFile {
             return 0
         }
         return data.withUnsafeBytes { bytes -> Int in
-            return self.write(bytes.baseAddress!, count: bytes.count)
+            guard let baseAddress = bytes.baseAddress else {
+                return 0
+            }
+            return self.write(baseAddress, count: bytes.count)
         }
     }
     

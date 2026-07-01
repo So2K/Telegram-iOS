@@ -147,11 +147,14 @@ public enum OpusDecoder {
                     throw OpusDecoderError.decode("no decoder")
                 }
                 let nframes = packetBuf.withUnsafeMutableBufferPointer { outBuf -> Int32 in
-                    opus_decode_float(
+                    guard let outBaseAddress = outBuf.baseAddress else {
+                        return OPUS_INTERNAL_ERROR
+                    }
+                    return opus_decode_float(
                         d,
                         packet.packet,
                         Int32(packet.bytes),
-                        outBuf.baseAddress!,
+                        outBaseAddress,
                         Int32(maxFramesPerPacket),
                         0
                     )

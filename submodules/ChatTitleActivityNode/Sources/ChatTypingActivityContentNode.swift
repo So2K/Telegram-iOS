@@ -14,7 +14,7 @@ private let maxDiameter: CGFloat = 4.5
 private func radiusFunction(value: CGFloat, timeOffset: CGFloat) -> CGFloat {
     var clampedValue = value + timeOffset
     if clampedValue > 1.0 {
-        clampedValue = clampedValue - floor(clampedValue)
+        clampedValue -= floor(clampedValue)
     }
     if clampedValue < 0.4 {
         return interpolate(from: minDiameter, to: maxDiameter, value: clampedValue / 0.4)
@@ -48,7 +48,9 @@ private class ChatTypingActivityIndicatorNode: ChatTitleActivityIndicatorNode {
     }
     
     @objc override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if !isRasterizing {
             context.setBlendMode(.copy)
@@ -69,7 +71,7 @@ private class ChatTypingActivityIndicatorNode: ChatTitleActivityIndicatorNode {
 
         var radius = radiusFunction(value: parameters.progress, timeOffset:0.4)
         radius = (max(minDiameter, radius) - minDiameter) / (maxDiameter - minDiameter)
-        radius = radius * 1.5
+        radius *= 1.5
 
         let initialAlpha = parameters.color.alpha
         var dotsColor = parameters.color.withAlphaComponent((radius * deltaAlpha + minAlpha) * initialAlpha)
@@ -79,7 +81,7 @@ private class ChatTypingActivityIndicatorNode: ChatTitleActivityIndicatorNode {
         
         radius = radiusFunction(value: parameters.progress, timeOffset: 0.2)
         radius = (max(minDiameter, radius) - minDiameter) / (maxDiameter - minDiameter)
-        radius = radius * 1.5
+        radius *= 1.5
         
         dotsColor = parameters.color.withAlphaComponent((radius * deltaAlpha + minAlpha) * initialAlpha)
         context.setFillColor(dotsColor.cgColor)
@@ -88,7 +90,7 @@ private class ChatTypingActivityIndicatorNode: ChatTitleActivityIndicatorNode {
         
         radius = radiusFunction(value: parameters.progress, timeOffset: 0.0)
         radius = (max(minDiameter, radius) - minDiameter) / (maxDiameter - minDiameter)
-        radius = radius * 1.5
+        radius *= 1.5
         
         dotsColor = parameters.color.withAlphaComponent((radius * deltaAlpha + minAlpha) * initialAlpha)
         context.setFillColor(dotsColor.cgColor)
@@ -115,7 +117,7 @@ class ChatTypingActivityContentNode: ChatTitleActivityContentNode {
         if case .center = alignment {
             originX = floorToScreenPixels((indicatorSize.width - size.width) / 2.0)
             let overflowX = max(0.0, size.width + indicatorSize.width + 8.0 - constrainedSize.width)
-            originX = originX + overflowX
+            originX += overflowX
         } else {
             originX = indicatorSize.width
         }

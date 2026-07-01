@@ -111,7 +111,9 @@ func generateHeadingArrowImage() -> UIImage? {
         var locations: [CGFloat] = [0.0, 0.4, 1.0]
         let colors: [CGColor] = [UIColor(rgb: 0x0088ff, alpha: 0.5).cgColor, UIColor(rgb: 0x0088ff, alpha: 0.3).cgColor, UIColor(rgb: 0x0088ff, alpha: 0.0).cgColor]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+            return
+        }
         
         context.drawRadialGradient(gradient, startCenter: center, startRadius: 11.0, endCenter: center, endRadius: arrowImageSize.width / 2.0, options: .drawsAfterEndLocation)
         
@@ -214,14 +216,14 @@ public final class LocationMapNode: ASDisplayNode, MKMapViewDelegateTarget {
             let mapPoint = MKMapPoint(x: mapBoundingRect.midX, y: mapBoundingRect.maxY)
             let drawingPoint = point(for: mapPoint)
             
-            if let image = generateTintedImage(image: UIImage(bundleImageName: "Location/ProximityIcon"), color: self.strokeColor ?? .black) {
+            if let image = generateTintedImage(image: UIImage(bundleImageName: "Location/ProximityIcon"), color: self.strokeColor ?? .black), let cgImage = image.cgImage {
                 let imageSize = CGSize(width: floor(image.size.width / zoomScale * self.contentScaleFactor * 0.75), height: floor(image.size.height / zoomScale * self.contentScaleFactor * 0.75))
                 context.translateBy(x: drawingPoint.x, y: drawingPoint.y)
                 context.scaleBy(x: 1.0, y: -1.0)
                 context.translateBy(x: -drawingPoint.x, y: -drawingPoint.y)
                 let imageRect = CGRect(x: floor((drawingPoint.x - imageSize.width / 2.0)), y: floor((drawingPoint.y - imageSize.height / 2.0)), width: imageSize.width, height: imageSize.height)
                 context.clear(imageRect)
-                context.draw(image.cgImage!, in: imageRect)
+                context.draw(cgImage, in: imageRect)
             }
             context.restoreGState()
         }

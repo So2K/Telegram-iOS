@@ -9,17 +9,23 @@ import Markdown
 import SolidRoundedButtonNode
 import AuthorizationUtils
 
-private func roundCorners(diameter: CGFloat) -> UIImage {
+private func roundCorners(diameter: CGFloat) -> UIImage? {
+    guard diameter > 0.0 else {
+        return nil
+    }
     UIGraphicsBeginImageContextWithOptions(CGSize(width: diameter, height: diameter), false, 0.0)
-    let context = UIGraphicsGetCurrentContext()!
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     context.setBlendMode(.copy)
     context.setFillColor(UIColor.black.cgColor)
     context.fill(CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
     context.setFillColor(UIColor.clear.cgColor)
     context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
-    let image = UIGraphicsGetImageFromCurrentImageContext()!.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
-    UIGraphicsEndImageContext()
-    return image
+    return UIGraphicsGetImageFromCurrentImageContext()?.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
 }
 
 final class AuthorizationSequenceSignUpControllerNode: ASDisplayNode, UITextFieldDelegate {
@@ -50,13 +56,18 @@ final class AuthorizationSequenceSignUpControllerNode: ASDisplayNode, UITextFiel
     var currentPhoto: UIImage? = nil {
         didSet {
             if let currentPhoto = self.currentPhoto {
-                self.currentPhotoNode.image = generateImage(CGSize(width: 110.0, height: 110.0), contextGenerator: { size, context in
-                    context.clear(CGRect(origin: CGPoint(), size: size))
-                    context.setBlendMode(.copy)
-                    context.draw(currentPhoto.cgImage!, in: CGRect(origin: CGPoint(), size: size))
-                    context.setBlendMode(.destinationOut)
-                    context.draw(roundCorners(diameter: size.width).cgImage!, in: CGRect(origin: CGPoint(), size: size))
-                })
+                let avatarSize = CGSize(width: 110.0, height: 110.0)
+                if let currentPhotoImage = currentPhoto.cgImage, let roundCornersImage = roundCorners(diameter: avatarSize.width)?.cgImage {
+                    self.currentPhotoNode.image = generateImage(avatarSize, contextGenerator: { size, context in
+                        context.clear(CGRect(origin: CGPoint(), size: size))
+                        context.setBlendMode(.copy)
+                        context.draw(currentPhotoImage, in: CGRect(origin: CGPoint(), size: size))
+                        context.setBlendMode(.destinationOut)
+                        context.draw(roundCornersImage, in: CGRect(origin: CGPoint(), size: size))
+                    }) ?? currentPhoto
+                } else {
+                    self.currentPhotoNode.image = currentPhoto
+                }
             } else {
                 self.currentPhotoNode.image = nil
             }

@@ -64,13 +64,13 @@ final class SemanticStatusNodeIconContext: SemanticStatusNodeStateContext {
                     context.scaleBy(x: factor, y: factor)
                     context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
                 }
-                if let iconImage = self.iconImage {
+                if let iconImage = self.iconImage, let iconCgImage = iconImage.cgImage {
                     context.saveGState()
                     let iconRect = CGRect(origin: CGPoint(), size: iconImage.size)//.applying(CGAffineTransformMakeScale(transitionScale, transitionScale))
                     context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                     context.scaleBy(x: 1.0, y: -1.0)
                     context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                    context.clip(to: iconRect, mask: iconImage.cgImage!)
+                    context.clip(to: iconRect, mask: iconCgImage)
                     context.fill(iconRect)
                     context.restoreGState()
                 } else {
@@ -85,11 +85,13 @@ final class SemanticStatusNodeIconContext: SemanticStatusNodeStateContext {
                 let diameter = size.width
                 let imageRect = CGRect(origin: CGPoint(x: floor((diameter - image.size.width) / 2.0), y: floor((diameter - image.size.height) / 2.0)), size: image.size)
                 
-                context.translateBy(x: imageRect.midX, y: imageRect.midY)
-                context.scaleBy(x: 1.0, y: -1.0)
-                context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-                context.clip(to: imageRect, mask: image.cgImage!)
-                context.fill(imageRect)
+                if let cgImage = image.cgImage {
+                    context.translateBy(x: imageRect.midX, y: imageRect.midY)
+                    context.scaleBy(x: 1.0, y: -1.0)
+                    context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
+                    context.clip(to: imageRect, mask: cgImage)
+                    context.fill(imageRect)
+                }
             case .download:
                 let diameter = size.width
                 let factor = diameter / 50.0
@@ -146,7 +148,7 @@ final class SemanticStatusNodeIconContext: SemanticStatusNodeStateContext {
                 if let strongSelf = self {
                     strongSelf.iconImage = image
                     if var position = strongSelf.animationNode?.state?.position {
-                        position = position * 2.0
+                        position *= 2.0
                         if position > 1.0 {
                             position = 2.0 - position
                         }

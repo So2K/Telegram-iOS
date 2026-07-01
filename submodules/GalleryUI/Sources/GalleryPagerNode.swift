@@ -21,9 +21,9 @@ private let leftFadeImage = generateImage(CGSize(width: fadeWidth, height: 32.0)
     
     var locations: [CGFloat] = [0.0, 1.0]
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
-    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    }
 })
 
 private let rightFadeImage = generateImage(CGSize(width: fadeWidth, height: 32.0), opaque: false, rotatedContext: { size, context in
@@ -34,9 +34,9 @@ private let rightFadeImage = generateImage(CGSize(width: fadeWidth, height: 32.0
     
     var locations: [CGFloat] = [0.0, 1.0]
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
-    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    }
 })
 
 public struct GalleryPagerInsertItem {
@@ -569,8 +569,7 @@ public final class GalleryPagerNode: ASDisplayNode, ASScrollViewDelegate, ASGest
             self.updateItemNodes(transition: .immediate, notify: transaction.focusOnItem != nil, synchronous: transaction.synchronous)
             
             //print("visible indices after update \(self.itemNodes.map { $0.index })")
-        }
-        else if let focusOnItem = transaction.focusOnItem {
+        } else if let focusOnItem = transaction.focusOnItem {
             self.ignoreCentralItemIndexUpdate = true
             self.centralItemIndex = focusOnItem
             self.ignoreCentralItemIndexUpdate = false

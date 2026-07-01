@@ -23,7 +23,7 @@ private func generateEmptyButtonImage(icon: UIImage?, strokeColor: UIColor?, fil
             context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.width, height: size.height)))
         }
         
-        if let icon = icon {
+        if let icon = icon, let cgImage = icon.cgImage {
             if !angle.isZero {
                 context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                 context.rotate(by: angle)
@@ -33,7 +33,7 @@ private func generateEmptyButtonImage(icon: UIImage?, strokeColor: UIColor?, fil
             let imageRect = CGRect(origin: CGPoint(x: floor((size.width - imageSize.width) / 2.0), y: floor((size.width - imageSize.height) / 2.0)), size: imageSize)
             
             context.setBlendMode(.copy)
-            context.clip(to: imageRect, mask: icon.cgImage!)
+            context.clip(to: imageRect, mask: cgImage)
             if knockout {
                 context.setFillColor(UIColor.clear.cgColor)
             } else {
@@ -51,13 +51,13 @@ private func generateFilledButtonImage(color: UIColor, icon: UIImage?, angle: CG
         context.setFillColor(color.cgColor)
         context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
         
-        if let icon = icon {
+        if let icon = icon, let cgImage = icon.cgImage {
             if !angle.isZero {
                 context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                 context.rotate(by: angle)
                 context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
             }
-            context.draw(icon.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
+            context.draw(cgImage, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
         }
     })
 }
@@ -142,9 +142,9 @@ final class GlassButtonNode: ASDisplayNode {
         if self.currentImage !== image {
             let currentContents = self.iconNode.layer.contents
             self.iconNode.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents, let image = image {
+            if let currentContents = currentContents, let image = image, let cgImage = image.cgImage {
                 self.iconNode.image = image
-                self.iconNode.layer.animate(from: currentContents as AnyObject, to:  image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: image === self.currentImage || image === self.filledImage ? 0.25 : 0.15)
+                self.iconNode.layer.animate(from: currentContents as AnyObject, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: image === self.currentImage || image === self.filledImage ? 0.25 : 0.15)
             } else {
                 self.iconNode.image = image
             }

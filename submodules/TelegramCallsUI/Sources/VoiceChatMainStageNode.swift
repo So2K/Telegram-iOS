@@ -171,7 +171,9 @@ final class VoiceChatMainStageNode: ASDisplayNode {
                 locations.append(t)
             }
 
-            let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations)!
+            guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations) else {
+                return
+            }
             context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
         }) {
             self.topFadeNode.backgroundColor = UIColor(patternImage: image)
@@ -187,7 +189,9 @@ final class VoiceChatMainStageNode: ASDisplayNode {
             
             let colorsArray = [fadeColor.withAlphaComponent(0.0).cgColor, fadeColor.cgColor] as CFArray
             var locations: [CGFloat] = [1.0, 0.0]
-            let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+            guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+                return
+            }
 
             context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
         }) {

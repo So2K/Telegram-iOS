@@ -1,4 +1,3 @@
-
 import Foundation
 import UIKit
 import SwiftSignalKit
@@ -25,16 +24,19 @@ private func generateLocationIcon() -> UIImage? {
         
         var locations: [CGFloat] = [1.0, 0.0]
         let colors: [CGColor] = [UIColor(rgb: 0x36c089).cgColor, UIColor(rgb: 0x3ca5eb).cgColor]
-        
+
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-        
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
-        
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(UIColor(rgb: 0x36c089).cgColor)
+            context.fill(bounds)
+        }
+
         if let image = generateTintedImage(image: UIImage(bundleImageName: "Chat/Attach Menu/Location"), color: .white), let cgImage = image.cgImage {
             context.draw(cgImage, in: bounds.insetBy(dx: 4.0, dy: 4.0))
         }
-        
+
         context.resetClip()
     }, opaque: false)
 }

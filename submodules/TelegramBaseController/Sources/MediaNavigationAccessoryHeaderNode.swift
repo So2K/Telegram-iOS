@@ -134,9 +134,12 @@ private func generateMaskImage(color: UIColor) -> UIImage? {
         
         var locations: [CGFloat] = [0.0, 1.0]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-        
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 12.0, y: 0.0), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 12.0, y: 0.0), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(color.cgColor)
+            context.fill(bounds)
+        }
     })
 }
 

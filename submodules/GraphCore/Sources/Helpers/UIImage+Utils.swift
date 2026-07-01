@@ -56,14 +56,20 @@ var deviceScale: CGFloat {
 func generateImage(_ size: CGSize, contextGenerator: (CGSize, CGContext) -> Void, opaque: Bool = false, scale: CGFloat? = nil) -> GImage? {
     let selectedScale = scale ?? deviceScale
     let scaledSize = CGSize(width: size.width * selectedScale, height: size.height * selectedScale)
+    guard scaledSize.width > 0.0, scaledSize.height > 0.0 else {
+        return nil
+    }
     let bytesPerRow = (4 * Int(scaledSize.width) + 31) & (~31)
     let length = bytesPerRow * Int(scaledSize.height)
-    let bytes = malloc(length)!.assumingMemoryBound(to: Int8.self)
+    guard length > 0, let bytes = malloc(length) else {
+        return nil
+    }
     
     guard let provider = CGDataProvider(dataInfo: bytes, data: bytes, size: length, releaseData: { bytes, _, _ in
         free(bytes)
     })
         else {
+            free(bytes)
             return nil
     }
     
@@ -87,5 +93,3 @@ func generateImage(_ size: CGSize, contextGenerator: (CGSize, CGContext) -> Void
     return GImage(cgImage: image, scale: selectedScale, orientation: .up)
     #endif
 }
-
-

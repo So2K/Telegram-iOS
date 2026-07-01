@@ -24,6 +24,7 @@ public final class AuthorizationSequenceSplashController: ViewController {
     private var validLayout: ContainerViewLayout?
     
     var nextPressed: ((PresentationStrings?) -> Void)?
+    var apiCredentialsUpdated: ((AuthorizationApiCredentials?) -> Void)?
     
     private let suggestedLocalization = Promise<SuggestedLocalizationInfo?>()
     private let activateLocalizationDisposable = MetaDisposable()
@@ -79,6 +80,12 @@ public final class AuthorizationSequenceSplashController: ViewController {
         
         self._hasGlassStyle = true
         
+        if #available(iOS 13.0, *) {
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(self.apiCredentialsPressed))
+        } else {
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "API", style: .plain, target: self, action: #selector(self.apiCredentialsPressed))
+        }
+
         self.supportedOrientations = ViewControllerSupportedOrientations(regularSize: .all, compactSize: .portrait)
         
         self.statusBar.statusBarStyle = theme.intro.statusBarStyle.style
@@ -110,6 +117,47 @@ public final class AuthorizationSequenceSplashController: ViewController {
         self.activateLocalizationDisposable.dispose()
     }
     
+    @objc private func apiCredentialsPressed() {
+        let current = AuthorizationApiCredentialsStore.currentOverride()
+        let alertController = UIAlertController(title: "API Credentials", message: "Use your api_id and api_hash from my.telegram.org/apps for this development build.", preferredStyle: .alert)
+        alertController.addTextField { textField in
+            textField.placeholder = "api_id"
+            textField.keyboardType = .numberPad
+            textField.text = current.flatMap { "\($0.apiId)" } ?? ""
+        }
+        alertController.addTextField { textField in
+            textField.placeholder = "api_hash"
+            textField.autocorrectionType = .no
+            textField.autocapitalizationType = .none
+            textField.text = current?.apiHash ?? ""
+        }
+        alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if current != nil {
+            alertController.addAction(UIAlertAction(title: "Clear", style: .destructive, handler: { [weak self] _ in
+                AuthorizationApiCredentialsStore.clear()
+                self?.apiCredentialsUpdated?(nil)
+            }))
+        }
+        alertController.addAction(UIAlertAction(title: "Save", style: .default, handler: { [weak self, weak alertController] _ in
+            let apiIdText = alertController?.textFields?.first?.text ?? ""
+            let apiHashText = alertController?.textFields?.dropFirst().first?.text ?? ""
+            switch AuthorizationApiCredentialsStore.parse(apiIdText: apiIdText, apiHashText: apiHashText) {
+            case let .success(credentials):
+                AuthorizationApiCredentialsStore.store(credentials)
+                self?.apiCredentialsUpdated?(credentials)
+            case let .failure(error):
+                self?.presentInvalidApiCredentials(error.displayText)
+            }
+        }))
+        self.present(alertController, animated: true)
+    }
+
+    private func presentInvalidApiCredentials(_ message: String) {
+        let alertController = UIAlertController(title: "Invalid API Credentials", message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: "OK", style: .default))
+        self.present(alertController, animated: true)
+    }
+
     public override func loadDisplayNode() {
         self.displayNode = AuthorizationSequenceSplashControllerNode(theme: self.theme)
         self.displayNodeDidLoad()

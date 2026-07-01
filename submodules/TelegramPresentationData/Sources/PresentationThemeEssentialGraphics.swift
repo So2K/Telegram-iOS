@@ -60,13 +60,13 @@ public func chatBubbleActionButtonImage(fillColor: UIColor, strokeColor: UIColor
             context.strokeEllipse(in: CGRect(origin: CGPoint(x: halfLineWidth, y: halfLineWidth), size: CGSize(width: size.width - lineWidth, height: size.width - lineWidth)))
         }
         
-        if let image = image {
+        if let image = image, let cgImage = image.cgImage {
             let imageRect = CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0) + iconOffset.x, y: floor((size.height - image.size.height) / 2.0) + iconOffset.y), size: image.size)
-            
+
             context.translateBy(x: imageRect.midX, y: imageRect.midY)
             context.scaleBy(x: 1.0, y: -1.0)
             context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-            context.clip(to: imageRect, mask: image.cgImage!)
+            context.clip(to: imageRect, mask: cgImage)
             context.setFillColor(foregroundColor.cgColor)
             context.fill(imageRect)
         }
@@ -227,9 +227,12 @@ public final class PrincipalThemeEssentialGraphics {
                 }
 
                 let colorSpace = deviceColorSpace
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-
-                context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                } else if let color = incomingGradientColors.first {
+                    context.setFillColor(color.cgColor)
+                    context.fill(CGRect(origin: CGPoint(), size: size))
+                }
             })
         } else {
             self.incomingBubbleGradientImage = nil
@@ -251,9 +254,12 @@ public final class PrincipalThemeEssentialGraphics {
                 }
 
                 let colorSpace = deviceColorSpace
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-
-                context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                } else if let color = outgoingGradientColors.first {
+                    context.setFillColor(color.cgColor)
+                    context.fill(CGRect(origin: CGPoint(), size: size))
+                }
             })
         } else {
             self.outgoingBubbleGradientImage = nil

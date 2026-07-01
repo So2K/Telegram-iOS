@@ -6,6 +6,7 @@ public enum OpusEncoderError: Swift.Error, Equatable {
     case createFailed(Int32)
     case wrongFrameSize(Int)
     case encodeFailed(Int32)
+    case bufferUnavailable
 }
 
 /// Encodes 48 kHz mono Float32 PCM to Opus packets — one packet per 20 ms frame
@@ -42,10 +43,13 @@ public final class OpusEncoder {
         guard frame.count == Self.frameSize else {
             throw OpusEncoderError.wrongFrameSize(frame.count)
         }
-        let n = frame.withUnsafeBufferPointer { src in
-            packetBuf.withUnsafeMutableBufferPointer { dst in
-                opus_encode_float(enc, src.baseAddress!, Int32(Self.frameSize),
-                                  dst.baseAddress!, Int32(Self.maxPacketBytes))
+        let n = try frame.withUnsafeBufferPointer { src -> Int32 in
+            try packetBuf.withUnsafeMutableBufferPointer { dst -> Int32 in
+                guard let srcBaseAddress = src.baseAddress, let dstBaseAddress = dst.baseAddress else {
+                    throw OpusEncoderError.bufferUnavailable
+                }
+                return opus_encode_float(enc, srcBaseAddress, Int32(Self.frameSize),
+                                         dstBaseAddress, Int32(Self.maxPacketBytes))
             }
         }
         if n < 0 { throw OpusEncoderError.encodeFailed(n) }

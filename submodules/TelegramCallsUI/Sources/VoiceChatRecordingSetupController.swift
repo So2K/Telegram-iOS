@@ -251,7 +251,9 @@ private class VoiceChatRecordingSetupControllerNode: ViewControllerTracingNode, 
             
             let colors: [CGColor] = [UIColor(rgb: 0x5064fd).cgColor, UIColor(rgb: 0xe76598).cgColor]
             var locations: [CGFloat] = [0.0, 1.0]
-            let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations)!
+            guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations) else {
+                return
+            }
             
             context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
         })

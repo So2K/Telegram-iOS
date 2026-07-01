@@ -246,16 +246,16 @@ open class TransformImageNode: ASDisplayNode {
     
     private func applyOverlayColor(animated: Bool) {
         if let overlayColor = self.overlayColor {
-            if let contents = self.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
-                if let overlayNode = self.overlayNode {
-                    (overlayNode.view as! UIImageView).image = UIImage(cgImage: contents as! CGImage).withRenderingMode(.alwaysTemplate)
+            if let contents = self.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID, let image = contents as? CGImage {
+                if let overlayNode = self.overlayNode, let imageView = overlayNode.view as? UIImageView {
+                    imageView.image = UIImage(cgImage: image).withRenderingMode(.alwaysTemplate)
                     overlayNode.tintColor = overlayColor
                 } else {
                     let overlayNode = ASDisplayNode(viewBlock: {
                         return UIImageView()
                     }, didLoad: nil)
                     overlayNode.displaysAsynchronously = false
-                    (overlayNode.view as! UIImageView).image = UIImage(cgImage: contents as! CGImage).withRenderingMode(.alwaysTemplate)
+                    (overlayNode.view as? UIImageView)?.image = UIImage(cgImage: image).withRenderingMode(.alwaysTemplate)
                     overlayNode.tintColor = overlayColor
                     overlayNode.frame = self.bounds
                     self.addSubnode(overlayNode)
@@ -442,13 +442,13 @@ open class TransformImageView: UIView {
 
     private func applyOverlayColor(animated: Bool) {
         if let overlayColor = self.overlayColor {
-            if let image = self.image {
+            if let image = self.image, let imageData = image.cgImage {
                 if let overlayView = self.overlayView {
-                    (overlayView as! UIImageView).image = UIImage(cgImage: image.cgImage!).withRenderingMode(.alwaysTemplate)
+                    (overlayView as? UIImageView)?.image = UIImage(cgImage: imageData).withRenderingMode(.alwaysTemplate)
                     overlayView.tintColor = overlayColor
                 } else {
                     let overlayView = UIImageView()
-                    overlayView.image = UIImage(cgImage: image.cgImage!).withRenderingMode(.alwaysTemplate)
+                    overlayView.image = UIImage(cgImage: imageData).withRenderingMode(.alwaysTemplate)
                     overlayView.tintColor = overlayColor
                     overlayView.frame = self.bounds
                     self.addSubview(overlayView)
@@ -458,4 +458,3 @@ open class TransformImageView: UIView {
         }
     }
 }
-

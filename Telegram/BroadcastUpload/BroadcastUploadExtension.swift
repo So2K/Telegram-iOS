@@ -476,11 +476,14 @@ private final class CustomAudioConverter {
         let outputSize = 32768 * 2
         var outputBuffer = Data(count: outputSize)
         outputBuffer.withUnsafeMutableBytes { (outputBytes: UnsafeMutableRawBufferPointer) -> Void in
+            guard let outputBaseAddress = outputBytes.baseAddress else {
+                return
+            }
             var outputBufferList = AudioBufferList()
             outputBufferList.mNumberBuffers = 1
             outputBufferList.mBuffers.mNumberChannels = outputDescription.mChannelsPerFrame
             outputBufferList.mBuffers.mDataByteSize = UInt32(outputSize)
-            outputBufferList.mBuffers.mData = outputBytes.baseAddress!
+            outputBufferList.mBuffers.mData = outputBaseAddress
 
             var outputDataPacketSize = UInt32(outputSize) / outputDescription.mBytesPerPacket
 
@@ -565,9 +568,10 @@ private func sampleBufferFromPixelBuffer(pixelBuffer: CVPixelBuffer) -> CMSample
         return nil
     }
 
-    let attachments: NSArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true)! as NSArray
-    let dict: NSMutableDictionary = attachments[0] as! NSMutableDictionary
-    dict[kCMSampleAttachmentKey_DisplayImmediately as NSString] = true as NSNumber
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as NSArray?,
+       let dict = attachments.firstObject as? NSMutableDictionary {
+        dict[kCMSampleAttachmentKey_DisplayImmediately as NSString] = true as NSNumber
+    }
 
     return sampleBuffer
 }

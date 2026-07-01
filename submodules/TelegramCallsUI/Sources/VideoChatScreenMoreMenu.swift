@@ -657,14 +657,14 @@ extension VideoChatScreenComponent.View {
                 let theme = environment.theme
                 let avatarSignal = peerAvatarCompleteImage(account: groupCall.accountContext.account, peer: peer.peer, size: avatarSize)
                 |> map { image -> UIImage? in
-                    if isSelected, let image = image {
+                    if isSelected, let image = image, let cgImage = image.cgImage {
                         return generateImage(extendedAvatarSize, rotatedContext: { size, context in
                             let bounds = CGRect(origin: CGPoint(), size: size)
                             context.clear(bounds)
                             context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                             context.scaleBy(x: 1.0, y: -1.0)
                             context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                            context.draw(image.cgImage!, in: CGRect(x: (extendedAvatarSize.width - avatarSize.width) / 2.0, y: (extendedAvatarSize.height - avatarSize.height) / 2.0, width: avatarSize.width, height: avatarSize.height))
+                            context.draw(cgImage, in: CGRect(x: (extendedAvatarSize.width - avatarSize.width) / 2.0, y: (extendedAvatarSize.height - avatarSize.height) / 2.0, width: avatarSize.width, height: avatarSize.height))
                             
                             let lineWidth = 1.0 + UIScreenPixel
                             context.setLineWidth(lineWidth)

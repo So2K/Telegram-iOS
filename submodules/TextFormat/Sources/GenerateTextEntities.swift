@@ -15,6 +15,18 @@ private let whitelistedHosts: Set<String> = Set([
 private let dataDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType([.link]).rawValue)
 private let dataAndPhoneNumberDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType([.link, .phoneNumber]).rawValue)
 private let phoneNumberDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType([.phoneNumber]).rawValue)
+private let maxGeneratedUrlLength = 8192
+
+private func isSafeGeneratedUrl(_ url: String) -> Bool {
+    let trimmedUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedUrl.isEmpty || trimmedUrl.utf16.count > maxGeneratedUrlLength {
+        return false
+    }
+    if trimmedUrl.lowercased().hasPrefix("data:") {
+        return false
+    }
+    return true
+}
 
 private let validHashtagSet: CharacterSet = {
     var set = CharacterSet.alphanumerics
@@ -164,7 +176,9 @@ public func generateChatInputTextEntities(_ text: NSAttributedString, maxAnimate
             } else if key == ChatTextInputAttributes.textMention, let value = value as? ChatTextInputTextMentionAttribute {
                 entities.append(MessageTextEntity(range: range.lowerBound ..< range.upperBound, type: .TextMention(peerId: value.peerId)))
             } else if key == ChatTextInputAttributes.textUrl, let value = value as? ChatTextInputTextUrlAttribute {
-                entities.append(MessageTextEntity(range: range.lowerBound ..< range.upperBound, type: .TextUrl(url: value.url)))
+                if isSafeGeneratedUrl(value.url) {
+                    entities.append(MessageTextEntity(range: range.lowerBound ..< range.upperBound, type: .TextUrl(url: value.url)))
+                }
             } else if key == ChatTextInputAttributes.date, let value = value as? ChatTextInputTextDateAttribute {
                 entities.append(MessageTextEntity(range: range.lowerBound ..< range.upperBound, type: .FormattedDate(format: nil, date: value.date)))
             } else if key == ChatTextInputAttributes.spoiler {
@@ -276,6 +290,10 @@ public func generateTextEntities(_ text: String, enabledTypes: EnabledEntityType
                     if let lowerBound = lowerBound, let upperBound = upperBound {
                         let type: MessageTextEntityType
                         if result.resultType == NSTextCheckingResult.CheckingType.link {
+                            let urlString = String(text[lowerBound ..< upperBound])
+                            if !isSafeGeneratedUrl(urlString) {
+                                return
+                            }
                             if !enabledTypes.contains(.allUrl) && enabledTypes.contains(.internalUrl) {
                                 guard let url = result.url else {
                                     return

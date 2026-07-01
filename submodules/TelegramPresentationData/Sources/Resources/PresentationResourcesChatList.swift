@@ -563,9 +563,12 @@ public struct PresentationResourcesChatList {
                 let colors: [CGColor] = [UIColor(rgb: 0x9981FF).cgColor, UIColor(rgb: 0xBA6DE9).cgColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                } else {
+                    context.setFillColor(UIColor(rgb: 0x9981ff).cgColor)
+                    context.fill(CGRect(origin: CGPoint(), size: size))
+                }
                 
                 context.resetClip()
                 
@@ -617,9 +620,12 @@ public struct PresentationResourcesChatList {
                 let colors: [CGColor] = [UIColor(rgb: 0x9981FF).cgColor, UIColor(rgb: 0xBA6DE9).cgColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+                } else {
+                    context.setFillColor(UIColor(rgb: 0x9981ff).cgColor)
+                    context.fill(CGRect(origin: CGPoint(), size: size))
+                }
                 
                 context.resetClip()
                 

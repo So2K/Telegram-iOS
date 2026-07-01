@@ -11,6 +11,13 @@ public let internal_isHardwareAv1Supported: Bool = {
     return value
 }()
 
+private func sampleBufferAttachmentDictionary(_ sampleBuffer: CMSampleBuffer) -> NSMutableDictionary? {
+    guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [Any], let firstAttachment = attachments.first as? NSMutableDictionary else {
+        return nil
+    }
+    return firstAttachment
+}
+
 protocol ChunkMediaPlayerSourceImpl: AnyObject {
     var partsState: Signal<ChunkMediaPlayerPartsState, NoError> { get }
     
@@ -984,8 +991,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                                 return
                             }
                             self.didNotifySentVideoFrames = true
-                            if #available(iOS 17.4, *) {
-                            } else {
+                            if #unavailable(iOS 17.4) {
                                 self.playerNode?.hasSentFramesToDisplay?()
                             }
                         }
@@ -1051,15 +1057,11 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                         if isVideo {
                             var updatedSampleBuffer: CMSampleBuffer?
                             CMSampleBufferCreateCopy(allocator: nil, sampleBuffer: sampleBuffer, sampleBufferOut: &updatedSampleBuffer)
-                            if let updatedSampleBuffer {
-                                if let attachments = CMSampleBufferGetSampleAttachmentsArray(updatedSampleBuffer, createIfNecessary: true) {
-                                    let attachments = attachments as NSArray
-                                    let dict = attachments[0] as! NSMutableDictionary
-                                    
-                                    dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DoNotDisplay as NSString as String)
-                                    
-                                    sampleBuffer = updatedSampleBuffer
-                                }
+                            if let updatedSampleBuffer, let dict = sampleBufferAttachmentDictionary(updatedSampleBuffer) {
+                                dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DoNotDisplay as NSString as String)
+                                sampleBuffer = updatedSampleBuffer
+                            } else {
+                                continue outer
                             }
                         } else {
                             continue outer
@@ -1075,7 +1077,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                     media.isFinished = true
                 }
             }
-            outerDirect: while true {
+            while true {
                 guard let directMediaData = loadedPartsMediaData.directMediaData else {
                     break outer
                 }
@@ -1096,15 +1098,11 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                         if isVideo {
                             var updatedSampleBuffer: CMSampleBuffer?
                             CMSampleBufferCreateCopy(allocator: nil, sampleBuffer: sampleBuffer, sampleBufferOut: &updatedSampleBuffer)
-                            if let updatedSampleBuffer {
-                                if let attachments = CMSampleBufferGetSampleAttachmentsArray(updatedSampleBuffer, createIfNecessary: true) {
-                                    let attachments = attachments as NSArray
-                                    let dict = attachments[0] as! NSMutableDictionary
-                                    
-                                    dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DoNotDisplay as NSString as String)
-                                    
-                                    sampleBuffer = updatedSampleBuffer
-                                }
+                            if let updatedSampleBuffer, let dict = sampleBufferAttachmentDictionary(updatedSampleBuffer) {
+                                dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DoNotDisplay as NSString as String)
+                                sampleBuffer = updatedSampleBuffer
+                            } else {
+                                continue outer
                             }
                         } else {
                             continue outer

@@ -125,7 +125,7 @@ extension ChatControllerImpl {
                     var chargingPeers: [EngineRenderedPeer] = []
                     for peer in renderedPeers {
                         if let maybeAmount = sendPaidMessageStars[peer.peerId], let amount = maybeAmount {
-                            totalAmount = totalAmount + amount
+                            totalAmount += amount
                             chargingPeers.append(peer)
                         }
                     }

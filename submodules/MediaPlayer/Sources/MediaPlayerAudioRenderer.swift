@@ -764,9 +764,18 @@ private final class AudioPlayerRendererContext {
                                     let pts = CMSampleBufferGetPresentationTimeStamp(frame.sampleBuffer)
                                     let bufferSampleIndex = CMTimeConvertScale(pts, timescale: 44100, method: .roundAwayFromZero).value
                                     
-                                    let bytes = malloc(takeLength)!
-                                    CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: takeLength, destination: bytes)
-                                    strongSelf.enqueueSamples(Data(bytesNoCopy: bytes.assumingMemoryBound(to: UInt8.self), count: takeLength, deallocator: .free), sampleIndex: bufferSampleIndex)
+                                    if takeLength > 0 {
+                                        guard let bytes = malloc(takeLength) else {
+                                            strongSelf.checkBuffer()
+                                            return
+                                        }
+                                        let copyStatus = CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: takeLength, destination: bytes)
+                                        if copyStatus == noErr {
+                                            strongSelf.enqueueSamples(Data(bytesNoCopy: bytes.assumingMemoryBound(to: UInt8.self), count: takeLength, deallocator: .free), sampleIndex: bufferSampleIndex)
+                                        } else {
+                                            free(bytes)
+                                        }
+                                    }
                                     
                                     if takeLength < dataLength {
                                         strongSelf.bufferContext.with { context in
@@ -788,10 +797,8 @@ private final class AudioPlayerRendererContext {
                             case .restoreState:
                                 assertionFailure()
                                 strongSelf.checkBuffer()
-                                break
                             case .skipFrame:
                                 strongSelf.checkBuffer()
-                                break
                             case .noFrames, .finished:
                                 strongSelf.requestingFramesContext = nil
                         }

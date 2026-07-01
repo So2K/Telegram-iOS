@@ -29,7 +29,6 @@ import AnimationCache
 import MultiAnimationRenderer
 import DCTAnimationCacheImpl
 import DCTMultiAnimationRendererImpl
-import TelegramUIDeclareEncodables
 import TelegramAccountAuxiliaryMethods
 import PeerSelectionController
 import ContextMenuScreen
@@ -423,9 +422,10 @@ public class ShareRootControllerImpl {
                 isICloudEnabled: false
             )
             
-            let accountData: Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), NoError> = accountManager.accountRecords()
+            let accountData: Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), ShareAuthorizationError> = accountManager.accountRecords()
             |> take(1)
-            |> mapToSignal { view -> Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), NoError> in
+            |> castError(ShareAuthorizationError.self)
+            |> mapToSignal { view -> Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), ShareAuthorizationError> in
                 var signals: [Signal<(AccountRecordId, AccountStateManager, EnginePeer)?, NoError>] = []
                 for record in view.records {
                     if record.attributes.contains(where: { attribute in
@@ -464,8 +464,12 @@ public class ShareRootControllerImpl {
                         }
                     })
                 }
+                if signals.isEmpty {
+                    return .fail(.unauthorized)
+                }
                 return combineLatest(signals)
-                |> mapToSignal { stateManagers -> Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), NoError> in
+                |> castError(ShareAuthorizationError.self)
+                |> mapToSignal { stateManagers -> Signal<(ShareControllerEnvironment, ShareControllerAccountContext, [ShareControllerSwitchableAccount]), ShareAuthorizationError> in
                     var allAccounts: [ShareControllerSwitchableAccount] = []
                     for data in stateManagers {
                         guard let (id, stateManager, peer) = data else {
@@ -483,8 +487,8 @@ public class ShareRootControllerImpl {
                         ))
                     }
                     
-                    guard let currentAccount = allAccounts.first(where: { $0.account.accountId == view.currentRecord?.id }) else {
-                        return .never()
+                    guard let currentAccount = allAccounts.first(where: { $0.account.accountId == view.currentRecord?.id }) ?? allAccounts.first else {
+                        return .fail(.unauthorized)
                     }
                     
                     return .single((environment, currentAccount.account, allAccounts))
@@ -492,7 +496,6 @@ public class ShareRootControllerImpl {
             }
             
             let applicationInterface: Signal<(ShareControllerEnvironment, ShareControllerAccountContext, PostboxAccessChallengeData, [ShareControllerSwitchableAccount]), ShareAuthorizationError> = accountData
-            |> castError(ShareAuthorizationError.self)
             |> mapToSignal { data -> Signal<(ShareControllerEnvironment, ShareControllerAccountContext, PostboxAccessChallengeData, [ShareControllerSwitchableAccount]), ShareAuthorizationError> in
                 let (environment, context, otherAccounts) = data
                 
@@ -543,7 +546,6 @@ public class ShareRootControllerImpl {
                                             controller.presentationArguments = ViewControllerPresentationArguments(presentationAnimation: .modalSheet)
                                             window.present(controller, on: .root)
                                         }
-                                        break
                                 }
                                 return EmptyDisposable
                             } |> runOn(Queue.mainQueue())
@@ -784,10 +786,13 @@ public class ShareRootControllerImpl {
                                                 return
                                             }
                                             
-                                            let photoRegex = try! NSRegularExpression(pattern: ".*?\\.jpg")
-                                            let videoRegex = try! NSRegularExpression(pattern: "[\\d]+-VIDEO-.*?\\.mp4")
-                                            let stickerRegex = try! NSRegularExpression(pattern: "[\\d]+-STICKER-.*?\\.webp")
-                                            let voiceRegex = try! NSRegularExpression(pattern: "[\\d]+-AUDIO-.*?\\.opus")
+                                            guard let photoRegex = try? NSRegularExpression(pattern: ".*?\\.jpg"),
+                                                  let videoRegex = try? NSRegularExpression(pattern: "[\\d]+-VIDEO-.*?\\.mp4"),
+                                                  let stickerRegex = try? NSRegularExpression(pattern: "[\\d]+-STICKER-.*?\\.webp"),
+                                                  let voiceRegex = try? NSRegularExpression(pattern: "[\\d]+-AUDIO-.*?\\.opus") else {
+                                                beginShare()
+                                                return
+                                            }
                                             
                                             do {
                                                 for entry in entries {

@@ -15,7 +15,6 @@ import RangeSet
 import AppBundle
 import ManagedFile
 import FFMpegBinding
-import RangeSet
 
 private func parseRange(from rangeString: String) -> Range<Int>? {
     guard rangeString.hasPrefix("bytes=") else {
@@ -65,7 +64,7 @@ final class HLSJSServerSource: SharedHLSServer.Source {
                 let pathExtension = (path as NSString).pathExtension
                 if pathExtension == "html" {
                     mimeType = "text/html"
-                } else if pathExtension == "html" {
+                } else if pathExtension == "js" {
                     mimeType = "application/javascript"
                 } else {
                     mimeType = "application/octet-stream"
@@ -124,7 +123,9 @@ final class HLSJSServerSource: SharedHLSServer.Source {
             guard var playlistString = String(data: data, encoding: .utf8) else {
                 return ""
             }
-            let partRegex = try! NSRegularExpression(pattern: "mtproto:([\\d]+)", options: [])
+            guard let partRegex = try? NSRegularExpression(pattern: "mtproto:([\\d]+)", options: []) else {
+                return playlistString
+            }
             let results = partRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
             for result in results.reversed() {
                 if let range = Range(result.range, in: playlistString) {
@@ -159,8 +160,10 @@ final class HLSJSServerSource: SharedHLSServer.Source {
             var durations: [Int] = []
             var byteRanges: [Range<Int>] = []
             
-            let extinfRegex = try! NSRegularExpression(pattern: "EXTINF:(\\d+)", options: [])
-            let byteRangeRegex = try! NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: [])
+            guard let extinfRegex = try? NSRegularExpression(pattern: "EXTINF:(\\d+)", options: []),
+                  let byteRangeRegex = try? NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: []) else {
+                return .single(nil)
+            }
             
             let extinfResults = extinfRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
             for result in extinfResults {
@@ -174,7 +177,7 @@ final class HLSJSServerSource: SharedHLSServer.Source {
             let byteRangeResults = byteRangeRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
             for result in byteRangeResults {
                 if let lengthRange = Range(result.range(at: 1), in: playlistString), let upperBoundRange = Range(result.range(at: 2), in: playlistString) {
-                    if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])) {
+                    if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])), lowerBound >= 0, length > 0, lowerBound <= Int.max - length {
                         byteRanges.append(lowerBound ..< (lowerBound + length))
                     }
                 }
@@ -226,8 +229,11 @@ final class HLSJSServerSource: SharedHLSServer.Source {
                             let currentBlockSize = min(cachedData.length - blockOffset, blockSize)
                             
                             tempBuffer.withUnsafeMutableBytes { bytes -> Void in
-                                let _ = cachedData.file.read(bytes.baseAddress!, currentBlockSize)
-                                let _ = outputFile.write(bytes.baseAddress!, count: currentBlockSize)
+                                guard let baseAddress = bytes.baseAddress else {
+                                    return
+                                }
+                                let _ = cachedData.file.read(baseAddress, currentBlockSize)
+                                let _ = outputFile.write(baseAddress, count: currentBlockSize)
                             }
                             
                             blockOffset += blockSize
@@ -424,8 +430,10 @@ private final class SharedHLSVideoJSContext: NSObject {
                             guard let self else {
                                 return
                             }
-                            let jsonResult = try! JSONSerialization.data(withJSONObject: result)
-                            let jsonResultString = String(data: jsonResult, encoding: .utf8)!
+                            guard let jsonResult = try? JSONSerialization.data(withJSONObject: result),
+                                  let jsonResultString = String(data: jsonResult, encoding: .utf8) else {
+                                return
+                            }
                             self.jsContext?.evaluateJavaScript("window.bridgeInvokeCallback(\(callbackId), \(jsonResultString));")
                         }
                     )
@@ -1405,8 +1413,10 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
                 "currentTime": status.timestamp
             ]
             
-            let jsonResult = try! JSONSerialization.data(withJSONObject: result)
-            let jsonResultString = String(data: jsonResult, encoding: .utf8)!
+            guard let jsonResult = try? JSONSerialization.data(withJSONObject: result),
+                  let jsonResultString = String(data: jsonResult, encoding: .utf8) else {
+                return
+            }
             SharedHLSVideoJSContext.shared.jsContext?.evaluateJavaScript("window.bridgeObjectMap[\(bridgeId)].bridgeUpdateStatus(\(jsonResultString));")
         }
     }

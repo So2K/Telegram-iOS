@@ -95,7 +95,7 @@ public func addCorners(_ context: DrawingContext, arguments: TransformImageArgum
                 context.blt(corner, at: CGPoint(x: drawingRect.minX, y: drawingRect.maxY - radius))
             }
         case let .Tail(radius, image):
-            if radius > CGFloat.ulpOfOne {
+            if radius > CGFloat.ulpOfOne, let imageData = image.cgImage {
                 let color = context.colorAt(CGPoint(x: drawingRect.minX, y: drawingRect.maxY - 1.0))
                 context.withContext { c in
                     c.clear(CGRect(x: drawingRect.minX - 4.0, y: 0.0, width: 4.0, height: drawingRect.maxY - 6.0))
@@ -106,7 +106,7 @@ public func addCorners(_ context: DrawingContext, arguments: TransformImageArgum
                     c.translateBy(x: cornerRect.midX, y: cornerRect.midY)
                     c.scaleBy(x: 1.0, y: -1.0)
                     c.translateBy(x: -cornerRect.midX, y: -cornerRect.midY)
-                    c.draw(image.cgImage!, in: cornerRect)
+                    c.draw(imageData, in: cornerRect)
                     c.translateBy(x: cornerRect.midX, y: cornerRect.midY)
                     c.scaleBy(x: 1.0, y: -1.0)
                     c.translateBy(x: -cornerRect.midX, y: -cornerRect.midY)
@@ -121,7 +121,7 @@ public func addCorners(_ context: DrawingContext, arguments: TransformImageArgum
                 context.blt(corner, at: CGPoint(x: drawingRect.maxX - radius, y: drawingRect.maxY - radius))
             }
         case let .Tail(radius, image):
-            if radius > CGFloat.ulpOfOne {
+            if radius > CGFloat.ulpOfOne, let imageData = image.cgImage {
                 let color = context.colorAt(CGPoint(x: drawingRect.maxX - 1.0, y: drawingRect.maxY - 1.0))
                 context.withContext { c in
                     c.clear(CGRect(x: drawingRect.maxX, y: 0.0, width: 4.0, height: drawingRect.maxY - image.size.height))
@@ -132,7 +132,7 @@ public func addCorners(_ context: DrawingContext, arguments: TransformImageArgum
                     c.translateBy(x: cornerRect.midX, y: cornerRect.midY)
                     c.scaleBy(x: 1.0, y: -1.0)
                     c.translateBy(x: -cornerRect.midX, y: -cornerRect.midY)
-                    c.draw(image.cgImage!, in: cornerRect)
+                    c.draw(imageData, in: cornerRect)
                     c.translateBy(x: cornerRect.midX, y: cornerRect.midY)
                     c.scaleBy(x: 1.0, y: -1.0)
                     c.translateBy(x: -cornerRect.midX, y: -cornerRect.midY)

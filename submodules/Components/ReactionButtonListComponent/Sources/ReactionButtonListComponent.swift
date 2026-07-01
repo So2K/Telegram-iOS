@@ -694,10 +694,13 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
                         let previousContents = strongSelf.layer.contents
                         
                         //ASDisplayNodeSetResizableContents(strongSelf.layer, image)
-                        strongSelf.layer.contents = image.cgImage
+                        guard let imageContents = image.cgImage else {
+                            return
+                        }
+                        strongSelf.layer.contents = imageContents
                         
-                        if animated, let previousContents = previousContents {
-                            strongSelf.layer.animate(from: previousContents as! CGImage, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
+                        if animated, let previousContents = previousContents as? CGImage {
+                            strongSelf.layer.animate(from: previousContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
                         }
                     }
                 }

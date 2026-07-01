@@ -140,10 +140,13 @@ final class FFMpegAudioFrameDecoder: MediaTrackFrameDecoder {
         
         var blockBuffer: CMBlockBuffer?
         
-        let bytes = malloc(data.count)!
+        guard !data.isEmpty, let bytes = malloc(data.count) else {
+            return nil
+        }
         data.copyBytes(to: bytes.assumingMemoryBound(to: UInt8.self), count: data.count)
         let status = CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: bytes, blockLength: data.count, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: data.count, flags: 0, blockBufferOut: &blockBuffer)
         if status != noErr {
+            free(bytes)
             return nil
         }
         
@@ -151,14 +154,15 @@ final class FFMpegAudioFrameDecoder: MediaTrackFrameDecoder {
         
         let pts = CMTime(value: frame.pts, timescale: self.timescale)
         
-        guard CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: blockBuffer!, formatDescription: self.formatDescription, sampleCount: Int(data.count / 2), presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer) == noErr else {
+        guard let blockBuffer, CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: blockBuffer, formatDescription: self.formatDescription, sampleCount: Int(data.count / 2), presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer) == noErr, let sampleBuffer else {
+            free(bytes)
             return nil
         }
         
         let resetDecoder = self.resetDecoderOnNextFrame
         self.resetDecoderOnNextFrame = false
         
-        return MediaTrackFrame(type: .audio, sampleBuffer: sampleBuffer!, resetDecoder: resetDecoder, decoded: true)
+        return MediaTrackFrame(type: .audio, sampleBuffer: sampleBuffer, resetDecoder: resetDecoder, decoded: true)
     }
     
     func reset() {

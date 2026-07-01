@@ -17,12 +17,32 @@ import LegacyImpl
 import GradientBackground
 import GZip
 
+private func drawWallpaperImage(_ image: UIImage, context c: CGContext, in rect: CGRect, fallbackColor: UIColor? = nil) {
+    if let cgImage = image.cgImage {
+        c.draw(cgImage, in: rect)
+    } else if let fallbackColor = fallbackColor {
+        c.setFillColor(fallbackColor.cgColor)
+        c.fill(rect)
+    }
+}
+
+private func drawWallpaperLinearGradient(context c: CGContext, colors gradientColors: CFArray, locations: [CGFloat], start: CGPoint, end: CGPoint, options: CGGradientDrawingOptions = [], fallbackColor: CGColor, fallbackRect: CGRect) {
+    var locations = locations
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+        c.drawLinearGradient(gradient, start: start, end: end, options: options)
+    } else {
+        c.setFillColor(fallbackColor)
+        c.fill(fallbackRect)
+    }
+}
+
 public func wallpaperDatas(account: Account, accountManager: AccountManager<TelegramAccountManagerTypes>, fileReference: FileMediaReference? = nil, representations: [ImageRepresentationWithReference], alwaysShowThumbnailFirst: Bool = false, thumbnail: Bool = false, onlyFullSize: Bool = false, autoFetchFullSize: Bool = false, synchronousLoad: Bool = false) -> Signal<(Data?, Data?, Bool), NoError> {
     if let smallestRepresentation = smallestImageRepresentation(representations.map({ $0.representation })), let largestRepresentation = largestImageRepresentation(representations.map({ $0.representation })), let smallestIndex = representations.firstIndex(where: { $0.representation == smallestRepresentation }), let largestIndex = representations.firstIndex(where: { $0.representation == largestRepresentation }) {
         
         let maybeFullSize: Signal<EngineRawMediaResourceData, NoError>
         if thumbnail, let file = fileReference?.media {
-            maybeFullSize = combineLatest(accountManager.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: false, attemptSynchronously: synchronousLoad),  account.postbox.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: false, attemptSynchronously: synchronousLoad))
+            maybeFullSize = combineLatest(accountManager.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: false, attemptSynchronously: synchronousLoad), account.postbox.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: false, attemptSynchronously: synchronousLoad))
             |> mapToSignal { maybeSharedData, maybeData -> Signal<EngineRawMediaResourceData, NoError> in
                 if maybeSharedData.complete {
                     return .single(maybeSharedData)
@@ -33,8 +53,7 @@ public func wallpaperDatas(account: Account, accountManager: AccountManager<Tele
                     |> mapToSignal { maybeSharedData, maybeData -> Signal<EngineRawMediaResourceData, NoError> in
                         if maybeSharedData.complete {
                             return accountManager.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: true)
-                        }
-                        else if maybeData.complete {
+                        } else if maybeData.complete {
                             return account.postbox.mediaBox.cachedResourceRepresentation(file.resource, representation: CachedScaledImageRepresentation(size: CGSize(width: 720.0, height: 720.0), mode: .aspectFit), complete: false, fetch: true)
                         } else {
                             return .single(maybeData)
@@ -555,7 +574,7 @@ private func patternWallpaperImageInternal(fullSizeData: Data?, fullSizeComplete
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
-                        c.draw(image.cgImage!, in: drawingRect)
+                        drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.first)
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
@@ -567,15 +586,12 @@ private func patternWallpaperImageInternal(fullSizeData: Data?, fullSizeComplete
                         for i in 0 ..< colors.count {
                             locations.append(delta * CGFloat(i))
                         }
-                        let colorSpace = CGColorSpaceCreateDeviceRGB()
-                        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-                        
                         c.saveGState()
                         c.translateBy(x: arguments.drawingSize.width / 2.0, y: arguments.drawingSize.height / 2.0)
                         c.rotate(by: CGFloat(customArguments.rotation ?? 0) * CGFloat.pi / -180.0)
                         c.translateBy(x: -arguments.drawingSize.width / 2.0, y: -arguments.drawingSize.height / 2.0)
                         
-                        c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                        drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: colors[0].cgColor, fallbackRect: arguments.drawingRect)
                         c.restoreGState()
                     }
 
@@ -621,52 +637,52 @@ private func patternWallpaperImageInternal(fullSizeData: Data?, fullSizeComplete
                                 fittedSize = fittedSize.aspectFitted(arguments.drawingRect.size)
                             }
                             
-                            c.interpolationQuality = customArguments.preview ? .low : .medium
-                            
-                            let drawTile: (CGRect) -> Void = { fittedRect in
-                                c.saveGState()
-                                c.clip(to: fittedRect, mask: image.cgImage!)
+                            if let maskImage = image.cgImage {
+                                c.interpolationQuality = customArguments.preview ? .low : .medium
 
-                                if let customPatternColor = customArguments.customPatternColor {
-                                    c.setFillColor(customPatternColor.cgColor)
-                                    c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
-                                } else if colors.count >= 3 && customArguments.customPatternColor == nil {
-                                    c.setFillColor(UIColor(white: 0.0, alpha: 0.5).cgColor)
-                                    c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
-                                } else if colors.count == 1 {
-                                    c.setFillColor(customArguments.customPatternColor?.cgColor ?? patternColor(for: color, intensity: intensity, prominent: prominent).cgColor)
-                                    c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
-                                } else {
-                                    let gradientColors = colors.map { patternColor(for: $0, intensity: intensity, prominent: prominent).cgColor } as CFArray
-                                    let delta: CGFloat = 1.0 / (CGFloat(colors.count) - 1.0)
+                                let drawTile: (CGRect) -> Void = { fittedRect in
+                                    c.saveGState()
+                                    c.clip(to: fittedRect, mask: maskImage)
 
-                                    var locations: [CGFloat] = []
-                                    for i in 0 ..< colors.count {
-                                        locations.append(delta * CGFloat(i))
+                                    if let customPatternColor = customArguments.customPatternColor {
+                                        c.setFillColor(customPatternColor.cgColor)
+                                        c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
+                                    } else if colors.count >= 3 && customArguments.customPatternColor == nil {
+                                        c.setFillColor(UIColor(white: 0.0, alpha: 0.5).cgColor)
+                                        c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
+                                    } else if colors.count == 1 {
+                                        c.setFillColor(customArguments.customPatternColor?.cgColor ?? patternColor(for: color, intensity: intensity, prominent: prominent).cgColor)
+                                        c.fill(CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
+                                    } else {
+                                        let gradientColors = colors.map { patternColor(for: $0, intensity: intensity, prominent: prominent).cgColor } as CFArray
+                                        let delta: CGFloat = 1.0 / (CGFloat(colors.count) - 1.0)
+
+                                        var locations: [CGFloat] = []
+                                        for i in 0 ..< colors.count {
+                                            locations.append(delta * CGFloat(i))
+                                        }
+
+                                        c.translateBy(x: arguments.drawingSize.width / 2.0, y: arguments.drawingSize.height / 2.0)
+                                        c.rotate(by: CGFloat(customArguments.rotation ?? 0) * CGFloat.pi / -180.0)
+                                        c.translateBy(x: -arguments.drawingSize.width / 2.0, y: -arguments.drawingSize.height / 2.0)
+
+                                        drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: patternColor(for: colors[0], intensity: intensity, prominent: prominent).cgColor, fallbackRect: CGRect(origin: CGPoint(), size: arguments.drawingRect.size))
                                     }
-                                    let colorSpace = CGColorSpaceCreateDeviceRGB()
-                                    let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
-                                    c.translateBy(x: arguments.drawingSize.width / 2.0, y: arguments.drawingSize.height / 2.0)
-                                    c.rotate(by: CGFloat(customArguments.rotation ?? 0) * CGFloat.pi / -180.0)
-                                    c.translateBy(x: -arguments.drawingSize.width / 2.0, y: -arguments.drawingSize.height / 2.0)
-
-                                    c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                                    c.restoreGState()
                                 }
-                                c.restoreGState()
-                            }
-                            
-                            switch displayMode {
-                            case .aspectFit, .halfAspectFill:
-                                var fittedRect = CGRect(origin: CGPoint(x: drawingRect.origin.x, y: drawingRect.origin.y + (drawingRect.size.height - fittedSize.height) / 2.0), size: fittedSize)
-                                drawTile(fittedRect)
-                                while (fittedRect.maxX < size.width) {
-                                    fittedRect = fittedRect.offsetBy(dx: fittedSize.width, dy: 0.0)
+
+                                switch displayMode {
+                                case .aspectFit, .halfAspectFill:
+                                    var fittedRect = CGRect(origin: CGPoint(x: drawingRect.origin.x, y: drawingRect.origin.y + (drawingRect.size.height - fittedSize.height) / 2.0), size: fittedSize)
+                                    drawTile(fittedRect)
+                                    while (fittedRect.maxX < size.width) {
+                                        fittedRect = fittedRect.offsetBy(dx: fittedSize.width, dy: 0.0)
+                                        drawTile(fittedRect)
+                                    }
+                                case .aspectFill:
+                                    let fittedRect = CGRect(origin: CGPoint(x: drawingRect.origin.x + (drawingRect.size.width - fittedSize.width) / 2.0, y: drawingRect.origin.y + (drawingRect.size.height - fittedSize.height) / 2.0), size: fittedSize)
                                     drawTile(fittedRect)
                                 }
-                            case .aspectFill:
-                                let fittedRect = CGRect(origin: CGPoint(x: drawingRect.origin.x + (drawingRect.size.width - fittedSize.width) / 2.0, y: drawingRect.origin.y + (drawingRect.size.height - fittedSize.height) / 2.0), size: fittedSize)
-                                drawTile(fittedRect)
                             }
                         }
                     })
@@ -684,7 +700,7 @@ private func patternWallpaperImageInternal(fullSizeData: Data?, fullSizeComplete
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
-                        c.draw(overlayImage.cgImage!, in: drawingRect)
+                        drawWallpaperImage(overlayImage, context: c, in: drawingRect)
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
@@ -742,7 +758,7 @@ public func drawWallpaperGradientImage(_ colors: [UIColor], rotation: Int32? = n
         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
         c.scaleBy(x: 1.0, y: -1.0)
         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
-        c.draw(image.cgImage!, in: drawingRect)
+        drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.first)
         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
         c.scaleBy(x: 1.0, y: -1.0)
         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
@@ -754,9 +770,6 @@ public func drawWallpaperGradientImage(_ colors: [UIColor], rotation: Int32? = n
         for i in 0 ..< colors.count {
             locations.append(delta * CGFloat(i))
         }
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
         if let rotation = rotation {
             c.saveGState()
             c.translateBy(x: drawingRect.width / 2.0, y: drawingRect.height / 2.0)
@@ -764,7 +777,7 @@ public func drawWallpaperGradientImage(_ colors: [UIColor], rotation: Int32? = n
             c.translateBy(x: -drawingRect.width / 2.0, y: -drawingRect.height / 2.0)
         }
 
-        c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: drawingRect.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: drawingRect.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: colors[0].cgColor, fallbackRect: drawingRect)
 
         if rotation != nil {
             c.restoreGState()
@@ -796,7 +809,7 @@ public func gradientImage(_ colors: [UIColor], rotation: Int32? = nil) -> Signal
                 c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                 c.scaleBy(x: 1.0, y: -1.0)
                 c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
-                c.draw(image.cgImage!, in: drawingRect)
+                drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.first)
                 c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                 c.scaleBy(x: 1.0, y: -1.0)
                 c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
@@ -808,16 +821,13 @@ public func gradientImage(_ colors: [UIColor], rotation: Int32? = nil) -> Signal
                 for i in 0 ..< colors.count {
                     locations.append(delta * CGFloat(i))
                 }
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
                 if let rotation = rotation {
                     c.translateBy(x: arguments.drawingSize.width / 2.0, y: arguments.drawingSize.height / 2.0)
                     c.rotate(by: CGFloat(rotation) * CGFloat.pi / 180.0)
                     c.translateBy(x: -arguments.drawingSize.width / 2.0, y: -arguments.drawingSize.height / 2.0)
                 }
 
-                c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: colors[0].cgColor, fallbackRect: arguments.drawingRect)
             }
         }
         
@@ -1010,20 +1020,16 @@ public func drawThemeImage(context c: CGContext, theme: PresentationTheme, wallp
             c.fill(drawingRect)
         case let .gradient(gradient):
             if gradient.colors.count >= 3 {
-                let image = GradientBackgroundNode.generatePreview(size: CGSize(width: 60.0, height: 60.0), colors: gradient.colors.map(UIColor.init(rgb:)))
-                c.draw(image.cgImage!, in: drawingRect)
+                let colors = gradient.colors.map(UIColor.init(rgb:))
+                let image = GradientBackgroundNode.generatePreview(size: CGSize(width: 60.0, height: 60.0), colors: colors)
+                drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.first)
             } else if gradient.colors.count >= 2 {
                 let gradientColors = gradient.colors.map({ UIColor(rgb: $0).cgColor }) as CFArray
-                var locations: [CGFloat] = [0.0, 1.0]
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-                c.drawLinearGradient(cgGradient, start: CGPoint(x: 0.0, y: drawingRect.height), end: CGPoint(x: 0.0, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                let locations: [CGFloat] = [0.0, 1.0]
+                drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: drawingRect.height), end: CGPoint(x: 0.0, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: UIColor(rgb: gradient.colors[0]).cgColor, fallbackRect: drawingRect)
             } else if gradient.colors.count >= 1 {
-                let gradientColors = [UIColor(rgb: gradient.colors[0]), UIColor(rgb: gradient.colors[0])] as CFArray
-                var locations: [CGFloat] = [0.0, 1.0]
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-                c.drawLinearGradient(cgGradient, start: CGPoint(x: 0.0, y: drawingRect.height), end: CGPoint(x: 0.0, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                c.setFillColor(UIColor(rgb: gradient.colors[0]).cgColor)
+                c.fill(drawingRect)
             }
         case let .file(file):
             if file.isPattern, let intensity = file.settings.intensity, intensity < 0 {
@@ -1102,9 +1108,7 @@ public func drawThemeImage(context c: CGContext, theme: PresentationTheme, wallp
             colors.append(incoming.fill[i].cgColor)
         }
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-        c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 32.0), options: CGGradientDrawingOptions())
+        drawWallpaperLinearGradient(context: c, colors: colors as CFArray, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 32.0), fallbackColor: colors[0], fallbackRect: CGRect(x: 0.0, y: 0.0, width: 114.0, height: 32.0))
     } else {
         c.setFillColor(incoming.fill[0].cgColor)
         c.setStrokeColor(incoming.stroke.cgColor)
@@ -1134,9 +1138,7 @@ public func drawThemeImage(context c: CGContext, theme: PresentationTheme, wallp
             colors.append(outgoing.fill[i].cgColor)
         }
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-        c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 32.0), options: CGGradientDrawingOptions())
+        drawWallpaperLinearGradient(context: c, colors: colors as CFArray, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 32.0), fallbackColor: colors[0], fallbackRect: CGRect(x: 0.0, y: 0.0, width: 114.0, height: 32.0))
     } else {
         c.setFillColor(outgoing.fill[0].cgColor)
         c.setStrokeColor(outgoing.stroke.cgColor)
@@ -1362,11 +1364,11 @@ public func themeImage(account: Account, accountManager: AccountManager<Telegram
                             if let unpackedData = TGGUnzipData(data, 2 * 1024 * 1024), let image = drawSvgImageImpl(unpackedData, arguments.drawingSize, .clear, .black, 1.0, true) {
                                 context.setBlendMode(.softLight)
                                 context.setAlpha(abs(CGFloat(intensity)) / 100.0)
-                                context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: arguments.drawingSize))
+                                drawWallpaperImage(image, context: context, in: CGRect(origin: CGPoint(), size: arguments.drawingSize))
                             } else if let image = UIImage(data: data) {
                                 context.setBlendMode(.softLight)
                                 context.setAlpha(abs(CGFloat(intensity)) / 100.0)
-                                context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: arguments.drawingSize))
+                                drawWallpaperImage(image, context: context, in: CGRect(origin: CGPoint(), size: arguments.drawingSize))
                             }
                         })
                         drawThemeImage(context: c, theme: theme, wallpaperImage: wallpaperImage, size: arguments.drawingSize)
@@ -1614,20 +1616,18 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                         c.fill(drawingRect)
                     } else {
                         let image = GradientBackgroundNode.generatePreview(size: CGSize(width: 60.0, height: 60.0), colors: colors.0.2.map(UIColor.init(rgb:)))
-                        c.draw(image.cgImage!, in: drawingRect)
+                        drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.0.2.first.map(UIColor.init(rgb:)))
                     }
                 } else if let secondBackgroundColor = colors.0.1 {
                     let gradientColors = [colors.0.0, secondBackgroundColor].map { $0.cgColor } as CFArray
-                    var locations: [CGFloat] = [0.0, 1.0]
-                    let colorSpace = CGColorSpaceCreateDeviceRGB()
-                    let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
+                    let locations: [CGFloat] = [0.0, 1.0]
                     c.saveGState()
                     if let rotation = colors.7 {
                         c.translateBy(x: drawingRect.width / 2.0, y: drawingRect.height / 2.0)
                         c.rotate(by: CGFloat(rotation) * CGFloat.pi / 180.0)
                         c.translateBy(x: -drawingRect.width / 2.0, y: -drawingRect.height / 2.0)
                     }
-                    c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: drawingRect.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                    drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: drawingRect.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: colors.0.0.cgColor, fallbackRect: drawingRect)
                     c.restoreGState()
                 } else {
                     c.setFillColor(colors.0.0.cgColor)
@@ -1642,7 +1642,7 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                             return
                         }
                         thumbnailContext.withFlippedContext { c in
-                            c.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: thumbnailContextSize))
+                            drawWallpaperImage(image, context: c, in: CGRect(origin: CGPoint(), size: thumbnailContextSize))
                         }
                         telegramFastBlurMore(Int32(thumbnailContextSize.width), Int32(thumbnailContextSize.height), Int32(thumbnailContext.bytesPerRow), thumbnailContext.bytes)
                     
@@ -1726,9 +1726,7 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                                     colors.append(incomingColors[i].cgColor)
                                 }
 
-                                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-                                c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 34.0), options: CGGradientDrawingOptions())
+                                drawWallpaperLinearGradient(context: c, colors: colors as CFArray, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 34.0), fallbackColor: colors[0], fallbackRect: CGRect(x: 0.0, y: 0.0, width: 64.0, height: 34.0))
                             } else {
                                 c.setFillColor(incomingColors[0].cgColor)
                                 c.fillPath()
@@ -1748,10 +1746,7 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                                     let t = CGFloat(i) / CGFloat(incomingColors.count - 1)
                                     locations.append(t)
                                 }
-                                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                                let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
-                                c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: rect.minY), end: CGPoint(x: 0.0, y: rect.maxY), options: CGGradientDrawingOptions())
+                                drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: rect.minY), end: CGPoint(x: 0.0, y: rect.maxY), fallbackColor: incomingColors[0].cgColor, fallbackRect: rect)
                             } else if !incomingColors.isEmpty {
                                 c.setFillColor(incomingColors[0].cgColor)
                                 c.fill(rect)
@@ -1761,7 +1756,13 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                         }
                     } else {
                         let incoming = generateGradientTintedImage(image: UIImage(bundleImageName: "Settings/ThemeBubble"), colors: incomingColors)
-                        c.draw(incoming!.cgImage!, in: CGRect(x: 9.0, y: 34.0, width: 57.0, height: 16.0))
+                        let bubbleRect = CGRect(x: 9.0, y: 34.0, width: 57.0, height: 16.0)
+                        if let incoming = incoming, let cgImage = incoming.cgImage {
+                            c.draw(cgImage, in: bubbleRect)
+                        } else if let firstColor = incomingColors.first {
+                            c.setFillColor(firstColor.cgColor)
+                            c.fill(bubbleRect)
+                        }
                     }
                     
                     if !(emoticon && large) {
@@ -1792,9 +1793,7 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                                     colors.append(outgoingColors[i].cgColor)
                                 }
 
-                                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as NSArray, locations: &locations)!
-                                c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 34.0), options: CGGradientDrawingOptions())
+                                drawWallpaperLinearGradient(context: c, colors: colors as CFArray, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: 34.0), fallbackColor: colors[0], fallbackRect: CGRect(x: 0.0, y: 0.0, width: 64.0, height: 34.0))
                             } else {
                                 c.setFillColor(outgoingColors[0].cgColor)
                                 c.fillPath()
@@ -1814,10 +1813,7 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                                     let t = CGFloat(i) / CGFloat(outgoingColors.count - 1)
                                     locations.append(t)
                                 }
-                                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                                let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
-                                c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: rect.minY), end: CGPoint(x: 0.0, y: rect.maxY), options: CGGradientDrawingOptions())
+                                drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: rect.minY), end: CGPoint(x: 0.0, y: rect.maxY), fallbackColor: outgoingColors[0].cgColor, fallbackRect: rect)
                             } else if !outgoingColors.isEmpty {
                                 c.setFillColor(outgoingColors[0].cgColor)
                                 c.fill(rect)
@@ -1827,7 +1823,13 @@ public func themeIconImage(account: Account, accountManager: AccountManager<Tele
                         c.resetClip()
                     } else {
                         let outgoing = generateGradientTintedImage(image: UIImage(bundleImageName: "Settings/ThemeBubble"), colors: outgoingColors)
-                        c.draw(outgoing!.cgImage!, in: CGRect(x: 9.0, y: 12.0, width: 57.0, height: 16.0))
+                        let bubbleRect = CGRect(x: 9.0, y: 12.0, width: 57.0, height: 16.0)
+                        if let outgoing = outgoing, let cgImage = outgoing.cgImage {
+                            c.draw(cgImage, in: bubbleRect)
+                        } else if let firstColor = outgoingColors.first {
+                            c.setFillColor(firstColor.cgColor)
+                            c.fill(bubbleRect)
+                        }
                     }
                 }
             }
@@ -1885,7 +1887,7 @@ public func wallpaperThumbnail(account: Account, accountManager: AccountManager<
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
-                        c.draw(image.cgImage!, in: drawingRect)
+                        drawWallpaperImage(image, context: c, in: drawingRect, fallbackColor: colors.first)
                         c.translateBy(x: drawingRect.midX, y: drawingRect.midY)
                         c.scaleBy(x: 1.0, y: -1.0)
                         c.translateBy(x: -drawingRect.midX, y: -drawingRect.midY)
@@ -1897,15 +1899,12 @@ public func wallpaperThumbnail(account: Account, accountManager: AccountManager<
                         for i in 0 ..< file.settings.colors.count {
                             locations.append(delta * CGFloat(i))
                         }
-                        let colorSpace = CGColorSpaceCreateDeviceRGB()
-                        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-
                         c.saveGState()
                         c.translateBy(x: arguments.drawingSize.width / 2.0, y: arguments.drawingSize.height / 2.0)
                         c.rotate(by: CGFloat(file.settings.rotation ?? 0) * CGFloat.pi / -180.0)
                         c.translateBy(x: -arguments.drawingSize.width / 2.0, y: -arguments.drawingSize.height / 2.0)
 
-                        c.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                        drawWallpaperLinearGradient(context: c, colors: gradientColors, locations: locations, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation], fallbackColor: colors[0].cgColor, fallbackRect: arguments.drawingRect)
                         c.restoreGState()
                     }
 

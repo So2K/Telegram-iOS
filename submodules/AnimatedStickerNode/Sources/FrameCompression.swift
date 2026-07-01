@@ -3,13 +3,18 @@ import Compression
 import YuvConversion
 
 func compressFrame(width: Int, height: Int, rgbData: Data, unpremultiply: Bool) -> Data? {
+    guard width > 0, height > 0 else {
+        return nil
+    }
     let bytesPerRow = rgbData.count / height
     
     let yuvaPixelsPerAlphaRow = (Int(width) + 1) & (~1)
     assert(yuvaPixelsPerAlphaRow % 2 == 0)
     
     let yuvaLength = Int(width) * Int(height) * 2 + yuvaPixelsPerAlphaRow * Int(height) / 2
-    let yuvaFrameData = malloc(yuvaLength)!
+    guard let yuvaFrameData = malloc(yuvaLength) else {
+        return nil
+    }
     defer {
         free(yuvaFrameData)
     }
@@ -18,9 +23,15 @@ func compressFrame(width: Int, height: Int, rgbData: Data, unpremultiply: Bool) 
     var compressedFrameData = Data(count: yuvaLength)
     let compressedFrameDataLength = compressedFrameData.count
     
-    let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE))!
+    let scratchDataLength = compression_encode_scratch_buffer_size(COMPRESSION_LZFSE)
+    let scratchData = scratchDataLength == 0 ? nil : malloc(scratchDataLength)
+    guard scratchDataLength == 0 || scratchData != nil else {
+        return nil
+    }
     defer {
-        free(scratchData)
+        if let scratchData {
+            free(scratchData)
+        }
     }
     
     var rgbData = rgbData
@@ -43,19 +54,31 @@ func compressFrame(width: Int, height: Int, rgbData: Data, unpremultiply: Bool) 
     guard let resultSize = maybeResultSize else {
         return nil
     }
+    guard resultSize != 0 else {
+        return nil
+    }
     compressedFrameData.count = resultSize
     return compressedFrameData
 }
 
 func compressFrame(width: Int, height: Int, yuvaData: Data) -> Data? {
+    guard width > 0, height > 0 else {
+        return nil
+    }
     let yuvaLength = yuvaData.count
     
     var compressedFrameData = Data(count: yuvaLength)
     let compressedFrameDataLength = compressedFrameData.count
     
-    let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE))!
+    let scratchDataLength = compression_encode_scratch_buffer_size(COMPRESSION_LZFSE)
+    let scratchData = scratchDataLength == 0 ? nil : malloc(scratchDataLength)
+    guard scratchDataLength == 0 || scratchData != nil else {
+        return nil
+    }
     defer {
-        free(scratchData)
+        if let scratchData {
+            free(scratchData)
+        }
     }
 
     var maybeResultSize: Int?
@@ -73,6 +96,9 @@ func compressFrame(width: Int, height: Int, yuvaData: Data) -> Data? {
     }
     
     guard let resultSize = maybeResultSize else {
+        return nil
+    }
+    guard resultSize != 0 else {
         return nil
     }
     compressedFrameData.count = resultSize

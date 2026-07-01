@@ -8,18 +8,21 @@ import TinyThumbnail
 import FastBlur
 import Postbox
 
-private let roundCorners = { () -> UIImage in
+private let roundCorners = { () -> UIImage? in
     let diameter: CGFloat = 60.0
     UIGraphicsBeginImageContextWithOptions(CGSize(width: diameter, height: diameter), false, 0.0)
-    let context = UIGraphicsGetCurrentContext()!
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     context.setBlendMode(.copy)
     context.setFillColor(UIColor.black.cgColor)
     context.fill(CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
     context.setFillColor(UIColor.clear.cgColor)
     context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
-    let image = UIGraphicsGetImageFromCurrentImageContext()!.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
-    UIGraphicsEndImageContext()
-    return image
+    return UIGraphicsGetImageFromCurrentImageContext()?.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
 }()
 
 public enum PeerAvatarImageType {
@@ -246,7 +249,9 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
                                         telegramFastBlurMore(Int32(imageContext.size.width * imageContext.scale), Int32(imageContext.size.height * imageContext.scale), Int32(imageContext.bytesPerRow), imageContext.bytes)
                                     }
                                     
-                                    dataImage = imageContext.generateImage()!.cgImage!
+                                    if let image = imageContext.generateImage(), let cgImage = image.cgImage {
+                                        dataImage = cgImage
+                                    }
                                 }
                             }
                             
@@ -264,8 +269,10 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
                                 break
                             case .round:
                                 if displayDimensions.width == 60.0 {
-                                    context.setBlendMode(.destinationOut)
-                                    context.draw(roundCorners.cgImage!, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                                    if let roundCornersImage = roundCorners?.cgImage {
+                                        context.setBlendMode(.destinationOut)
+                                        context.draw(roundCornersImage, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                                    }
                                 }
                             case .roundedRect:
                                 break
@@ -427,9 +434,12 @@ public func drawPeerAvatarLetters(context: CGContext, size: CGSize, round: Bool 
     var locations: [CGFloat] = [1.0, 0.0]
     
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations)!
-    
-    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    if let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations) {
+        context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    } else if let color = colorsArray.lastObject as? CGColor {
+        context.setFillColor(color)
+        context.fill(CGRect(origin: CGPoint(), size: size))
+    }
     
     context.resetClip()
     
@@ -510,18 +520,25 @@ public func generateAvatarImage(size: CGSize, icon: UIImage?, iconScale: CGFloat
         }
                 
         var locations: [CGFloat] = []
-        let delta = 1.0 / CGFloat(colorsArray.count - 1)
-        for i in 0 ..< colorsArray.count {
-            locations.append(1.0 - delta * CGFloat(i))
+        if colorsArray.count > 1 {
+            let delta = 1.0 / CGFloat(colorsArray.count - 1)
+            for i in 0 ..< colorsArray.count {
+                locations.append(1.0 - delta * CGFloat(i))
+            }
+        } else {
+            locations.append(1.0)
         }
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations)!
-        
-        if diagonal {
-            context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
-        } else {
-            context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations) {
+            if diagonal {
+                context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+            } else {
+                context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+            }
+        } else if let color = colorsArray.lastObject as? CGColor {
+            context.setFillColor(color)
+            context.fill(CGRect(origin: CGPoint(), size: size))
         }
         context.resetClip()
         
@@ -534,7 +551,9 @@ public func generateAvatarImage(size: CGSize, icon: UIImage?, iconScale: CGFloat
         if let icon = icon {
             let iconSize = CGSize(width: icon.size.width * iconScale, height: icon.size.height * iconScale)
             let iconFrame = CGRect(origin: CGPoint(x: floor((size.width - iconSize.width) / 2.0), y: floor((size.height - iconSize.height) / 2.0)), size: iconSize)
-            context.draw(icon.cgImage!, in: iconFrame)
+            if let iconImage = icon.cgImage {
+                context.draw(iconImage, in: iconFrame)
+            }
         }
     })
 }

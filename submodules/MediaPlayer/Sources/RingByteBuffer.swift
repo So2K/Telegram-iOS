@@ -53,7 +53,9 @@ public final class RingByteBuffer {
         let tail = TPCircularBufferTail(&self.buffer, &availableBytes)
         
         let copiedCount = min(count, Int(availableBytes))
-        let bytes = malloc(copiedCount)!
+        guard copiedCount > 0, let tail, let bytes = malloc(copiedCount) else {
+            return Data()
+        }
         memcpy(bytes, tail, copiedCount)
         
         TPCircularBufferConsume(&self.buffer, Int32(copiedCount))

@@ -198,8 +198,12 @@ public final class HLSVideoContent: UniversalVideoContent {
                 var durations: [Int] = []
                 var byteRanges: [Range<Int>] = []
                 
-                let extinfRegex = try! NSRegularExpression(pattern: "EXTINF:(\\d+)", options: [])
-                let byteRangeRegex = try! NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: [])
+                guard let extinfRegex = try? NSRegularExpression(pattern: "EXTINF:(\\d+)", options: []),
+                      let byteRangeRegex = try? NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: []) else {
+                    subscriber.putNext(nil)
+                    subscriber.putCompletion()
+                    return
+                }
                 
                 let extinfResults = extinfRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
                 for result in extinfResults {
@@ -213,7 +217,7 @@ public final class HLSVideoContent: UniversalVideoContent {
                 let byteRangeResults = byteRangeRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
                 for result in byteRangeResults {
                     if let lengthRange = Range(result.range(at: 1), in: playlistString), let upperBoundRange = Range(result.range(at: 2), in: playlistString) {
-                        if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])) {
+                        if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])), lowerBound >= 0, length > 0, lowerBound <= Int.max - length {
                             byteRanges.append(lowerBound ..< (lowerBound + length))
                         }
                     }
@@ -407,7 +411,9 @@ final class HLSServerSource: SharedHLSServer.Source {
             guard var playlistString = String(data: data, encoding: .utf8) else {
                 return ""
             }
-            let partRegex = try! NSRegularExpression(pattern: "mtproto:([\\d]+)", options: [])
+            guard let partRegex = try? NSRegularExpression(pattern: "mtproto:([\\d]+)", options: []) else {
+                return playlistString
+            }
             let results = partRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
             for result in results.reversed() {
                 if let range = Range(result.range, in: playlistString) {
@@ -457,8 +463,11 @@ final class HLSServerSource: SharedHLSServer.Source {
                         let currentBlockSize = min(cachedData.length - blockOffset, blockSize)
                         
                         tempBuffer.withUnsafeMutableBytes { bytes -> Void in
-                            let _ = cachedData.file.read(bytes.baseAddress!, currentBlockSize)
-                            let _ = outputFile.write(bytes.baseAddress!, count: currentBlockSize)
+                            guard let baseAddress = bytes.baseAddress else {
+                                return
+                            }
+                            let _ = cachedData.file.read(baseAddress, currentBlockSize)
+                            let _ = outputFile.write(baseAddress, count: currentBlockSize)
                         }
                         
                         blockOffset += blockSize

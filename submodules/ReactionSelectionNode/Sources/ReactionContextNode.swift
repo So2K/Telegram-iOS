@@ -571,11 +571,11 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                 locations.append(t)
             }
 
-            let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations)!
-            
-            let center = CGPoint(x: size.width / 2.0, y: size.height / 2.0)
             let gradientWidth = 6.0
-            context.drawRadialGradient(gradient, startCenter: center, startRadius: size.width / 2.0, endCenter: center, endRadius: size.width / 2.0 - gradientWidth, options: [])
+            if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations) {
+                let center = CGPoint(x: size.width / 2.0, y: size.height / 2.0)
+                context.drawRadialGradient(gradient, startCenter: center, startRadius: size.width / 2.0, endCenter: center, endRadius: size.width / 2.0 - gradientWidth, options: [])
+            }
             
             context.setFillColor(shadowColor.cgColor)
             context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: gradientWidth - 1.0, dy: gradientWidth - 1.0))
@@ -797,7 +797,7 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                 
                 let maxCompressionDistance: CGFloat = 100.0
                 var compressionFactor: CGFloat = max(0.0, min(1.0, self.horizontalExpandDistance / maxCompressionDistance))
-                compressionFactor = compressionFactor * compressionFactor
+                compressionFactor *= compressionFactor
                 
                 if compressionFactor >= 0.95 {
                     self.horizontalExpandStartLocation = nil

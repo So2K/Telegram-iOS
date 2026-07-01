@@ -559,15 +559,14 @@ extension ChatControllerImpl {
                                         }
                                         let contactData = DeviceContactExtendedData(basicData: DeviceContactBasicData(firstName: contact.firstName ?? "", lastName: contact.lastName ?? "", phoneNumbers: [DeviceContactPhoneNumberData(label: "_$!<Mobile>!$_", value: phoneNumber)]), middleName: "", prefix: "", suffix: "", organization: "", jobTitle: "", department: "", emailAddresses: [], urls: [], addresses: [], birthdayDate: nil, socialProfiles: [], instantMessagingProfiles: [], note: "")
 
-                                        let phone = contactData.basicData.phoneNumbers[0].value
+                                        let phone = phoneNumber
                                         media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: contact.id, vCardData: nil)
                                     case let .deviceContact(_, basicData):
-                                        guard !basicData.phoneNumbers.isEmpty else {
+                                        guard let phone = basicData.phoneNumbers.first?.value else {
                                             continue
                                         }
                                         let contactData = DeviceContactExtendedData(basicData: basicData, middleName: "", prefix: "", suffix: "", organization: "", jobTitle: "", department: "", emailAddresses: [], urls: [], addresses: [], birthdayDate: nil, socialProfiles: [], instantMessagingProfiles: [], note: "")
 
-                                        let phone = contactData.basicData.phoneNumbers[0].value
                                         media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: nil, vCardData: nil)
                                     }
 
@@ -645,9 +644,8 @@ extension ChatControllerImpl {
                                 }
                                 strongSelf.controllerNavigationDisposable.set((dataSignal
                                 |> deliverOnMainQueue).startStrict(next: { peerAndContactData in
-                                    if let strongSelf = self, let contactData = peerAndContactData.1, contactData.basicData.phoneNumbers.count != 0 {
+                                    if let strongSelf = self, let contactData = peerAndContactData.1, let phone = contactData.basicData.phoneNumbers.first?.value {
                                         if contactData.isPrimitive {
-                                            let phone = contactData.basicData.phoneNumbers[0].value
                                             let media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: peerAndContactData.0?.id, vCardData: nil)
                                             let replyMessageSubject = strongSelf.presentationInterfaceState.interfaceState.replyMessageSubject
                                             strongSelf.chatDisplayNode.setupSendActionOnViewUpdate({
@@ -679,10 +677,9 @@ extension ChatControllerImpl {
                                             })
                                         } else {
                                             let contactController = strongSelf.context.sharedContext.makeDeviceContactInfoController(context: ShareControllerAppAccountContext(context: strongSelf.context), environment: ShareControllerAppEnvironment(sharedContext: strongSelf.context.sharedContext), subject: .filter(peer: peerAndContactData.0.flatMap(EnginePeer.init), contactId: nil, contactData: contactData, completion: { peer, contactData in
-                                                guard let strongSelf = self, !contactData.basicData.phoneNumbers.isEmpty else {
+                                                guard let strongSelf = self, let phone = contactData.basicData.phoneNumbers.first?.value else {
                                                     return
                                                 }
-                                                let phone = contactData.basicData.phoneNumbers[0].value
                                                 if let vCardData = contactData.serializedVCard() {
                                                     let media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: peer?.id, vCardData: vCardData)
                                                     let replyMessageSubject = strongSelf.presentationInterfaceState.interfaceState.replyMessageSubject
@@ -1609,15 +1606,14 @@ extension ChatControllerImpl {
                                 }
                                 let contactData = DeviceContactExtendedData(basicData: DeviceContactBasicData(firstName: contact.firstName ?? "", lastName: contact.lastName ?? "", phoneNumbers: [DeviceContactPhoneNumberData(label: "_$!<Mobile>!$_", value: phoneNumber)]), middleName: "", prefix: "", suffix: "", organization: "", jobTitle: "", department: "", emailAddresses: [], urls: [], addresses: [], birthdayDate: nil, socialProfiles: [], instantMessagingProfiles: [], note: "")
 
-                                let phone = contactData.basicData.phoneNumbers[0].value
+                                let phone = phoneNumber
                                 media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: contact.id, vCardData: nil)
                             case let .deviceContact(_, basicData):
-                                guard !basicData.phoneNumbers.isEmpty else {
+                                guard let phone = basicData.phoneNumbers.first?.value else {
                                     continue
                                 }
                                 let contactData = DeviceContactExtendedData(basicData: basicData, middleName: "", prefix: "", suffix: "", organization: "", jobTitle: "", department: "", emailAddresses: [], urls: [], addresses: [], birthdayDate: nil, socialProfiles: [], instantMessagingProfiles: [], note: "")
 
-                                let phone = contactData.basicData.phoneNumbers[0].value
                                 media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: nil, vCardData: nil)
                         }
 
@@ -1684,9 +1680,8 @@ extension ChatControllerImpl {
                     }
                     strongSelf.controllerNavigationDisposable.set((dataSignal
                     |> deliverOnMainQueue).startStrict(next: { peerAndContactData in
-                        if let strongSelf = self, let contactData = peerAndContactData.1, contactData.basicData.phoneNumbers.count != 0 {
+                        if let strongSelf = self, let contactData = peerAndContactData.1, let phone = contactData.basicData.phoneNumbers.first?.value {
                             if contactData.isPrimitive {
-                                let phone = contactData.basicData.phoneNumbers[0].value
                                 let media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: peerAndContactData.0?.id, vCardData: nil)
                                 let replyMessageSubject = strongSelf.presentationInterfaceState.interfaceState.replyMessageSubject
                                 strongSelf.chatDisplayNode.setupSendActionOnViewUpdate({
@@ -1707,10 +1702,9 @@ extension ChatControllerImpl {
                                 })
                             } else {
                                 let contactController = strongSelf.context.sharedContext.makeDeviceContactInfoController(context: ShareControllerAppAccountContext(context: strongSelf.context), environment: ShareControllerAppEnvironment(sharedContext: strongSelf.context.sharedContext), subject: .filter(peer: peerAndContactData.0.flatMap(EnginePeer.init), contactId: nil, contactData: contactData, completion: { peer, contactData in
-                                    guard let strongSelf = self, !contactData.basicData.phoneNumbers.isEmpty else {
+                                    guard let strongSelf = self, let phone = contactData.basicData.phoneNumbers.first?.value else {
                                         return
                                     }
-                                    let phone = contactData.basicData.phoneNumbers[0].value
                                     if let vCardData = contactData.serializedVCard() {
                                         let media = TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: peer?.id, vCardData: vCardData)
                                         let replyMessageSubject = strongSelf.presentationInterfaceState.interfaceState.replyMessageSubject

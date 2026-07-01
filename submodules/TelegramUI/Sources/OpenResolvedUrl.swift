@@ -1227,7 +1227,9 @@ func openResolvedUrlImpl(
             |> deliverOnMainQueue).start(next: { availability in
                 if case let .available(remainingCount) = availability {
                     let controller = context.sharedContext.makeStoryMediaEditorScreen(context: context, source: source, text: nil, link: nil, remainingCount: remainingCount, completion: { results, externalState, commit in
-                        let target: Stories.PendingTarget = results.first!.target
+                        guard let target: Stories.PendingTarget = results.first?.target else {
+                            return
+                        }
                         externalState.storyTarget = target
                         
                         if let rootController = context.sharedContext.mainWindow?.viewController as? TelegramRootControllerInterface {

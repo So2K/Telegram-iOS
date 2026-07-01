@@ -1438,7 +1438,7 @@ class TilingView: UIView {
                 if normalizedContentScale < 1.1, let cachedScaledImage = cachedScaledImage {
                     let cachedScale = cachedScaledImage.size.width / self.imageSize.width
                     let scaledImageRect = CGRect(origin: CGPoint(x: imageRect.minX * cachedScale, y: imageRect.minY * cachedScale), size: CGSize(width: imageRect.width * cachedScale, height: imageRect.height * cachedScale))
-                    tileImage = cachedScaledImage.cgImage!.cropping(to: scaledImageRect)
+                    tileImage = cachedScaledImage.cgImage?.cropping(to: scaledImageRect)
                 } else {
                     tileImage = image.cropping(to: imageRect)
                 }

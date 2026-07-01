@@ -25,8 +25,11 @@ private func generateBlurredContents(image: UIImage, dimColor: UIColor?) -> UIIm
     guard let context = DrawingContext(size: size, scale: 1.0, opaque: true, clear: false) else {
         return nil
     }
+    guard let cgImage = image.cgImage else {
+        return nil
+    }
     context.withFlippedContext { c in
-        c.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+        c.draw(cgImage, in: CGRect(origin: CGPoint(), size: size))
     }
 
     telegramFastBlurMore(Int32(context.size.width), Int32(context.size.height), Int32(context.bytesPerRow), context.bytes)
@@ -498,10 +501,13 @@ final class EffectImageLayer: SimpleLayer, GradientBackgroundPatternOverlayLayer
         #endif
         
         let composedContentImage = generateImage(size, contextGenerator: { size, context in
-            context.draw(backgroundImage.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+            guard let backgroundCgImage = backgroundImage.cgImage, let patternContentCgImage = patternContentImage.cgImage else {
+                return
+            }
+            context.draw(backgroundCgImage, in: CGRect(origin: CGPoint(), size: size))
             context.setBlendMode(.softLight)
             context.setAlpha(CGFloat(self.compositionOpacity))
-            context.draw(patternContentImage.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+            context.draw(patternContentCgImage, in: CGRect(origin: CGPoint(), size: size))
         }, opaque: true, scale: min(UIScreenScale, patternContentImage.scale))
         self.composedContentImage = composedContentImage
         
@@ -1319,7 +1325,11 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
 
                     var locations: [CGFloat] = [0.0, 1.0]
                     let colorSpace = CGColorSpaceCreateDeviceRGB()
-                    let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
+                    guard let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) else {
+                        context.setFillColor(UIColor(rgb: gradientColors[0]).cgColor)
+                        context.fill(CGRect(origin: CGPoint(), size: size))
+                        return
+                    }
 
                     context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                     context.rotate(by: CGFloat(gradientAngle) * CGFloat.pi / 180.0)
@@ -1670,10 +1680,10 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
         }
         if let validPatternImage = self.validPatternImage, !validPatternImage.rects.isEmpty, var modelRectIndex = self.modelRectIndex, let modelFile {
             let filteredRects = validPatternImage.rects.filter { $0.center.y > $0.containerSize.height * 0.1 && $0.center.y < $0.containerSize.height * 0.9 }
-            modelRectIndex = modelRectIndex % Int32(filteredRects.count);
-            
+            modelRectIndex = modelRectIndex % Int32(filteredRects.count)
+
             let rect = filteredRects[Int(modelRectIndex)]
-            
+
             let modelStickerNode: DefaultAnimatedStickerNodeImpl
             if let current = self.modelStickerNode {
                 modelStickerNode = current

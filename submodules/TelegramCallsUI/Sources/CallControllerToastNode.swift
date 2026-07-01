@@ -273,9 +273,9 @@ private class CallControllerToastItemNode: ASDisplayNode {
                     image = generateTintedImage(image: UIImage(bundleImageName: "Call/CallToastBattery"), color: .white)
             }
             
-            if transition.isAnimated, let image = image, let previousContent = self.iconNode.image {
+            if transition.isAnimated, let image = image, let previousContent = self.iconNode.image, let previousCgImage = previousContent.cgImage, let cgImage = image.cgImage {
                 self.iconNode.image = image
-                self.iconNode.layer.animate(from: previousContent.cgImage!, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
+                self.iconNode.layer.animate(from: previousCgImage, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
             } else {
                 self.iconNode.image = image
             }

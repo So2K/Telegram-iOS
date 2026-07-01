@@ -306,26 +306,26 @@ final class CallControllerButtonItemNode: HighlightTrackingButtonNode {
                     }
                 }
             
-                if let image = image {
+                if let image = image, let cgImage = image.cgImage {
                     context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                     context.scaleBy(x: imageScale, y: imageScale)
                     context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
                     
                     let imageRect = CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0), y: floor((size.height - image.size.height) / 2.0)), size: image.size)
                     if drawOverMask {
-                        context.clip(to: imageRect, mask: image.cgImage!)
+                        context.clip(to: imageRect, mask: cgImage)
                         context.setBlendMode(.copy)
                         context.setFillColor(UIColor.clear.cgColor)
                         context.fill(CGRect(origin: CGPoint(), size: size))
                     } else {
-                        context.draw(image.cgImage!, in: imageRect)
+                        context.draw(cgImage, in: imageRect)
                     }
                 }
             })
             
-            if transition.isAnimated, let contentBackgroundImage = contentBackgroundImage, let previousContent = self.contentBackgroundNode.image {
+            if transition.isAnimated, let contentBackgroundImage = contentBackgroundImage, let previousContent = self.contentBackgroundNode.image, let previousCgImage = previousContent.cgImage, let cgImage = contentBackgroundImage.cgImage {
                 self.contentBackgroundNode.image = contentBackgroundImage
-                self.contentBackgroundNode.layer.animate(from: previousContent.cgImage!, to: contentBackgroundImage.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
+                self.contentBackgroundNode.layer.animate(from: previousCgImage, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
             } else {
                 self.contentBackgroundNode.image = contentBackgroundImage
             }
@@ -344,9 +344,9 @@ final class CallControllerButtonItemNode: HighlightTrackingButtonNode {
                 }
                 self.contentNode.image = contentImage
                 self.contentNode.layer.animateRotation(from: -rotation, to: 0.0, duration: 0.5, timingFunction: kCAMediaTimingFunctionSpring)
-            } else if transition.isAnimated, let contentImage = contentImage, let previousContent = self.contentNode.image {
+            } else if transition.isAnimated, let contentImage = contentImage, let previousContent = self.contentNode.image, let previousCgImage = previousContent.cgImage, let cgImage = contentImage.cgImage {
                 self.contentNode.image = contentImage
-                self.contentNode.layer.animate(from: previousContent.cgImage!, to: contentImage.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
+                self.contentNode.layer.animate(from: previousCgImage, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
             } else {
                 self.contentNode.image = contentImage
             }

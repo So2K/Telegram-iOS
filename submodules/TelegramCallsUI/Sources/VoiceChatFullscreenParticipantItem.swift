@@ -49,7 +49,9 @@ private var fadeImage: UIImage? = {
             locations.append(t)
         }
 
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colors as CFArray, locations: &locations) else {
+            return
+        }
         context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     })
 }()

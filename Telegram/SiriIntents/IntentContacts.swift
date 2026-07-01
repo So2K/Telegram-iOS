@@ -34,6 +34,9 @@ private func parseAppSpecificContactReference(_ value: String) -> PeerId? {
     }
     let idString = String(value[value.index(value.startIndex, offsetBy: phonebookUsernamePrefix.count)...])
     if let id = Int64(idString) {
+        guard id > 0 else {
+            return nil
+        }
         return PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(id))
     }
     return nil

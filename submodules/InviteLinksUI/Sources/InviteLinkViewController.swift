@@ -33,9 +33,12 @@ private var subscriptionLinkIcon: UIImage? = {
         let colors: [CGColor] = [UIColor(rgb: 0x87d93b).cgColor, UIColor(rgb: 0x31b73b).cgColor]
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-        
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(UIColor(rgb: 0x31b73b).cgColor)
+            context.fill(bounds)
+        }
         
         if let image = generateTintedImage(image: UIImage(bundleImageName: "Item List/SubscriptionLink"), color: .white), let cgImage = image.cgImage {
             context.draw(cgImage, in: pathBounds)

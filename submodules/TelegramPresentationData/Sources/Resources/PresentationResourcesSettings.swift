@@ -15,9 +15,12 @@ public func renderSettingsIcon(name: String, scaleFactor: CGFloat = 1.0, backgro
             let colors: [CGColor] = backgroundColors.map(\.cgColor)
             
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-            
-            context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: size.height), end: CGPoint(x: 0.0, y: 0.0), options: CGGradientDrawingOptions())
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: size.height), end: CGPoint(x: 0.0, y: 0.0), options: CGGradientDrawingOptions())
+            } else if let color = backgroundColors.first {
+                context.setFillColor(color.cgColor)
+                context.fill(bounds)
+            }
             
             if let gradientImage, let cgImage = gradientImage.cgImage {
                 context.setBlendMode(.plusLighter)
@@ -183,8 +186,12 @@ public struct PresentationResourcesSettings {
             UIColor(rgb: 0xb56eec).cgColor
         ]
         var locations: [CGFloat] = [0.0, 0.15, 0.5, 0.85, 1.0]
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(UIColor(rgb: 0x6b93ff).cgColor)
+            context.fill(bounds)
+        }
         
         if let gradientImage, let cgImage = gradientImage.cgImage {
             context.setBlendMode(.plusLighter)
@@ -227,9 +234,12 @@ public struct PresentationResourcesSettings {
             UIColor(rgb: 0xdd6f12).cgColor
         ]
         var locations: [CGFloat] = [0.0, 1.0]
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
-
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(UIColor(rgb: 0xfec80f).cgColor)
+            context.fill(bounds)
+        }
         
         if let gradientImage, let cgImage = gradientImage.cgImage {
             context.setBlendMode(.plusLighter)
@@ -273,8 +283,12 @@ public struct PresentationResourcesSettings {
             UIColor(rgb: 0x34c27d).cgColor
         ]
         var locations: [CGFloat] = [0.0, 0.15, 0.5, 0.85, 1.0]
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(UIColor(rgb: 0x3ba1f2).cgColor)
+            context.fill(bounds)
+        }
         
         if let gradientImage, let cgImage = gradientImage.cgImage {
             context.setBlendMode(.plusLighter)

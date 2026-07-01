@@ -695,7 +695,7 @@ final class ColorGridComponent: Component {
                     topRightRadius = largeCornerRadius
                 } else if selectedColorIndex == palleteColors.count - 12 {
                     bottomLeftRadius = largeCornerRadius
-                }  else if selectedColorIndex == palleteColors.count - 1 {
+                } else if selectedColorIndex == palleteColors.count - 1 {
                     bottomRightRadius = largeCornerRadius
                 }
                 
@@ -734,11 +734,11 @@ final class ColorGridComponent: Component {
 
 private func generateSpectrumImage(size: CGSize) -> UIImage? {
     return generateImage(size, contextGenerator: { size, context in
-        if let image = UIImage(bundleImageName: "Media Editor/Spectrum") {
-            context.draw(image.cgImage!, in: CGRect(origin: .zero, size: size))
+        if let image = UIImage(bundleImageName: "Media Editor/Spectrum"), let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(origin: .zero, size: size))
         }
-        if let image = UIImage(bundleImageName: "Media Editor/Grayscale") {
-            context.draw(image.cgImage!, in: CGRect(origin: .zero, size: size))
+        if let image = UIImage(bundleImageName: "Media Editor/Grayscale"), let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(origin: .zero, size: size))
         }
     })
 }

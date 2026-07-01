@@ -62,14 +62,14 @@ final class SemanticStatusNodeSecretTimeoutContext: SemanticStatusNodeStateConte
             path.lineCapStyle = .round
             path.stroke()
             
-            if let iconImage = self.iconImage {
+            if let iconImage = self.iconImage, let iconCgImage = iconImage.cgImage {
                 context.saveGState()
                 let iconRect = CGRect(origin: CGPoint(), size: iconImage.size)
                 context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                 context.scaleBy(x: 1.0, y: -1.0)
                 context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
                 context.translateBy(x: 6.0, y: 8.0)
-                context.clip(to: iconRect, mask: iconImage.cgImage!)
+                context.clip(to: iconRect, mask: iconCgImage)
                 context.fill(iconRect)
                 context.restoreGState()
             }

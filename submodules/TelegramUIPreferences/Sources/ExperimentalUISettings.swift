@@ -51,6 +51,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
     public var logLanguageRecognition: Bool
     public var storiesExperiment: Bool
     public var storiesJpegExperiment: Bool
+    public var hideStories: Bool
     public var crashOnMemoryPressure: Bool
     public var dustEffect: Bool
     public var disableCallV2: Bool
@@ -102,6 +103,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
             logLanguageRecognition: false,
             storiesExperiment: false,
             storiesJpegExperiment: false,
+            hideStories: false,
             crashOnMemoryPressure: false,
             dustEffect: false,
             disableCallV2: false,
@@ -154,6 +156,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
         logLanguageRecognition: Bool,
         storiesExperiment: Bool,
         storiesJpegExperiment: Bool,
+        hideStories: Bool,
         crashOnMemoryPressure: Bool,
         dustEffect: Bool,
         disableCallV2: Bool,
@@ -203,6 +206,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
         self.logLanguageRecognition = logLanguageRecognition
         self.storiesExperiment = storiesExperiment
         self.storiesJpegExperiment = storiesJpegExperiment
+        self.hideStories = hideStories
         self.crashOnMemoryPressure = crashOnMemoryPressure
         self.dustEffect = dustEffect
         self.disableCallV2 = disableCallV2
@@ -256,6 +260,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
         self.logLanguageRecognition = try container.decodeIfPresent(Bool.self, forKey: "logLanguageRecognition") ?? false
         self.storiesExperiment = try container.decodeIfPresent(Bool.self, forKey: "storiesExperiment") ?? false
         self.storiesJpegExperiment = try container.decodeIfPresent(Bool.self, forKey: "storiesJpegExperiment") ?? false
+        self.hideStories = try container.decodeIfPresent(Bool.self, forKey: "hideStories") ?? false
         self.crashOnMemoryPressure = try container.decodeIfPresent(Bool.self, forKey: "crashOnMemoryPressure") ?? false
         self.dustEffect = try container.decodeIfPresent(Bool.self, forKey: "dustEffect") ?? false
         self.disableCallV2 = try container.decodeIfPresent(Bool.self, forKey: "disableCallV2") ?? false
@@ -309,6 +314,7 @@ public struct ExperimentalUISettings: Codable, Equatable {
         try container.encode(self.logLanguageRecognition, forKey: "logLanguageRecognition")
         try container.encode(self.storiesExperiment, forKey: "storiesExperiment")
         try container.encode(self.storiesJpegExperiment, forKey: "storiesJpegExperiment")
+        try container.encode(self.hideStories, forKey: "hideStories")
         try container.encode(self.crashOnMemoryPressure, forKey: "crashOnMemoryPressure")
         try container.encode(self.dustEffect, forKey: "dustEffect")
         try container.encode(self.disableCallV2, forKey: "disableCallV2")

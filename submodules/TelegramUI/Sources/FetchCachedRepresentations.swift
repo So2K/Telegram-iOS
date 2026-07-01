@@ -234,7 +234,7 @@ private func fetchCachedStickerAJpegRepresentation(resource: MediaResource, reso
             } else if let pngImage = UIImage(data: data) {
                 image = pngImage
             }
-            if let image = image {
+            if let image = image, let sourceImage = image.cgImage {
                 let path = NSTemporaryDirectory() + "\(Int64.random(in: Int64.min ... Int64.max))"
                 let url = URL(fileURLWithPath: path)
                 
@@ -247,23 +247,19 @@ private func fetchCachedStickerAJpegRepresentation(resource: MediaResource, reso
                 if let _ = representation.size {
                     colorImage = generateImage(size, contextGenerator: { size, context in
                         context.setBlendMode(.copy)
-                        context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                        context.draw(sourceImage, in: CGRect(origin: CGPoint(), size: size))
                     }, scale: 1.0)
                 } else {
                     colorImage = image
                 }
                 
-                let alphaImage = generateImage(size, contextGenerator: { size, context in
+                if let colorCGImage = colorImage?.cgImage, let alphaImage = generateImage(size, contextGenerator: { size, context in
                     context.setFillColor(UIColor.white.cgColor)
                     context.fill(CGRect(origin: CGPoint(), size: size))
-                    if let colorImage = colorImage {
-                        context.clip(to: CGRect(origin: CGPoint(), size: size), mask: colorImage.cgImage!)
-                    }
+                    context.clip(to: CGRect(origin: CGPoint(), size: size), mask: colorCGImage)
                     context.setFillColor(UIColor.black.cgColor)
                     context.fill(CGRect(origin: CGPoint(), size: size))
-                }, scale: 1.0)
-                
-                if let alphaImage = alphaImage, let colorDestination = CGImageDestinationCreateWithData(colorData as CFMutableData, kUTTypeJPEG, 1, nil), let alphaDestination = CGImageDestinationCreateWithData(alphaData as CFMutableData, kUTTypeJPEG, 1, nil) {
+                }, scale: 1.0), let alphaCGImage = alphaImage.cgImage, let colorDestination = CGImageDestinationCreateWithData(colorData as CFMutableData, kUTTypeJPEG, 1, nil), let alphaDestination = CGImageDestinationCreateWithData(alphaData as CFMutableData, kUTTypeJPEG, 1, nil) {
                     CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
                     CGImageDestinationSetProperties(alphaDestination, NSDictionary() as CFDictionary)
                     
@@ -283,10 +279,8 @@ private func fetchCachedStickerAJpegRepresentation(resource: MediaResource, reso
                     let optionsAlpha = NSMutableDictionary()
                     optionsAlpha.setObject(alphaQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                     
-                    if let colorImage = colorImage {
-                        CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
-                    }
-                    CGImageDestinationAddImage(alphaDestination, alphaImage.cgImage!, optionsAlpha as CFDictionary)
+                    CGImageDestinationAddImage(colorDestination, colorCGImage, options as CFDictionary)
+                    CGImageDestinationAddImage(alphaDestination, alphaCGImage, optionsAlpha as CFDictionary)
                     if CGImageDestinationFinalize(colorDestination) && CGImageDestinationFinalize(alphaDestination) {
                         let finalData = NSMutableData()
                         var colorSize: Int32 = Int32(colorData.length)
@@ -311,7 +305,7 @@ private func fetchCachedStickerAJpegRepresentation(resource: MediaResource, reso
 private func fetchCachedScaledImageRepresentation(resource: MediaResource, resourceData: MediaResourceData, representation: CachedScaledImageRepresentation) -> Signal<CachedMediaResourceRepresentationResult, NoError> {
     return Signal({ subscriber in
         if let data = try? Data(contentsOf: URL(fileURLWithPath: resourceData.path), options: [.mappedIfSafe]) {
-            if let image = UIImage(data: data) {
+            if let image = UIImage(data: data), let sourceImage = image.cgImage {
                 let path = NSTemporaryDirectory() + "\(Int64.random(in: Int64.min ... Int64.max))"
                 let url = URL(fileURLWithPath: path)
 
@@ -323,12 +317,10 @@ private func fetchCachedScaledImageRepresentation(resource: MediaResource, resou
                         size = image.size.fitted(representation.size)
                 }
                 
-                let colorImage = generateImage(size, contextGenerator: { size, context in
+                if let colorImage = generateImage(size, contextGenerator: { size, context in
                     context.setBlendMode(.copy)
-                    drawImage(context: context, image: image.cgImage!, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
-                }, scale: 1.0)!
-                
-                if let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
+                    drawImage(context: context, image: sourceImage, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
+                }, scale: 1.0), let colorCGImage = colorImage.cgImage, let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
                     CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
                     
                     let colorQuality: Float = 0.5
@@ -336,7 +328,7 @@ private func fetchCachedScaledImageRepresentation(resource: MediaResource, resou
                     let options = NSMutableDictionary()
                     options.setObject(colorQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                     
-                    CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
+                    CGImageDestinationAddImage(colorDestination, colorCGImage, options as CFDictionary)
                     if CGImageDestinationFinalize(colorDestination) {
                         subscriber.putNext(.temporaryPath(path))
                         subscriber.putCompletion()
@@ -418,18 +410,16 @@ private func fetchCachedScaledVideoFirstFrameRepresentation(account: Account, re
     |> mapToSignal { firstFrame -> Signal<CachedMediaResourceRepresentationResult, NoError> in
             return Signal({ subscriber in
                 if let data = try? Data(contentsOf: URL(fileURLWithPath: firstFrame.path), options: [.mappedIfSafe]) {
-                    if let image = UIImage(data: data) {
+                    if let image = UIImage(data: data), let sourceImage = image.cgImage {
                         let path = NSTemporaryDirectory() + "\(Int64.random(in: Int64.min ... Int64.max))"
                         let url = URL(fileURLWithPath: path)
                         
                         let size = representation.size
                         
-                        let colorImage = generateImage(size, contextGenerator: { size, context in
+                        if let colorImage = generateImage(size, contextGenerator: { size, context in
                             context.setBlendMode(.copy)
-                            context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
-                        }, scale: 1.0)!
-                        
-                        if let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
+                            context.draw(sourceImage, in: CGRect(origin: CGPoint(), size: size))
+                        }, scale: 1.0), let colorCGImage = colorImage.cgImage, let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
                             CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
                             
                             let colorQuality: Float = 0.5
@@ -437,7 +427,7 @@ private func fetchCachedScaledVideoFirstFrameRepresentation(account: Account, re
                             let options = NSMutableDictionary()
                             options.setObject(colorQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                             
-                            CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
+                            CGImageDestinationAddImage(colorDestination, colorCGImage, options as CFDictionary)
                             if CGImageDestinationFinalize(colorDestination) {
                                 subscriber.putNext(.temporaryPath(path))
                                 subscriber.putCompletion()
@@ -457,7 +447,7 @@ private func fetchCachedBlurredWallpaperRepresentation(resource: MediaResource, 
                 let path = NSTemporaryDirectory() + "\(Int64.random(in: Int64.min ... Int64.max))"
                 let url = URL(fileURLWithPath: path)
                 
-                if let colorImage = blurredImage(image, radius: 30.0), let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
+                if let colorImage = blurredImage(image, radius: 30.0), let colorCGImage = colorImage.cgImage, let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
                     CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
 
                     let colorQuality: Float = 0.5
@@ -465,7 +455,7 @@ private func fetchCachedBlurredWallpaperRepresentation(resource: MediaResource, 
                     let options = NSMutableDictionary()
                     options.setObject(colorQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                     
-                    CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
+                    CGImageDestinationAddImage(colorDestination, colorCGImage, options as CFDictionary)
                     if CGImageDestinationFinalize(colorDestination) {
                         subscriber.putNext(.temporaryPath(path))
                         subscriber.putCompletion()
@@ -508,7 +498,7 @@ private func fetchCachedAlbumArtworkRepresentation(resource: MediaResource, data
         let result = readAlbumArtworkData(data)
         switch result {
             case let .artworkData(data):
-                if let image = UIImage(data: data) {
+                if let image = UIImage(data: data), let sourceImage = image.cgImage {
                     let path = NSTemporaryDirectory() + "\(Int64.random(in: Int64.min ... Int64.max))"
                     let url = URL(fileURLWithPath: path)
                     
@@ -517,12 +507,10 @@ private func fetchCachedAlbumArtworkRepresentation(resource: MediaResource, data
                         size = size.aspectFilled(targetSize)
                     }
                     
-                    let colorImage = generateImage(size, contextGenerator: { size, context in
+                    if let colorImage = generateImage(size, contextGenerator: { size, context in
                         context.setBlendMode(.copy)
-                        drawImage(context: context, image: image.cgImage!, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
-                    })!
-                    
-                    if let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
+                        drawImage(context: context, image: sourceImage, orientation: image.imageOrientation, in: CGRect(origin: CGPoint(), size: size))
+                    }), let colorCGImage = colorImage.cgImage, let colorDestination = CGImageDestinationCreateWithURL(url as CFURL, kUTTypeJPEG, 1, nil) {
                         CGImageDestinationSetProperties(colorDestination, NSDictionary() as CFDictionary)
                         
                         let colorQuality: Float = 0.5
@@ -530,7 +518,7 @@ private func fetchCachedAlbumArtworkRepresentation(resource: MediaResource, data
                         let options = NSMutableDictionary()
                         options.setObject(colorQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                         
-                        CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
+                        CGImageDestinationAddImage(colorDestination, colorCGImage, options as CFDictionary)
                         if CGImageDestinationFinalize(colorDestination) {
                             subscriber.putNext(.temporaryPath(path))
                         }

@@ -25,9 +25,11 @@ private func generateGradient(baseAlpha: CGFloat) -> UIImage? {
                 context.rotate(by: CGFloat(i == 0 ? 1.0 : -1.0) * CGFloat.pi * 0.5)
                 let adjustedRect = CGRect(origin: CGPoint(x: -shadowFrame.height * 0.5, y: -shadowFrame.width * 0.5), size: CGSize(width: shadowFrame.height, height: shadowFrame.width))
                 
-                context.clip(to: adjustedRect, mask: shadowImage.cgImage!)
-                context.setFillColor(foregroundColor.cgColor)
-                context.fill(adjustedRect)
+                if let shadowCgImage = shadowImage.cgImage {
+                    context.clip(to: adjustedRect, mask: shadowCgImage)
+                    context.setFillColor(foregroundColor.cgColor)
+                    context.fill(adjustedRect)
+                }
                 
                 context.restoreGState()
             }

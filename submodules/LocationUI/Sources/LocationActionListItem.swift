@@ -64,10 +64,10 @@ private func generateLocationIcon(theme: PresentationTheme) -> UIImage {
         context.scaleBy(x: 1.0, y: -1.0)
         context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
         
-        if let image = generateTintedImage(image: UIImage(bundleImageName: "Location/SendLocationIcon"), color: theme.chat.inputPanel.actionControlForegroundColor) {
-            context.draw(image.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0), y: floor((size.height - image.size.height) / 2.0)), size: image.size))
+        if let image = generateTintedImage(image: UIImage(bundleImageName: "Location/SendLocationIcon"), color: theme.chat.inputPanel.actionControlForegroundColor), let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0), y: floor((size.height - image.size.height) / 2.0)), size: image.size))
         }
-    })!
+    }) ?? UIImage()
 }
 
 private enum LiveLocationIconType {
@@ -99,8 +99,8 @@ private func generateLiveLocationIcon(theme: PresentationTheme, type: LiveLocati
         context.scaleBy(x: 1.0, y: -1.0)
         context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
         
-        if let image = generateTintedImage(image: UIImage(bundleImageName: imageName), color: theme.chat.inputPanel.actionControlForegroundColor) {
-            context.draw(image.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0), y: floor((size.height - image.size.height) / 2.0)), size: image.size))
+        if let image = generateTintedImage(image: UIImage(bundleImageName: imageName), color: theme.chat.inputPanel.actionControlForegroundColor), let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(origin: CGPoint(x: floor((size.width - image.size.width) / 2.0), y: floor((size.height - image.size.height) / 2.0)), size: image.size))
             
             if case .extend = type {
                 context.setStrokeColor(theme.chat.inputPanel.actionControlForegroundColor.cgColor)
@@ -132,7 +132,7 @@ private func generateLiveLocationIcon(theme: PresentationTheme, type: LiveLocati
                 context.strokePath()
             }
         }
-    })!
+    }) ?? UIImage()
 }
 
 final class LocationActionListItem: ListViewItem {

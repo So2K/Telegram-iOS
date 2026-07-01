@@ -218,6 +218,9 @@ public func parseAppSpecificContactReference(_ value: String) -> EnginePeer.Id? 
     }
     let idString = String(value[value.index(value.startIndex, offsetBy: phonebookUsernamePrefix.count)...])
     if let id = Int64(idString) {
+        guard id > 0 else {
+            return nil
+        }
         return EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(id))
     }
     return nil

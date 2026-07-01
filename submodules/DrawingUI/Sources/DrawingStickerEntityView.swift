@@ -266,7 +266,9 @@ public class DrawingStickerEntityView: DrawingEntityView {
                     break
                 }
                 
-                context.draw(image.cgImage!, in: imageRect)
+                if let cgImage = image.cgImage {
+                    context.draw(cgImage, in: imageRect)
+                }
             }
             
             var synchronous = false
@@ -1101,7 +1103,7 @@ final class DrawingStickerEntitySelectionView: DrawingEntitySelectionView {
                 entityView.onInteractionUpdated(true)
             }
             let scale = gestureRecognizer.scale
-            entity.scale = entity.scale * scale
+            entity.scale *= scale
             entityView.update(animated: false)
 
             gestureRecognizer.scale = 1.0

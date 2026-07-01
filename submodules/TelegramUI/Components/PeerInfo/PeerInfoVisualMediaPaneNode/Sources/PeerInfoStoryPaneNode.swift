@@ -5455,13 +5455,20 @@ private class MediaListSelectionRecognizer: UIPanGestureRecognizer {
         if let shouldBegin = self.shouldBegin, !shouldBegin() {
             self.state = .failed
         } else {
-            let touch = touches.first!
+            guard let touch = touches.first else {
+                self.state = .failed
+                return
+            }
             self.initialLocation = touch.location(in: self.view)
         }
     }
     
     public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        let location = touches.first!.location(in: self.view)
+        guard let touch = touches.first else {
+            self.state = .failed
+            return
+        }
+        let location = touch.location(in: self.view)
         let translation = location.offsetBy(dx: -self.initialLocation.x, dy: -self.initialLocation.y)
         
         let touchesArray = Array(touches)

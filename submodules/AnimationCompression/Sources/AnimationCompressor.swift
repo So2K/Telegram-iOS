@@ -118,25 +118,38 @@ final class Texture {
             assert(false, "Image size does not match")
             return
         }
+        let requiredDataLength = image.bytesPerRow * self.height
+        guard image.bytesPerRow > 0, image.data.count >= requiredDataLength else {
+            return
+        }
         let region = MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0), size: MTLSize(width: image.width, height: image.height, depth: 1))
         
         if let directBuffer = self.directBuffer, directBuffer.bytesPerRow == image.bytesPerRow {
             image.data.withUnsafeBytes { bytes in
-                let _ = memcpy(directBuffer.buffer.contents(), bytes.baseAddress!, image.bytesPerRow * self.height)
+                guard let baseAddress = bytes.baseAddress else {
+                    return
+                }
+                let _ = memcpy(directBuffer.buffer.contents(), baseAddress, requiredDataLength)
             }
         } else {
             image.data.withUnsafeBytes { bytes in
-                self.texture.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: image.bytesPerRow)
+                guard let baseAddress = bytes.baseAddress else {
+                    return
+                }
+                self.texture.replace(region: region, mipmapLevel: 0, withBytes: baseAddress, bytesPerRow: image.bytesPerRow)
             }
         }
     }
     
-    func readDirect(width: Int, height: Int, bytesPerRow: Int, read: (UnsafeMutableRawPointer?) -> UnsafeRawPointer) {
+    func readDirect(width: Int, height: Int, bytesPerRow: Int, read: (UnsafeMutableRawPointer?) -> UnsafeRawPointer?) {
         if let directBuffer = self.directBuffer, width == self.width, height == self.height, bytesPerRow == directBuffer.bytesPerRow {
             let _ = read(directBuffer.buffer.contents())
         } else {
             let region = MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0), size: MTLSize(width: width, height: height, depth: 1))
-            self.texture.replace(region: region, mipmapLevel: 0, withBytes: read(nil), bytesPerRow: bytesPerRow)
+            guard let bytes = read(nil) else {
+                return
+            }
+            self.texture.replace(region: region, mipmapLevel: 0, withBytes: bytes, bytesPerRow: bytesPerRow)
         }
     }
 }
@@ -262,6 +275,10 @@ public final class AnimationCompressor {
             
             assert(image.width % 8 == 0)
             assert(image.height % 8 == 0)
+            let requiredDataLength = image.bytesPerRow * image.height
+            guard image.width > 0, image.height > 0, image.bytesPerRow > 0, image.width % 8 == 0, image.height % 8 == 0, image.data.count >= requiredDataLength else {
+                return
+            }
             
             let inputTexture: Texture
             if let current = compressor.inputTexture, current.width == image.width, current.height == image.height {
@@ -345,6 +362,7 @@ public final class AnimationCompressor {
             
             commandBuffer.addCompletedHandler { _ in
                 let buffer = WriteBuffer()
+                var didFail = false
                 
                 buffer.writeInt32(0x543ee445)
                 buffer.writeInt32(4)
@@ -361,12 +379,25 @@ public final class AnimationCompressor {
                     
                     var textureBytes = Data(count: bytesPerRow * compressedTextures.textures[i].height)
                     textureBytes.withUnsafeMutableBytes { bytes in
-                        compressedTextures.textures[i].texture.getBytes(bytes.baseAddress!, bytesPerRow: bytesPerRow, bytesPerImage: bytesPerRow * compressedTextures.textures[i].height, from: region, mipmapLevel: 0, slice: 0)
+                        guard let baseAddress = bytes.baseAddress else {
+                            didFail = true
+                            return
+                        }
+                        compressedTextures.textures[i].texture.getBytes(baseAddress, bytesPerRow: bytesPerRow, bytesPerImage: bytesPerRow * compressedTextures.textures[i].height, from: region, mipmapLevel: 0, slice: 0)
                         
-                        let huffmanData = writeDCTBlocks(Int32(compressedTextures.textures[i].width), Int32(compressedTextures.textures[i].height), bytes.baseAddress!.assumingMemoryBound(to: Float32.self))!
+                        guard let huffmanData = writeDCTBlocks(Int32(compressedTextures.textures[i].width), Int32(compressedTextures.textures[i].height), baseAddress.assumingMemoryBound(to: Float32.self)) else {
+                            didFail = true
+                            return
+                        }
                         buffer.writeInt32(Int32(huffmanData.count))
                         buffer.write(huffmanData)
                     }
+                    if didFail {
+                        break
+                    }
+                }
+                guard !didFail else {
+                    return
                 }
                 
                 DispatchQueue.main.async {

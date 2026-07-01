@@ -226,12 +226,13 @@ private final class ScrollingTooltipAnimationComponent: Component {
                 UIColor(white: 1.0, alpha: 1.0)
             ] as [UIColor]).map(\.cgColor)
             var locations: [CGFloat] = [0.0, gradientFraction, 1.0 - gradientFraction, 1.0]
-            let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
-            context.setBlendMode(.destinationOut)
+            if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) {
+                context.setBlendMode(.destinationOut)
 
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: self.bounds.height), options: [])
+                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: self.bounds.height), options: [])
 
-            context.setBlendMode(.normal)
+                context.setBlendMode(.normal)
+            }
             context.setFillColor(UIColor.white.cgColor)
 
             let indicatorHeight: CGFloat = 10.0

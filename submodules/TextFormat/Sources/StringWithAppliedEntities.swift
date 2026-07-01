@@ -6,6 +6,19 @@ import libprisma
 import SwiftSignalKit
 import TelegramPresentationData
 
+private let maxAppliedEntityUrlLength = 8192
+
+private func isSafeAppliedEntityUrl(_ url: String) -> Bool {
+    let trimmedUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedUrl.isEmpty || trimmedUrl.utf16.count > maxAppliedEntityUrlLength {
+        return false
+    }
+    if trimmedUrl.lowercased().hasPrefix("data:") {
+        return false
+    }
+    return true
+}
+
 public func chatInputStateStringWithAppliedEntities(_ text: String, entities: [MessageTextEntity]) -> NSAttributedString {
     var nsString: NSString?
     let string = NSMutableAttributedString(string: text)
@@ -37,7 +50,9 @@ public func chatInputStateStringWithAppliedEntities(_ text: String, entities: [M
         case let .TextMention(peerId):
             string.addAttribute(ChatTextInputAttributes.textMention, value: ChatTextInputTextMentionAttribute(peerId: peerId), range: range)
         case let .TextUrl(url):
-            string.addAttribute(ChatTextInputAttributes.textUrl, value: ChatTextInputTextUrlAttribute(url: url), range: range)
+            if isSafeAppliedEntityUrl(url) {
+                string.addAttribute(ChatTextInputAttributes.textUrl, value: ChatTextInputTextUrlAttribute(url: url), range: range)
+            }
         case let .FormattedDate(_, date):
             string.addAttribute(ChatTextInputAttributes.date, value: ChatTextInputTextDateAttribute(date: date), range: range)
         case .Code:
@@ -194,14 +209,18 @@ public func stringWithAppliedEntities(_ text: String, entities: [MessageTextEnti
         }
         switch entity.type {
             case .Url:
+                if nsString == nil {
+                    nsString = string.string as NSString
+                }
+                let url = nsString!.substring(with: range)
+                if !isSafeAppliedEntityUrl(url) {
+                    continue
+                }
                 string.addAttribute(NSAttributedString.Key.foregroundColor, value: linkColor, range: range)
                 if underlineLinks {
                     string.addAttribute(NSAttributedString.Key.underlineStyle, value: NSUnderlineStyle.single.rawValue as NSNumber, range: range)
                 }
-                if nsString == nil {
-                    nsString = string.string as NSString
-                }
-                string.addAttribute(NSAttributedString.Key(rawValue: TelegramTextAttributes.URL), value: nsString!.substring(with: range), range: range)
+                string.addAttribute(NSAttributedString.Key(rawValue: TelegramTextAttributes.URL), value: url, range: range)
             case .Email:
                 string.addAttribute(NSAttributedString.Key.foregroundColor, value: linkColor, range: range)
                 if nsString == nil {
@@ -221,6 +240,9 @@ public func stringWithAppliedEntities(_ text: String, entities: [MessageTextEnti
                 }
                 string.addAttribute(NSAttributedString.Key(rawValue: TelegramTextAttributes.URL), value: "tel:\(nsString!.substring(with: range))", range: range)
             case let .TextUrl(url):
+                if !isSafeAppliedEntityUrl(url) {
+                    continue
+                }
                 string.addAttribute(NSAttributedString.Key.foregroundColor, value: linkColor, range: range)
                 if nsString == nil {
                     nsString = string.string as NSString

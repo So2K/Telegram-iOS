@@ -42,7 +42,9 @@ public final class InstantPageTileNode: ASDisplayNode {
     }
     
     @objc override public class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if let parameters = parameters as? InstantPageTileNodeParameters {
             if !isRasterizing {

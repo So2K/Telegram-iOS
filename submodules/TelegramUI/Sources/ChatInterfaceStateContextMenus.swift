@@ -2745,8 +2745,8 @@ func chatAvailableMessageActionsImpl(engine: TelegramEngine, accountPeerId: Engi
             }
         }
                 
-        if !optionsMap.isEmpty {
-            var reducedOptions = optionsMap.values.first!
+        if let firstOptions = optionsMap.values.first {
+            var reducedOptions = firstOptions
             for value in optionsMap.values {
                 reducedOptions.formIntersection(value)
             }

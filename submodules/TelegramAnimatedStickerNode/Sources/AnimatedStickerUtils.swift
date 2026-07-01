@@ -34,36 +34,50 @@ public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzM
                         return
                     }
                     
+                    guard size.width.isFinite, size.height.isFinite, size.width > 0.0, size.height > 0.0, size.width <= CGFloat(Int32.max), size.height <= CGFloat(Int32.max) else {
+                        subscriber.putCompletion()
+                        return
+                    }
+                    let pixelWidth = Int(size.width)
+                    let pixelHeight = Int(size.height)
+                    guard pixelWidth > 0, pixelHeight > 0 else {
+                        subscriber.putCompletion()
+                        return
+                    }
+
                     guard let context = DrawingContext(size: size, scale: 1.0, clear: true) else {
                         subscriber.putCompletion()
                         return
                     }
-                    player.renderFrame(with: 0, into: context.bytes.assumingMemoryBound(to: UInt8.self), width: Int32(size.width), height: Int32(size.height), bytesPerRow: Int32(context.bytesPerRow))
+                    player.renderFrame(with: 0, into: context.bytes.assumingMemoryBound(to: UInt8.self), width: Int32(pixelWidth), height: Int32(pixelHeight), bytesPerRow: Int32(context.bytesPerRow))
                     
-                    let yuvaPixelsPerAlphaRow = (Int(size.width) + 1) & (~1)
+                    let yuvaPixelsPerAlphaRow = (pixelWidth + 1) & (~1)
                     assert(yuvaPixelsPerAlphaRow % 2 == 0)
                     
-                    let yuvaLength = Int(size.width) * Int(size.height) * 2 + yuvaPixelsPerAlphaRow * Int(size.height) / 2
-                    let yuvaFrameData = malloc(yuvaLength)!
+                    let yuvaLength = pixelWidth * pixelHeight * 2 + yuvaPixelsPerAlphaRow * pixelHeight / 2
+                    guard let yuvaFrameData = malloc(yuvaLength) else {
+                        subscriber.putCompletion()
+                        return
+                    }
                     memset(yuvaFrameData, 0, yuvaLength)
                     
                     defer {
                         free(yuvaFrameData)
                     }
                     
-                    encodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), context.bytes.assumingMemoryBound(to: UInt8.self), Int32(size.width), Int32(size.height), Int32(context.bytesPerRow), true, true)
-                    decodeYUVAToRGBA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), context.bytes.assumingMemoryBound(to: UInt8.self), Int32(size.width), Int32(size.height), Int32(context.bytesPerRow))
+                    encodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), context.bytes.assumingMemoryBound(to: UInt8.self), Int32(pixelWidth), Int32(pixelHeight), Int32(context.bytesPerRow), true, true)
+                    decodeYUVAToRGBA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), context.bytes.assumingMemoryBound(to: UInt8.self), Int32(pixelWidth), Int32(pixelHeight), Int32(context.bytesPerRow))
                     
-                    if let colorSourceImage = context.generateImage(), let alphaImage = generateGrayscaleAlphaMaskImage(image: colorSourceImage) {
+                    if let colorSourceImage = context.generateImage(), let colorSourceCgImage = colorSourceImage.cgImage, let alphaImage = generateGrayscaleAlphaMaskImage(image: colorSourceImage), let alphaCgImage = alphaImage.cgImage {
                         guard let colorContext = DrawingContext(size: size, scale: 1.0, clear: false) else {
                             return
                         }
                         colorContext.withFlippedContext { c in
                             c.setFillColor(UIColor.black.cgColor)
                             c.fill(CGRect(origin: CGPoint(), size: size))
-                            c.draw(colorSourceImage.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                            c.draw(colorSourceCgImage, in: CGRect(origin: CGPoint(), size: size))
                         }
-                        guard let colorImage = colorContext.generateImage() else {
+                        guard let colorImage = colorContext.generateImage(), let colorCgImage = colorImage.cgImage else {
                             return
                         }
                         
@@ -85,8 +99,8 @@ public func fetchCompressedLottieFirstFrameAJpeg(data: Data, size: CGSize, fitzM
                             let optionsAlpha = NSMutableDictionary()
                             optionsAlpha.setObject(alphaQuality as NSNumber, forKey: kCGImageDestinationLossyCompressionQuality as NSString)
                             
-                            CGImageDestinationAddImage(colorDestination, colorImage.cgImage!, options as CFDictionary)
-                            CGImageDestinationAddImage(alphaDestination, alphaImage.cgImage!, optionsAlpha as CFDictionary)
+                            CGImageDestinationAddImage(colorDestination, colorCgImage, options as CFDictionary)
+                            CGImageDestinationAddImage(alphaDestination, alphaCgImage, optionsAlpha as CFDictionary)
                             if CGImageDestinationFinalize(colorDestination) && CGImageDestinationFinalize(alphaDestination) {
                                 let finalData = NSMutableData()
                                 var colorSize: Int32 = Int32(colorData.length)
@@ -139,7 +153,16 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
                         return
                     }
                     
-                    let bytesPerRow = DeviceGraphicsContextSettings.shared.bytesPerRow(forWidth: Int(size.width))
+                    guard size.width.isFinite, size.height.isFinite, size.width > 0.0, size.height > 0.0, size.width <= CGFloat(Int32.max), size.height <= CGFloat(Int32.max) else {
+                        return
+                    }
+                    let pixelWidth = Int(size.width)
+                    let pixelHeight = Int(size.height)
+                    guard pixelWidth > 0, pixelHeight > 0 else {
+                        return
+                    }
+
+                    let bytesPerRow = DeviceGraphicsContextSettings.shared.bytesPerRow(forWidth: pixelWidth)
                     
                     var currentFrame: Int32 = 0
                     
@@ -156,27 +179,36 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
                     var frameCount: Int32 = player.frameCount
                     writeData(&fps, length: 4)
                     writeData(&frameCount, length: 4)
-                    var widthValue: Int32 = Int32(size.width)
-                    var heightValue: Int32 = Int32(size.height)
+                    var widthValue: Int32 = Int32(pixelWidth)
+                    var heightValue: Int32 = Int32(pixelHeight)
                     var bytesPerRowValue: Int32 = Int32(bytesPerRow)
                     writeData(&widthValue, length: 4)
                     writeData(&heightValue, length: 4)
                     writeData(&bytesPerRowValue, length: 4)
                     
-                    let frameLength = bytesPerRow * Int(size.height)
+                    let frameLength = bytesPerRow * pixelHeight
                     assert(frameLength % 16 == 0)
                     
-                    let currentFrameData = malloc(frameLength)!
+                    guard let currentFrameData = malloc(frameLength) else {
+                        return
+                    }
                     memset(currentFrameData, 0, frameLength)
                     
-                    let yuvaPixelsPerAlphaRow = (Int(size.width) + 1) & (~1)
+                    let yuvaPixelsPerAlphaRow = (pixelWidth + 1) & (~1)
                     assert(yuvaPixelsPerAlphaRow % 2 == 0)
                     
-                    let yuvaLength = Int(size.width) * Int(size.height) * 2 + yuvaPixelsPerAlphaRow * Int(size.height) / 2
-                    var yuvaFrameData = malloc(yuvaLength)!
+                    let yuvaLength = pixelWidth * pixelHeight * 2 + yuvaPixelsPerAlphaRow * pixelHeight / 2
+                    guard var yuvaFrameData = malloc(yuvaLength) else {
+                        free(currentFrameData)
+                        return
+                    }
                     memset(yuvaFrameData, 0, yuvaLength)
                     
-                    var previousYuvaFrameData = malloc(yuvaLength)!
+                    guard var previousYuvaFrameData = malloc(yuvaLength) else {
+                        free(currentFrameData)
+                        free(yuvaFrameData)
+                        return
+                    }
                     memset(previousYuvaFrameData, 0, yuvaLength)
                     
                     defer {
@@ -188,7 +220,9 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
                     var compressedFrameData = Data(count: frameLength)
                     let compressedFrameDataLength = compressedFrameData.count
                     
-                    let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE))!
+                    guard let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE)) else {
+                        return
+                    }
                     defer {
                         free(scratchData)
                     }
@@ -200,12 +234,12 @@ public func cacheAnimatedStickerFrames(data: Data, size: CGSize, fitzModifier: E
                         
                         let drawStartTime = CACurrentMediaTime()
                         memset(currentFrameData, 0, frameLength)
-                        player.renderFrame(with: Int32(currentFrame), into: currentFrameData.assumingMemoryBound(to: UInt8.self), width: Int32(size.width), height: Int32(size.height), bytesPerRow: Int32(bytesPerRow))
+                        player.renderFrame(with: Int32(currentFrame), into: currentFrameData.assumingMemoryBound(to: UInt8.self), width: Int32(pixelWidth), height: Int32(pixelHeight), bytesPerRow: Int32(bytesPerRow))
                         drawingTime += CACurrentMediaTime() - drawStartTime
                         
                         let appendStartTime = CACurrentMediaTime()
                         
-                        encodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), currentFrameData.assumingMemoryBound(to: UInt8.self), Int32(size.width), Int32(size.height), Int32(bytesPerRow), true, true)
+                        encodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), currentFrameData.assumingMemoryBound(to: UInt8.self), Int32(pixelWidth), Int32(pixelHeight), Int32(bytesPerRow), true, true)
                         
                         appendingTime += CACurrentMediaTime() - appendStartTime
                         
@@ -273,7 +307,16 @@ public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String
                 return
             }
             
-            let bytesPerRow = DeviceGraphicsContextSettings.shared.bytesPerRow(forWidth: Int(size.width))
+            guard size.width.isFinite, size.height.isFinite, size.width > 0.0, size.height > 0.0, size.width <= CGFloat(Int32.max), size.height <= CGFloat(Int32.max) else {
+                return
+            }
+            let pixelWidth = Int(size.width)
+            let pixelHeight = Int(size.height)
+            guard pixelWidth > 0, pixelHeight > 0 else {
+                return
+            }
+
+            let bytesPerRow = DeviceGraphicsContextSettings.shared.bytesPerRow(forWidth: pixelWidth)
             
             var currentFrame: Int32 = 0
             
@@ -290,27 +333,36 @@ public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String
             var frameCount: Int32 = 0
             writeData(&fps, length: 4)
             writeData(&frameCount, length: 4)
-            var widthValue: Int32 = Int32(size.width)
-            var heightValue: Int32 = Int32(size.height)
+            var widthValue: Int32 = Int32(pixelWidth)
+            var heightValue: Int32 = Int32(pixelHeight)
             var bytesPerRowValue: Int32 = Int32(bytesPerRow)
             writeData(&widthValue, length: 4)
             writeData(&heightValue, length: 4)
             writeData(&bytesPerRowValue, length: 4)
             
-            let frameLength = bytesPerRow * Int(size.height)
+            let frameLength = bytesPerRow * pixelHeight
             assert(frameLength % 16 == 0)
             
-            let currentFrameData = malloc(frameLength)!
+            guard let currentFrameData = malloc(frameLength) else {
+                return
+            }
             memset(currentFrameData, 0, frameLength)
             
-            let yuvaPixelsPerAlphaRow = (Int(size.width) + 1) & (~1)
+            let yuvaPixelsPerAlphaRow = (pixelWidth + 1) & (~1)
             assert(yuvaPixelsPerAlphaRow % 2 == 0)
             
-            let yuvaLength = Int(size.width) * Int(size.height) * 2 + yuvaPixelsPerAlphaRow * Int(size.height) / 2
-            var yuvaFrameData = malloc(yuvaLength)!
+            let yuvaLength = pixelWidth * pixelHeight * 2 + yuvaPixelsPerAlphaRow * pixelHeight / 2
+            guard var yuvaFrameData = malloc(yuvaLength) else {
+                free(currentFrameData)
+                return
+            }
             memset(yuvaFrameData, 0, yuvaLength)
             
-            var previousYuvaFrameData = malloc(yuvaLength)!
+            guard var previousYuvaFrameData = malloc(yuvaLength) else {
+                free(currentFrameData)
+                free(yuvaFrameData)
+                return
+            }
             memset(previousYuvaFrameData, 0, yuvaLength)
             
             defer {
@@ -322,7 +374,9 @@ public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String
             var compressedFrameData = Data(count: frameLength)
             let compressedFrameDataLength = compressedFrameData.count
             
-            let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE))!
+            guard let scratchData = malloc(compression_encode_scratch_buffer_size(COMPRESSION_LZFSE)) else {
+                return
+            }
             defer {
                 free(scratchData)
             }
@@ -343,15 +397,16 @@ public func cacheVideoStickerFrames(path: String, size: CGSize, cacheKey: String
                     break
                 }
                 
-                let imageBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer)
-                CVPixelBufferLockBaseAddress(imageBuffer!, CVPixelBufferLockFlags(rawValue: 0))
-                let originalBytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer!)
-                let originalWidth = CVPixelBufferGetWidth(imageBuffer!)
-                let originalHeight = CVPixelBufferGetHeight(imageBuffer!)
-                if let srcBuffer = CVPixelBufferGetBaseAddress(imageBuffer!) {
-                    resizeAndEncodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), srcBuffer.assumingMemoryBound(to: UInt8.self), Int32(size.width), Int32(size.height), Int32(bytesPerRow), Int32(originalWidth), Int32(originalHeight), Int32(originalBytesPerRow), false)
+                if let imageBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) {
+                    CVPixelBufferLockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0))
+                    let originalBytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+                    let originalWidth = CVPixelBufferGetWidth(imageBuffer)
+                    let originalHeight = CVPixelBufferGetHeight(imageBuffer)
+                    if let srcBuffer = CVPixelBufferGetBaseAddress(imageBuffer) {
+                        resizeAndEncodeRGBAToYUVA(yuvaFrameData.assumingMemoryBound(to: UInt8.self), srcBuffer.assumingMemoryBound(to: UInt8.self), Int32(pixelWidth), Int32(pixelHeight), Int32(bytesPerRow), Int32(originalWidth), Int32(originalHeight), Int32(originalBytesPerRow), false)
+                    }
+                    CVPixelBufferUnlockBaseAddress(imageBuffer, CVPixelBufferLockFlags(rawValue: 0))
                 }
-                CVPixelBufferUnlockBaseAddress(imageBuffer!, CVPixelBufferLockFlags(rawValue: 0))
                
                 var lhs = previousYuvaFrameData.assumingMemoryBound(to: UInt64.self)
                 var rhs = yuvaFrameData.assumingMemoryBound(to: UInt64.self)

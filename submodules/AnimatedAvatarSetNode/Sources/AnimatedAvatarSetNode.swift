@@ -129,20 +129,24 @@ private final class ContentNode: ASDisplayNode {
     
     private func updateImage(image: UIImage, size: CGSize, spacing: CGFloat) {
         self.unclippedNode.image = image
-        self.clippedNode.image = generateImage(size, rotatedContext: { size, context in
-            context.clear(CGRect(origin: CGPoint(), size: size))
-            context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-            context.scaleBy(x: 1.0, y: -1.0)
-            context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-            context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
-            context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-            context.scaleBy(x: 1.0, y: -1.0)
-            context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-            
-            context.setBlendMode(.copy)
-            context.setFillColor(UIColor.clear.cgColor)
-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
-        })
+        if let cgImage = image.cgImage {
+            self.clippedNode.image = generateImage(size, rotatedContext: { size, context in
+                context.clear(CGRect(origin: CGPoint(), size: size))
+                context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+                context.scaleBy(x: 1.0, y: -1.0)
+                context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+                context.draw(cgImage, in: CGRect(origin: CGPoint(), size: size))
+                context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+                context.scaleBy(x: 1.0, y: -1.0)
+                context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+
+                context.setBlendMode(.copy)
+                context.setFillColor(UIColor.clear.cgColor)
+                context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
+            }) ?? image
+        } else {
+            self.clippedNode.image = image
+        }
     }
     
     deinit {
@@ -370,20 +374,24 @@ public final class AnimatedAvatarSetView: UIView {
         
         private func updateImage(image: UIImage, size: CGSize, spacing: CGFloat) {
             self.unclippedView.image = image
-            self.clippedView.image = generateImage(size, rotatedContext: { size, context in
-                context.clear(CGRect(origin: CGPoint(), size: size))
-                context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-                context.scaleBy(x: 1.0, y: -1.0)
-                context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
-                context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-                context.scaleBy(x: 1.0, y: -1.0)
-                context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                
-                context.setBlendMode(.copy)
-                context.setFillColor(UIColor.clear.cgColor)
-                context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
-            })
+            if let cgImage = image.cgImage {
+                self.clippedView.image = generateImage(size, rotatedContext: { size, context in
+                    context.clear(CGRect(origin: CGPoint(), size: size))
+                    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+                    context.scaleBy(x: 1.0, y: -1.0)
+                    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+                    context.draw(cgImage, in: CGRect(origin: CGPoint(), size: size))
+                    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+                    context.scaleBy(x: 1.0, y: -1.0)
+                    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+
+                    context.setBlendMode(.copy)
+                    context.setFillColor(UIColor.clear.cgColor)
+                    context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
+                }) ?? image
+            } else {
+                self.clippedView.image = image
+            }
         }
         
         deinit {

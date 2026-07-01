@@ -108,7 +108,11 @@ public class NavigationBackButtonNode: ASControlNode {
     public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesMoved(touches, with: event)
         
-        self.updateHighlightedState(self.touchInsideApparentBounds(touches.first!), animated: true)
+        guard let touch = touches.first else {
+            self.updateHighlightedState(false, animated: true)
+            return
+        }
+        self.updateHighlightedState(self.touchInsideApparentBounds(touch), animated: true)
     }
     
     public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -118,7 +122,7 @@ public class NavigationBackButtonNode: ASControlNode {
         let previousTouchCount = self.touchCount
         self.touchCount = max(0, self.touchCount - touches.count)
         
-        if previousTouchCount != 0 && self.touchCount == 0 && self.isEnabled && self.touchInsideApparentBounds(touches.first!) {
+        if let touch = touches.first, previousTouchCount != 0 && self.touchCount == 0 && self.isEnabled && self.touchInsideApparentBounds(touch) {
             self.pressed()
         }
     }

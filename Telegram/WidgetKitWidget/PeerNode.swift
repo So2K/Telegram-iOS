@@ -29,23 +29,47 @@ enum AvatarClipStyle {
 }
 private func avatarRoundImage(size: CGSize, source: UIImage, style: AvatarClipStyle) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
-    
-    context?.beginPath()
-    switch style {
-    case .round:
-        context?.addEllipse(in: CGRect(origin: .zero, size: size))
-    case .roundedRect:
-        context?.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
     }
     
-    context?.clip()
+    context.beginPath()
+    switch style {
+    case .round:
+        context.addEllipse(in: CGRect(origin: .zero, size: size))
+    case .roundedRect:
+        context.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
+    }
+    
+    context.clip()
     
     source.draw(in: CGRect(origin: CGPoint(), size: size))
     
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
+}
+
+private func fallbackAvatarImage(size: CGSize, style: AvatarClipStyle) -> UIImage {
+    UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    if let context = UIGraphicsGetCurrentContext() {
+        context.beginPath()
+        switch style {
+        case .round:
+            context.addEllipse(in: CGRect(origin: .zero, size: size))
+        case .roundedRect:
+            context.addPath(UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.width * 0.25).cgPath)
+        }
+        context.clip()
+        context.setFillColor(UIColor(rgb: 0x8e8e93).cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+    }
+    return UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
 }
 
 private let deviceColorSpace: CGColorSpace = {
@@ -62,21 +86,28 @@ private let deviceColorSpace: CGColorSpace = {
 
 private func avatarViewLettersImage(size: CGSize, peerId: Int64, accountPeerId: Int64, letters: [String]) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     
-    context?.beginPath()
-    context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-    context?.clip()
+    context.beginPath()
+    context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    context.clip()
     
     let colorIndex = abs(Int(accountPeerId + peerId))
     
     let colorsArray = gradientColors[colorIndex % gradientColors.count]
     var locations: [CGFloat] = [1.0, 0.0]
-    let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+    guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+        return nil
+    }
     
-    context?.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     
-    context?.setBlendMode(.normal)
+    context.setBlendMode(.normal)
     
     let string = letters.count == 0 ? "" : (letters[0] + (letters.count == 1 ? "" : letters[1]))
     let attributedString = NSAttributedString(string: string, attributes: [NSAttributedString.Key.font: UIFont.systemFont(ofSize: 20.0), NSAttributedString.Key.foregroundColor: UIColor.white])
@@ -87,50 +118,48 @@ private func avatarViewLettersImage(size: CGSize, peerId: Int64, accountPeerId: 
     let lineOffset = CGPoint(x: string == "B" ? 1.0 : 0.0, y: 0.0)
     let lineOrigin = CGPoint(x: floorToScreenPixels(-lineBounds.origin.x + (size.width - lineBounds.size.width) / 2.0) + lineOffset.x, y: floorToScreenPixels(-lineBounds.origin.y + (size.height - lineBounds.size.height) / 2.0))
     
-    context?.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-    context?.scaleBy(x: 1.0, y: -1.0)
-    context?.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+    context.scaleBy(x: 1.0, y: -1.0)
+    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
     
-    context?.translateBy(x: lineOrigin.x, y: lineOrigin.y)
-    if let context = context {
-        CTLineDraw(line, context)
-    }
-    context?.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
+    context.translateBy(x: lineOrigin.x, y: lineOrigin.y)
+    CTLineDraw(line, context)
+    context.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
     
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
 private func generateTintedImage(image: UIImage?, color: UIColor, backgroundColor: UIColor? = nil) -> UIImage? {
-    guard let image = image else {
+    guard let image = image, let cgImage = image.cgImage else {
         return nil
     }
     
     let imageSize = image.size
 
     UIGraphicsBeginImageContextWithOptions(imageSize, backgroundColor != nil, image.scale)
-    if let context = UIGraphicsGetCurrentContext() {
-        if let backgroundColor = backgroundColor {
-            context.setFillColor(backgroundColor.cgColor)
-            context.fill(CGRect(origin: CGPoint(), size: imageSize))
-        }
-        
-        let imageRect = CGRect(origin: CGPoint(), size: imageSize)
-        context.saveGState()
-        context.translateBy(x: imageRect.midX, y: imageRect.midY)
-        context.scaleBy(x: 1.0, y: -1.0)
-        context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-        context.clip(to: imageRect, mask: image.cgImage!)
-        context.setFillColor(color.cgColor)
-        context.fill(imageRect)
-        context.restoreGState()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
+    if let backgroundColor = backgroundColor {
+        context.setFillColor(backgroundColor.cgColor)
+        context.fill(CGRect(origin: CGPoint(), size: imageSize))
     }
     
-    let tintedImage = UIGraphicsGetImageFromCurrentImageContext()!
-    UIGraphicsEndImageContext()
+    let imageRect = CGRect(origin: CGPoint(), size: imageSize)
+    context.saveGState()
+    context.translateBy(x: imageRect.midX, y: imageRect.midY)
+    context.scaleBy(x: 1.0, y: -1.0)
+    context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
+    context.clip(to: imageRect, mask: cgImage)
+    context.setFillColor(color.cgColor)
+    context.fill(imageRect)
+    context.restoreGState()
     
-    return tintedImage
+    return UIGraphicsGetImageFromCurrentImageContext()
 }
 
 private let savedMessagesColors: NSArray = [
@@ -139,31 +168,37 @@ private let savedMessagesColors: NSArray = [
 
 private func savedMessagesImage(size: CGSize) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
     
-    context?.beginPath()
-    context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-    context?.clip()
+    context.beginPath()
+    context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    context.clip()
     
     let colorsArray = savedMessagesColors
     var locations: [CGFloat] = [1.0, 0.0]
-    let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+    guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+        return nil
+    }
     
-    context?.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     
-    context?.setBlendMode(.normal)
+    context.setBlendMode(.normal)
     
     let factor = size.width / 60.0
-    context?.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-    context?.scaleBy(x: factor, y: -factor)
-    context?.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+    context.scaleBy(x: factor, y: -factor)
+    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
     
-    if let context = context, let icon = generateTintedImage(image: UIImage(named: "Widget/SavedMessages"), color: .white) {
-        context.draw(icon.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
+    if let icon = generateTintedImage(image: UIImage(named: "Widget/SavedMessages"), color: .white), let iconImage = icon.cgImage {
+        context.draw(iconImage, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
     }
     
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
@@ -171,11 +206,11 @@ private let avatarSize = CGSize(width: 50.0, height: 50.0)
 
 func avatarImage(accountPeerId: Int64?, peer: WidgetDataPeer?, size: CGSize, style: AvatarClipStyle) -> UIImage {
     if let peer = peer, let accountPeerId = accountPeerId, peer.id == accountPeerId {
-        return savedMessagesImage(size: size)!
+        return savedMessagesImage(size: size) ?? fallbackAvatarImage(size: size, style: style)
     } else if let path = peer?.avatarPath, let image = UIImage(contentsOfFile: path), let roundImage = avatarRoundImage(size: size, source: image, style: style) {
         return roundImage
     } else {
-        return avatarViewLettersImage(size: size, peerId: peer?.id ?? 1, accountPeerId: accountPeerId ?? 1, letters: peer?.letters ?? [" "])!
+        return avatarViewLettersImage(size: size, peerId: peer?.id ?? 1, accountPeerId: accountPeerId ?? 1, letters: peer?.letters ?? [" "]) ?? fallbackAvatarImage(size: size, style: style)
     }
 }
 

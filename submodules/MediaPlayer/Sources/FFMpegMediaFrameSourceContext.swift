@@ -59,7 +59,10 @@ struct FFMpegMediaFrameSourceContextInfo {
 private var maxOffset: Int = 0
 
 private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<FFMpegMediaFrameSourceContext>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+    let context = Unmanaged<FFMpegMediaFrameSourceContext>.fromOpaque(userData).takeUnretainedValue()
     guard let postbox = context.postbox, let resourceReference = context.resourceReference, let streamable = context.streamable else {
         return 0
     }
@@ -179,8 +182,10 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
     if let fetchedData = fetchedData {
         assert(fetchedData.count <= readCount)
         fetchedData.withUnsafeBytes { bytes -> Void in
-            precondition(bytes.baseAddress != nil)
-            memcpy(buffer, bytes.baseAddress, min(fetchedData.count, Int(readCount)))
+            guard let baseAddress = bytes.baseAddress else {
+                return
+            }
+            memcpy(buffer, baseAddress, min(fetchedData.count, Int(readCount)))
         }
         fetchedCount = Int32(fetchedData.count)
         context.readingOffset += Int64(fetchedCount)
@@ -198,7 +203,10 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
 }
 
 private func seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<FFMpegMediaFrameSourceContext>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return 0
+    }
+    let context = Unmanaged<FFMpegMediaFrameSourceContext>.fromOpaque(userData).takeUnretainedValue()
     guard let postbox = context.postbox, let resourceReference = context.resourceReference, let streamable = context.streamable, let userLocation = context.userLocation, let userContentType = context.userContentType, let statsCategory = context.statsCategory else {
         return 0
     }
@@ -453,7 +461,7 @@ final class FFMpegMediaFrameSourceContext: NSObject {
         }
         
         if !avFormatContext.findStreamInfo() {
-            self.readingError = true;
+            self.readingError = true
             return
         }
         
@@ -753,8 +761,8 @@ final class FFMpegMediaFrameSourceContext: NSObject {
                     } else {
                         if let videoStream = initializedState.videoStream {
                             actualPts = videoStream.duration
-                        } else {
-                            actualPts = extraVideoFrames.last!.pts
+                        } else if let lastFrame = extraVideoFrames.last {
+                            actualPts = lastFrame.pts
                         }
                     }
                 }

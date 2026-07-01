@@ -71,13 +71,25 @@ public func adjustSaturationInContext(context: DrawingContext, saturation: CGFlo
     vImageMatrixMultiply_ARGB8888(&buffer, &buffer, &matrix, divisor, nil, nil, vImage_Flags(kvImageDoNotTile))
 }
 
+private func fallbackGradientImage(size: CGSize, color: UIColor) -> UIImage {
+    return generateSingleColorImage(size: size, color: color, scale: 1.0) ?? UIImage()
+}
+
 private func generateGradient(size: CGSize, colors inputColors: [UIColor], positions: [CGPoint], adjustSaturation: CGFloat = 1.0) -> (UIImage, String) {
+    guard !inputColors.isEmpty, !positions.isEmpty, size.width > 0.0, size.height > 0.0 else {
+        return (fallbackGradientImage(size: size, color: inputColors.last ?? UIColor.clear), "fallback")
+    }
     let colors: [UIColor] = inputColors.count == 1 ? [inputColors[0], inputColors[0], inputColors[0]] : inputColors
 
     let width = Int(size.width)
     let height = Int(size.height)
+    guard width > 0, height > 0 else {
+        return (fallbackGradientImage(size: size, color: colors.last ?? UIColor.clear), "fallback")
+    }
 
-    let rgbData = malloc(MemoryLayout<Float>.size * colors.count * 3)!
+    guard let rgbData = malloc(MemoryLayout<Float>.size * colors.count * 3) else {
+        return (fallbackGradientImage(size: size, color: colors.last ?? UIColor.clear), "fallback")
+    }
     defer {
         free(rgbData)
     }
@@ -93,7 +105,9 @@ private func generateGradient(size: CGSize, colors inputColors: [UIColor], posit
         rgb.advanced(by: i * 3 + 2).pointee = Float(b)
     }
 
-    let positionData = malloc(MemoryLayout<Float>.size * positions.count * 2)!
+    guard let positionData = malloc(MemoryLayout<Float>.size * positions.count * 2) else {
+        return (fallbackGradientImage(size: size, color: colors.last ?? UIColor.clear), "fallback")
+    }
     defer {
         free(positionData)
     }
@@ -103,7 +117,9 @@ private func generateGradient(size: CGSize, colors inputColors: [UIColor], posit
         positionFloats.advanced(by: i * 2 + 1).pointee = Float(1.0 - positions[i].y)
     }
 
-    let context = DrawingContext(size: CGSize(width: CGFloat(width), height: CGFloat(height)), scale: 1.0, opaque: true, clear: false)!
+    guard let context = DrawingContext(size: CGSize(width: CGFloat(width), height: CGFloat(height)), scale: 1.0, opaque: true, clear: false) else {
+        return (fallbackGradientImage(size: size, color: colors.last ?? UIColor.clear), "fallback")
+    }
     let imageBytes = context.bytes.assumingMemoryBound(to: UInt8.self)
 
     for y in 0 ..< height {
@@ -143,9 +159,9 @@ private func generateGradient(size: CGSize, colors inputColors: [UIColor], posit
                 distance = distance * distance * distance
                 distanceSum += distance
 
-                r = r + distance * rgb[i * 3 + 0]
-                g = g + distance * rgb[i * 3 + 1]
-                b = b + distance * rgb[i * 3 + 2]
+                r += distance * rgb[i * 3 + 0]
+                g += distance * rgb[i * 3 + 1]
+                b += distance * rgb[i * 3 + 2]
             }
 
             if distanceSum < 0.00001 {
@@ -189,7 +205,7 @@ private func generateGradient(size: CGSize, colors inputColors: [UIColor], posit
     }
     hashString.append("_\(adjustSaturation)")
     
-    return (context.generateImage()!, hashString)
+    return (context.generateImage() ?? fallbackGradientImage(size: size, color: colors.last ?? UIColor.clear), hashString)
 }
 
 public protocol GradientBackgroundPatternOverlayLayer: CALayer {
@@ -403,7 +419,7 @@ public final class GradientBackgroundNode: ASDisplayNode {
                     var stepPhase = (self.phase + phaseCount) % 8
                     for _ in 0 ... phaseCount {
                         steps.append(gatherPositions(shiftArray(array: GradientBackgroundNode.basePositions, offset: stepPhase)))
-                        stepPhase = stepPhase - 1
+                        stepPhase -= 1
                         if stepPhase < 0 {
                             stepPhase = 7
                         }
@@ -456,7 +472,7 @@ public final class GradientBackgroundNode: ASDisplayNode {
                     self.backgroundImageHash = images[images.count - 1].1
 
                     let animation = CAKeyframeAnimation(keyPath: "contents")
-                    animation.values = images.map { $0.0.cgImage! }
+                    animation.values = images.compactMap { $0.0.cgImage }
                     animation.duration = duration * UIView.animationDurationFactor()
                     if backwards || extendAnimation {
                         animation.calculationMode = .discrete
@@ -489,7 +505,7 @@ public final class GradientBackgroundNode: ASDisplayNode {
 
                     if !self.cloneNodes.isEmpty {
                         let cloneAnimation = CAKeyframeAnimation(keyPath: "contents")
-                        cloneAnimation.values = dimmedImages.map { $0.cgImage! }
+                        cloneAnimation.values = dimmedImages.compactMap { $0.cgImage }
                         cloneAnimation.duration = animation.duration
                         cloneAnimation.calculationMode = animation.calculationMode
                         cloneAnimation.isRemovedOnCompletion = animation.isRemovedOnCompletion
@@ -509,7 +525,7 @@ public final class GradientBackgroundNode: ASDisplayNode {
                     
                     if !self.rawCloneNodes.isEmpty {
                         let cloneAnimation = CAKeyframeAnimation(keyPath: "contents")
-                        cloneAnimation.values = images.map { $0.0.cgImage! }
+                        cloneAnimation.values = images.compactMap { $0.0.cgImage }
                         cloneAnimation.duration = animation.duration
                         cloneAnimation.calculationMode = animation.calculationMode
                         cloneAnimation.isRemovedOnCompletion = animation.isRemovedOnCompletion
@@ -629,7 +645,7 @@ public final class GradientBackgroundNode: ASDisplayNode {
             if self.phase == 0 {
                 self.phase = 7
             } else {
-                self.phase = self.phase - 1
+                self.phase -= 1
             }
         }
         if self.useSharedAnimationPhase {

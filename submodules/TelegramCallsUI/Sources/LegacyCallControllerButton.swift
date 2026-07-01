@@ -39,13 +39,17 @@ private func generateEmptyButtonImage(icon: UIImage?, strokeColor: UIColor?, fil
             let imageSize = icon.size
             let imageRect = CGRect(origin: CGPoint(x: floor((size.width - imageSize.width) / 2.0), y: floor((size.width - imageSize.height) / 2.0)), size: imageSize)
             if knockout {
-                context.setBlendMode(.copy)
-                context.clip(to: imageRect, mask: icon.cgImage!)
-                context.setFillColor(UIColor.clear.cgColor)
-                context.fill(imageRect)
+                if let cgImage = icon.cgImage {
+                    context.setBlendMode(.copy)
+                    context.clip(to: imageRect, mask: cgImage)
+                    context.setFillColor(UIColor.clear.cgColor)
+                    context.fill(imageRect)
+                }
             } else {
                 context.setBlendMode(.normal)
-                context.draw(generateTintedImage(image: icon, color: .white)!.cgImage!, in: imageRect)
+                if let tintedImage = generateTintedImage(image: icon, color: .white), let cgImage = tintedImage.cgImage {
+                    context.draw(cgImage, in: imageRect)
+                }
             }
         }
     })
@@ -58,13 +62,13 @@ private func generateFilledButtonImage(color: UIColor, icon: UIImage?, angle: CG
         context.setFillColor(color.cgColor)
         context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
         
-        if let icon = icon {
+        if let icon = icon, let cgImage = icon.cgImage {
             if !angle.isZero {
                 context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                 context.rotate(by: angle)
                 context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
             }
-            context.draw(icon.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
+            context.draw(cgImage, in: CGRect(origin: CGPoint(x: floor((size.width - icon.size.width) / 2.0), y: floor((size.height - icon.size.height) / 2.0)), size: icon.size))
         }
     })
 }
@@ -177,9 +181,9 @@ final class LegacyCallControllerButtonNode: HighlightTrackingButtonNode {
         if self.currentImage !== image {
             let currentContents = self.backgroundNode.layer.contents
             self.backgroundNode.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents, let image = image {
+            if let currentContents = currentContents, let image = image, let cgImage = image.cgImage {
                 self.backgroundNode.image = image
-                self.backgroundNode.layer.animate(from: currentContents as AnyObject, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: image === self.currentImage || image === self.filledImage ? 0.25 : 0.15)
+                self.backgroundNode.layer.animate(from: currentContents as AnyObject, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: image === self.currentImage || image === self.filledImage ? 0.25 : 0.15)
             } else {
                 self.backgroundNode.image = image
             }

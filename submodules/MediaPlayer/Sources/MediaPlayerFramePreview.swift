@@ -159,12 +159,6 @@ public final class MediaPlayerFramePreviewHLS: FramePreview {
             var timestamp: Int
             var duration: Int
             var range: Range<Int>
-            
-            init(timestamp: Int, duration: Int, range: Range<Int>) {
-                self.timestamp = timestamp
-                self.duration = duration
-                self.range = range
-            }
         }
         
         private final class Playlist {
@@ -258,8 +252,9 @@ public final class MediaPlayerFramePreviewHLS: FramePreview {
                     var durations: [Int] = []
                     var byteRanges: [Range<Int>] = []
                     
-                    let extinfRegex = try! NSRegularExpression(pattern: "EXTINF:(\\d+)", options: [])
-                    let byteRangeRegex = try! NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: [])
+                    guard let extinfRegex = try? NSRegularExpression(pattern: "EXTINF:(\\d+)", options: []), let byteRangeRegex = try? NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: []) else {
+                        return .single(nil)
+                    }
                     
                     let extinfResults = extinfRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
                     for result in extinfResults {
@@ -273,7 +268,7 @@ public final class MediaPlayerFramePreviewHLS: FramePreview {
                     let byteRangeResults = byteRangeRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
                     for result in byteRangeResults {
                         if let lengthRange = Range(result.range(at: 1), in: playlistString), let upperBoundRange = Range(result.range(at: 2), in: playlistString) {
-                            if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])) {
+                            if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])), length > 0, lowerBound >= 0, lowerBound <= Int.max - length {
                                 byteRanges.append(lowerBound ..< (lowerBound + length))
                             }
                         }
@@ -896,4 +891,3 @@ public final class MediaPlayerFramePreviewHLSThumbnails: FramePreview {
         }
     }
 }
-

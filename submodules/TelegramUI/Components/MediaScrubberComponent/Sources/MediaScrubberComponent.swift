@@ -819,7 +819,7 @@ public final class MediaScrubberComponent: Component {
             transition.setAlpha(view: self.ghostTrimView, alpha: ghostTrimVisible ? 0.75 : 0.0)
             
             if [.videoMessage, .cover].contains(component.style) {
-                for (_ , trackView) in self.trackViews {
+                for (_, trackView) in self.trackViews {
                     trackView.updateOpaqueEdges(
                         left: leftHandleFrame.minX,
                         right: rightHandleFrame.maxX,
@@ -827,7 +827,7 @@ public final class MediaScrubberComponent: Component {
                     )
                 }
             } else {
-                for (_ , trackView) in self.trackViews {
+                for (_, trackView) in self.trackViews {
                     trackView.updateTrimEdges(
                         left: leftHandleFrame.minX,
                         right: rightHandleFrame.maxX,
@@ -1360,12 +1360,15 @@ private class TrackView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelega
                         transparentFrameLayer = self.videoTransparentFrameLayers[i]
                         opaqueFrameLayer = self.videoOpaqueFrameLayers[i]
                     }
-                    transparentFrameLayer.contents = frames[i].cgImage
-                    if let contents = opaqueFrameLayer.contents, (contents as! CGImage) !== frames[i].cgImage, opaqueFrameLayer.animation(forKey: "contents") == nil {
-                        opaqueFrameLayer.contents = frames[i].cgImage
-                        opaqueFrameLayer.animate(from: contents as AnyObject, to: frames[i].cgImage! as AnyObject, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
+                    guard let frameImage = frames[i].cgImage else {
+                        continue
+                    }
+                    transparentFrameLayer.contents = frameImage
+                    if let contents = opaqueFrameLayer.contents as? CGImage, contents !== frameImage, opaqueFrameLayer.animation(forKey: "contents") == nil {
+                        opaqueFrameLayer.contents = frameImage
+                        opaqueFrameLayer.animate(from: contents as AnyObject, to: frameImage as AnyObject, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
                     } else {
-                        opaqueFrameLayer.contents = frames[i].cgImage
+                        opaqueFrameLayer.contents = frameImage
                     }
                     if frames[i].imageOrientation == .upMirrored {
                         transparentFrameLayer.transform = CATransform3DMakeScale(-1.0, 1.0, 1.0)
@@ -1480,7 +1483,7 @@ private class TrackView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelega
             transition.setAlpha(view: self.audioIconView, alpha: trackTitleIsVisible ? trackTitleAlpha : 0.0)
             
             var previousSamples: Data?
-            if let previousParams, case let .audio(_ , _, previousSamplesValue, _, _) = previousParams.track.content {
+            if let previousParams, case let .audio(_, _, previousSamplesValue, _, _) = previousParams.track.content {
                 previousSamples = previousSamplesValue
             }
             
@@ -2041,9 +2044,9 @@ private let audioContentMaskImage = generateImage(CGSize(width: 100.0, height: 5
     let colors: [CGColor] = [UIColor.white.cgColor, UIColor.white.cgColor, UIColor.white.withAlphaComponent(0.0).cgColor, UIColor.white.withAlphaComponent(0.0).cgColor]
     
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-    
-    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: CGGradientDrawingOptions())
+    }
 })?.stretchableImage(withLeftCapWidth: 40, topCapHeight: 0)
 
 

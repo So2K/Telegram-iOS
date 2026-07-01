@@ -46,15 +46,19 @@ public func chatControllerBackgroundImage(theme: PresentationTheme?, wallpaper i
             case let .gradient(gradient):
                 backgroundImage = generateImage(CGSize(width: 640.0, height: 1280.0), rotatedContext: { size, context in
                     let gradientColors = [UIColor(argb: gradient.colors.count >= 1 ? gradient.colors[0] : 0).cgColor, UIColor(argb: gradient.colors.count >= 2 ? gradient.colors[1] : 0).cgColor] as CFArray
-                       
+
                     var locations: [CGFloat] = [0.0, 1.0]
                     let colorSpace = CGColorSpaceCreateDeviceRGB()
-                    let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
+                    guard let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) else {
+                        context.setFillColor(UIColor(argb: gradient.colors.first ?? 0).cgColor)
+                        context.fill(CGRect(origin: CGPoint(), size: size))
+                        return
+                    }
 
                     context.translateBy(x: 320.0, y: 640.0)
                     context.rotate(by: CGFloat(gradient.settings.rotation ?? 0) * CGFloat.pi / 180.0)
                     context.translateBy(x: -320.0, y: -640.0)
-                    
+
                     context.drawLinearGradient(cgGradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
                 })
             case let .image(representations, settings):
@@ -132,15 +136,19 @@ public func chatControllerBackgroundImageSignal(wallpaper: TelegramWallpaper, me
             case let .gradient(gradient):
                 return .single((generateImage(CGSize(width: 640.0, height: 1280.0).fitted(CGSize(width: 100.0, height: 100.0)), rotatedContext: { size, context in
                     let gradientColors = [UIColor(rgb: gradient.colors.count >= 1 ? gradient.colors[0] : 0).cgColor, UIColor(rgb: gradient.colors.count >= 2 ? gradient.colors[1] : 0).cgColor] as CFArray
-                       
+
                     var locations: [CGFloat] = [0.0, 1.0]
                     let colorSpace = CGColorSpaceCreateDeviceRGB()
-                    let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
+                    guard let cgGradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) else {
+                        context.setFillColor(UIColor(rgb: gradient.colors.first ?? 0).cgColor)
+                        context.fill(CGRect(origin: CGPoint(), size: size))
+                        return
+                    }
 
                     context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                     context.rotate(by: CGFloat(gradient.settings.rotation ?? 0) * CGFloat.pi / 180.0)
                     context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                    
+
                     context.drawLinearGradient(cgGradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
                 }), true))
                 |> afterNext { image in

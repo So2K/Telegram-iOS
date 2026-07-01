@@ -75,7 +75,10 @@ final class FormControllerScrollerNode: ASDisplayNode, ASScrollViewDelegate {
     }
     
     func touchesShouldBegin(_ touches: Set<UITouch>, with event: UIEvent?) -> Bool {
-        let touchesPosition = touches.first!.location(in: self.view)
+        guard let touch = touches.first else {
+            return true
+        }
+        let touchesPosition = touch.location(in: self.view)
         
         if let touchesPrevented = self.touchesPrevented {
             if touchesPrevented(touchesPosition) {

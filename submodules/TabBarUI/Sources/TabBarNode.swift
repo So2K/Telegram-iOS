@@ -61,12 +61,14 @@ private func tabBarItemImage(_ image: UIImage?, title: String, backgroundColor: 
             context.translateBy(x: imageRect.midX, y: imageRect.midY)
             context.scaleBy(x: 1.0, y: -1.0)
             context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-            if image.renderingMode == .alwaysOriginal {
-                context.draw(image.cgImage!, in: imageRect)
-            } else {
-                context.clip(to: imageRect, mask: image.cgImage!)
-                context.setFillColor(tintColor.cgColor)
-                context.fill(imageRect)
+            if let cgImage = image.cgImage {
+                if image.renderingMode == .alwaysOriginal {
+                    context.draw(cgImage, in: imageRect)
+                } else {
+                    context.clip(to: imageRect, mask: cgImage)
+                    context.setFillColor(tintColor.cgColor)
+                    context.fill(imageRect)
+                }
             }
             context.restoreGState()
         }

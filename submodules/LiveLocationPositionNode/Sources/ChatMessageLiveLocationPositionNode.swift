@@ -64,7 +64,9 @@ private func generateHeadingArrowImage() -> UIImage? {
         var locations: [CGFloat] = [0.0, 0.4, 1.0]
         let colors: [CGColor] = [UIColor(rgb: 0x0088ff, alpha: 0.5).cgColor, UIColor(rgb: 0x0088ff, alpha: 0.3).cgColor, UIColor(rgb: 0x0088ff, alpha: 0.0).cgColor]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+            return
+        }
         
         context.drawRadialGradient(gradient, startCenter: center, startRadius: 5.0, endCenter: center, endRadius: arrowImageSize.width / 2.0, options: .drawsAfterEndLocation)
         

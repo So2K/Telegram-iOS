@@ -508,8 +508,8 @@ public final class DefaultAnimatedStickerNodeImpl: ASDisplayNode, AnimatedSticke
                 })
                 timerHolder.swap(nil)?.invalidate()
                 
-                let duration: Double = frameSource.frameRate > 0 ? Double(frameSource.frameCount) / Double(frameSource.frameRate) : 0
-                let frameRate = frameSource.frameRate
+                let frameRate = max(1, frameSource.frameRate)
+                let duration: Double = frameSource.frameCount > 0 ? Double(frameSource.frameCount) / Double(frameRate) : 0
                 
                 let timerEvent: () -> Void = {
                     let frame = frameQueue.syncWith { frameQueue in
@@ -624,8 +624,8 @@ public final class DefaultAnimatedStickerNodeImpl: ASDisplayNode, AnimatedSticke
                 })
                 timerHolder.swap(nil)?.invalidate()
                 
-                let duration: Double = frameSource.frameRate > 0 ? Double(frameSource.frameCount) / Double(frameSource.frameRate) : 0
-                let frameRate = frameSource.frameRate
+                let frameRate = max(1, frameSource.frameRate)
+                let duration: Double = frameSource.frameCount > 0 ? Double(frameSource.frameCount) / Double(frameRate) : 0
                 
                 let timer = SwiftSignalKit.Timer(timeout: 1.0 / Double(frameRate), repeat: !firstFrame, completion: {
                     let frame = frameQueue.syncWith { frameQueue in
@@ -750,15 +750,19 @@ public final class DefaultAnimatedStickerNodeImpl: ASDisplayNode, AnimatedSticke
             })
             timerHolder.swap(nil)?.invalidate()
             
-            let duration: Double = frameSource.frameRate > 0 ? Double(frameSource.frameCount) / Double(frameSource.frameRate) : 0
+            let frameRate = max(1, frameSource.frameRate)
+            let duration: Double = Double(frameSource.frameCount) / Double(frameRate)
         
             var maybeFrame: AnimatedStickerFrame??
             if case let .timestamp(timestamp) = position {
-                var stickerTimestamp = timestamp
-                while stickerTimestamp > duration {
-                    stickerTimestamp -= duration
+                guard duration > 0.0, timestamp.isFinite else {
+                    return
                 }
-                let targetFrame = Int(stickerTimestamp / duration * Double(frameSource.frameCount))
+                var stickerTimestamp = timestamp.truncatingRemainder(dividingBy: duration)
+                if stickerTimestamp < 0.0 {
+                    stickerTimestamp += duration
+                }
+                let targetFrame = max(0, min(frameSource.frameCount - 1, Int(stickerTimestamp / duration * Double(frameSource.frameCount))))
                 if targetFrame == frameSource.frameIndex {
                     return
                 }

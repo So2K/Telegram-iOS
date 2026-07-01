@@ -5111,7 +5111,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             resolvedValue = 1.0
         }
         
-        resolvedValue = resolvedValue * (1.0 - self.inputPanelContainerNode.expansionFraction)
+        resolvedValue *= 1.0 - self.inputPanelContainerNode.expansionFraction
     }
     
     private var previousConfettiAnimationTimestamp: Double?

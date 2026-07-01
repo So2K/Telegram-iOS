@@ -16,18 +16,21 @@ public func mediaEditorGenerateGradientImage(size: CGSize, colors: [UIColor]) ->
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         
         var locations: [CGFloat] = [0.0, 1.0]
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        }
     }
     
-    let image = UIGraphicsGetImageFromCurrentImageContext()!
+    let image = UIGraphicsGetImageFromCurrentImageContext()
     UIGraphicsEndImageContext()
     
     return image
 }
 
 public func mediaEditorGetGradientColors(from image: UIImage) -> MediaEditor.GradientColors {
-    let context = DrawingContext(size: CGSize(width: 5.0, height: 5.0), scale: 1.0, clear: false)!
+    guard let context = DrawingContext(size: CGSize(width: 5.0, height: 5.0), scale: 1.0, clear: false) else {
+        return MediaEditor.GradientColors(top: .clear, bottom: .clear)
+    }
     context.withFlippedContext({ context in
         if let cgImage = image.cgImage {
             context.draw(cgImage, in: CGRect(x: 0.0, y: 0.0, width: 5.0, height: 5.0))
@@ -39,23 +42,27 @@ public func mediaEditorGetGradientColors(from image: UIImage) -> MediaEditor.Gra
     )
 }
 
-private func roundedCornersMaskImage(size: CGSize) -> CIImage {
-    let image = generateImage(size, opaque: true, scale: 1.0) { size, context in
+private func roundedCornersMaskImage(size: CGSize) -> CIImage? {
+    guard let image = generateImage(size, opaque: true, scale: 1.0, rotatedContext: { size, context in
         context.setFillColor(UIColor.black.cgColor)
         context.fill(CGRect(origin: .zero, size: size))
         context.addPath(CGPath(roundedRect: CGRect(origin: .zero, size: size), cornerWidth: size.width / 8.0, cornerHeight: size.height / 8.0, transform: nil))
         context.setFillColor(UIColor.white.cgColor)
         context.fillPath()
-    }?.cgImage
-    return CIImage(cgImage: image!)
+    })?.cgImage else {
+        return nil
+    }
+    return CIImage(cgImage: image)
 }
 
-private func rectangleMaskImage(size: CGSize) -> CIImage {
-    let image = generateImage(size, opaque: true, scale: 1.0) { size, context in
+private func rectangleMaskImage(size: CGSize) -> CIImage? {
+    guard let image = generateImage(size, opaque: true, scale: 1.0, rotatedContext: { size, context in
         context.setFillColor(UIColor.white.cgColor)
         context.fill(CGRect(origin: .zero, size: size))
-    }?.cgImage
-    return CIImage(cgImage: image!)
+    })?.cgImage else {
+        return nil
+    }
+    return CIImage(cgImage: image)
 }
 
 public final class MediaEditorComposer {

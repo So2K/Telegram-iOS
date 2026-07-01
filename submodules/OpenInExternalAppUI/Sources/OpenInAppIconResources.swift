@@ -164,12 +164,15 @@ public func openInAppIcon(engine: TelegramEngine, appIcon: OpenInAppIcon, withCh
             }
         case let .image(image):
             return .single({ arguments in
+                guard let cgImage = image.cgImage else {
+                    return nil
+                }
                 guard let context = DrawingContext(size: arguments.drawingSize, clear: true) else {
                     return nil
                 }
                 
                 context.withFlippedContext { c in
-                    c.draw(image.cgImage!, in: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: arguments.drawingSize))
+                    c.draw(cgImage, in: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: arguments.drawingSize))
                     if withChrome {
                         drawOpenInAppIconBorder(into: c, arguments: arguments)
                     }

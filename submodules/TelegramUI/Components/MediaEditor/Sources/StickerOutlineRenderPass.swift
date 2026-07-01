@@ -51,7 +51,10 @@ final class StickerOutlineRenderPass: RenderPass {
         }
         
         if self.edgeMaskImage == nil || self.edgeMaskImage?.1 != width {
-            self.edgeMaskImage = (roundedCornersMaskImage(outlineWidth: CGFloat(width)), width)
+            guard let edgeMaskImage = roundedCornersMaskImage(outlineWidth: CGFloat(width)) else {
+                return input
+            }
+            self.edgeMaskImage = (edgeMaskImage, width)
         }
         
         self.edgeMaskFilter?.setValue(CIImage(mtlTexture: input), forKey: kCIInputImageKey)
@@ -123,15 +126,17 @@ final class StickerOutlineRenderPass: RenderPass {
     }
 }
 
-private func roundedCornersMaskImage(outlineWidth: CGFloat) -> CIImage {
+private func roundedCornersMaskImage(outlineWidth: CGFloat) -> CIImage? {
     let rectSize = CGSize(width: floor(1080.0 * 0.97) - outlineWidth * 2.0, height: floor(1080.0 * 0.97) - outlineWidth * 2.0)
     let cornerRadius = floor(1080.0 * 0.97) / 8.0 - outlineWidth
-    let image = generateImage(CGSize(width: 1080.0, height: 1920.0), opaque: true, scale: 1.0) { size, context in
+    guard let image = generateImage(CGSize(width: 1080.0, height: 1920.0), opaque: true, scale: 1.0, rotatedContext: { size, context in
         context.setFillColor(UIColor.black.cgColor)
         context.fill(CGRect(origin: .zero, size: size))
         context.addPath(CGPath(roundedRect: CGRect(origin: CGPoint(x: floor((1080.0 - rectSize.width) / 2.0), y: floor((1920.0 - rectSize.width) / 2.0)), size: rectSize), cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil))
         context.setFillColor(UIColor.white.cgColor)
         context.fillPath()
-    }?.cgImage
-    return CIImage(cgImage: image!)
+    })?.cgImage else {
+        return nil
+    }
+    return CIImage(cgImage: image)
 }

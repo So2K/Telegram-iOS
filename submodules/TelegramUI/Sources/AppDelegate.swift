@@ -432,21 +432,17 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                             var notificationRequestId: NotificationManagedNotificationRequestId?
                             
                             var peerId: PeerId?
-                            if let fromId = payload["from_id"] {
-                                let fromIdValue = fromId as! NSString
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
-                            } else if let fromId = payload["chat_id"] {
-                                let fromIdValue = fromId as! NSString
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
-                            } else if let fromId = payload["channel_id"] {
-                                let fromIdValue = fromId as! NSString
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
+                            if let fromId = notificationPayloadInt64(payload["from_id"]) {
+                                peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(fromId))
+                            } else if let fromId = notificationPayloadInt64(payload["chat_id"]) {
+                                peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(fromId))
+                            } else if let fromId = notificationPayloadInt64(payload["channel_id"]) {
+                                peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(fromId))
                             }
                             
-                            if let msgId = payload["msg_id"] {
-                                let msgIdValue = msgId as! NSString
+                            if let msgId = notificationPayloadInt32(payload["msg_id"]) {
                                 if let peerId = peerId {
-                                    notificationRequestId = .messageId(MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(msgIdValue.intValue)))
+                                    notificationRequestId = .messageId(MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId))
                                 }
                             }
                             
@@ -535,8 +531,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         self.buildConfig = buildConfig
         let signatureDict = BuildConfigExtra.signatureDict()
         
-        let apiId: Int32 = buildConfig.apiId
-        let apiHash: String = buildConfig.apiHash
+        let apiCredentials = AuthorizationApiCredentialsStore.current(fallbackApiId: buildConfig.apiId, fallbackApiHash: buildConfig.apiHash)
+        let apiId: Int32 = apiCredentials.apiId
+        let apiHash: String = apiCredentials.apiHash
         let languagesCategory = "ios"
         
         let autolockDeadine: Signal<Int32?, NoError>
@@ -684,19 +681,22 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         var writeAbilityTestSuccess = true
         if let testFile = ManagedFile(queue: nil, path: writeAbilityTestFile.path, mode: .readwrite) {
             let bufferSize = 128 * 1024
-            let randomBuffer = malloc(bufferSize)!
-            defer {
-                free(randomBuffer)
-            }
-            arc4random_buf(randomBuffer, bufferSize)
-            var writtenBytes = 0
-            while writtenBytes < 1024 * 1024 {
-                let actualBytes = testFile.write(randomBuffer, count: bufferSize)
-                writtenBytes += actualBytes
-                if actualBytes != bufferSize {
-                    writeAbilityTestSuccess = false
-                    break
+            if let randomBuffer = malloc(bufferSize) {
+                defer {
+                    free(randomBuffer)
                 }
+                arc4random_buf(randomBuffer, bufferSize)
+                var writtenBytes = 0
+                while writtenBytes < 1024 * 1024 {
+                    let actualBytes = testFile.write(randomBuffer, count: bufferSize)
+                    writtenBytes += actualBytes
+                    if actualBytes != bufferSize {
+                        writeAbilityTestSuccess = false
+                        break
+                    }
+                }
+            } else {
+                writeAbilityTestSuccess = false
             }
             testFile._unsafeClose()
             TempBox.shared.dispose(writeAbilityTestFile)
@@ -1778,6 +1778,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             return
         }
         guard let inFile = ManagedFile(queue: nil, path: path, mode: .read) else {
+            sourceFile._unsafeClose()
             return
         }
         
@@ -1794,7 +1795,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let _ = sourceFile.write(headerData)
         
         let bufferSize = 512 * 1024
-        let buffer = malloc(bufferSize)!
+        guard let buffer = malloc(bufferSize) else {
+            sourceFile._unsafeClose()
+            inFile._unsafeClose()
+            return
+        }
         defer {
             free(buffer)
         }
@@ -3220,27 +3225,21 @@ private func accountIdFromNotification(_ notification: UNNotification, sharedCon
 
 @available(iOS 10.0, *)
 private func peerIdFromNotification(_ notification: UNNotification) -> (peerId: PeerId, threadId: Int64?)? {
-    let threadId = notification.request.content.userInfo["threadId"] as? Int64
+    let threadId = notificationPayloadInt64(notification.request.content.userInfo["threadId"])
     
-    if let peerId = notification.request.content.userInfo["peerId"] as? Int64 {
-        return (PeerId(peerId), threadId)
-    } else if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerId = Int64(peerIdString) {
+    if let peerId = notificationPayloadInt64(notification.request.content.userInfo["peerId"]) {
         return (PeerId(peerId), threadId)
     } else {
         let payload = notification.request.content.userInfo
         var peerId: PeerId?
-        if let fromId = payload["from_id"] {
-            let fromIdValue = fromId as! NSString
-            peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
-        } else if let fromId = payload["chat_id"] {
-            let fromIdValue = fromId as! NSString
-            peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
-        } else if let fromId = payload["channel_id"] {
-            let fromIdValue = fromId as! NSString
-            peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
-        } else if let fromId = payload["encryption_id"] {
-            let fromIdValue = fromId as! NSString
-            peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(Int64(fromIdValue as String) ?? 0))
+        if let fromId = notificationPayloadInt64(payload["from_id"]) {
+            peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt64(payload["chat_id"]) {
+            peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt64(payload["channel_id"]) {
+            peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt64(payload["encryption_id"]) {
+            peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(fromId))
         }
         
         if let peerId = peerId {
@@ -3257,20 +3256,43 @@ private func messageIdFromNotification(peerId: PeerId, notification: UNNotificat
         return MessageId(peerId: peerId, namespace: messageIdNamespace, id: messageIdId)
     }
     
-    if let msgId = payload["msg_id"] {
-        let msgIdValue = msgId as! NSString
-        return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(msgIdValue.intValue))
+    if let msgId = notificationPayloadInt32(payload["msg_id"]) {
+        return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId)
     }
     return nil
 }
 
 private func storyIdFromNotification(peerId: PeerId, notification: UNNotification) -> StoryId? {
     let payload = notification.request.content.userInfo
-    if let storyId = payload["story_id"] {
-        let storyIdValue = storyId as! NSString
-        return StoryId(peerId: peerId, id: Int32(storyIdValue.intValue))
+    if let storyId = notificationPayloadInt32(payload["story_id"]) {
+        return StoryId(peerId: peerId, id: storyId)
     }
     return nil
+}
+
+private func notificationPayloadInt64(_ value: Any?) -> Int64? {
+    if let value = value as? Int64 {
+        return value
+    } else if let value = value as? Int32 {
+        return Int64(value)
+    } else if let value = value as? Int {
+        return Int64(value)
+    } else if let value = value as? NSNumber {
+        return value.int64Value
+    } else if let value = value as? String {
+        return Int64(value)
+    } else if let value = value as? NSString {
+        return Int64(value as String)
+    } else {
+        return nil
+    }
+}
+
+private func notificationPayloadInt32(_ value: Any?) -> Int32? {
+    guard let value = notificationPayloadInt64(value), value >= Int64(Int32.min), value <= Int64(Int32.max) else {
+        return nil
+    }
+    return Int32(value)
 }
 
 private enum DownloadFileError {

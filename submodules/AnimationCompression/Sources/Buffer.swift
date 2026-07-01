@@ -26,19 +26,31 @@ final class WriteBuffer: MemoryBuffer {
     }
     
     func write(_ data: UnsafeRawPointer, offset: Int = 0, length: Int) {
+        guard length > 0 else {
+            return
+        }
         if self.offset + length > self.data.count {
             self.data.count = self.offset + length + 256
         }
         self.data.withUnsafeMutableBytes { bytes in
-            let _ = memcpy(bytes.baseAddress!.advanced(by: self.offset), data + offset, length)
+            guard let baseAddress = bytes.baseAddress else {
+                return
+            }
+            let _ = memcpy(baseAddress.advanced(by: self.offset), data.advanced(by: offset), length)
         }
         self.offset += length
         self.length = self.offset
     }
     
     func write(_ data: Data) {
+        guard !data.isEmpty else {
+            return
+        }
         data.withUnsafeBytes { bytes in
-            self.write(bytes.baseAddress!, length: bytes.count)
+            guard let baseAddress = bytes.baseAddress else {
+                return
+            }
+            self.write(baseAddress, length: bytes.count)
         }
     }
 
@@ -70,13 +82,36 @@ final class ReadBuffer: MemoryBuffer {
     }
     
     func read(_ data: UnsafeMutableRawPointer, length: Int) {
-        self.data.copyBytes(to: data.assumingMemoryBound(to: UInt8.self), from: self.offset ..< (self.offset + length))
+        guard length > 0 else {
+            return
+        }
+
+        let availableLength = max(0, min(length, self.data.count - self.offset))
+        if availableLength > 0 {
+            self.data.copyBytes(to: data.assumingMemoryBound(to: UInt8.self), from: self.offset ..< (self.offset + availableLength))
+        }
+        if availableLength < length {
+            memset(data.advanced(by: availableLength), 0, length - availableLength)
+        }
         self.offset += length
     }
     
     func readDataNoCopy(length: Int) -> Data {
+        guard length > 0 else {
+            return Data()
+        }
+
+        let availableLength = max(0, min(length, self.data.count - self.offset))
+        guard availableLength == length else {
+            self.offset += length
+            return Data()
+        }
+
         let result = self.data.withUnsafeBytes { bytes -> Data in
-            return Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes.baseAddress!.advanced(by: self.offset)), count: length, deallocator: .none)
+            guard let baseAddress = bytes.baseAddress else {
+                return Data()
+            }
+            return Data(bytes: baseAddress.advanced(by: self.offset), count: length)
         }
         self.offset += length
         return result

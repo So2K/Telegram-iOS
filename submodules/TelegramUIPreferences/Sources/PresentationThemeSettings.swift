@@ -70,7 +70,11 @@ public struct PresentationLocalTheme: EnginePostboxCoding, Equatable {
     
     public init(decoder: EnginePostboxDecoder) {
         self.title = decoder.decodeStringForKey("title", orElse: "")
-        self.resource = decoder.decodeObjectForKey("resource", decoder: { LocalFileMediaResource(decoder: $0) }) as! LocalFileMediaResource
+        if let resource = decoder.decodeObjectForKey("resource", decoder: { LocalFileMediaResource(decoder: $0) }) as? LocalFileMediaResource {
+            self.resource = resource
+        } else {
+            self.resource = LocalFileMediaResource(fileId: 0)
+        }
         self.resolvedWallpaper = decoder.decode(TelegramWallpaperNativeCodable.self, forKey: "wallpaper")?.value
     }
     
@@ -144,7 +148,8 @@ public enum PresentationThemeReference: EnginePostboxCoding, Equatable {
     public init(decoder: EnginePostboxDecoder) {
         switch decoder.decodeInt32ForKey("v", orElse: 0) {
             case 0:
-                self = .builtin(PresentationBuiltinThemeReference(rawValue: decoder.decodeInt32ForKey("t", orElse: 0))!)
+                let reference = PresentationBuiltinThemeReference(rawValue: decoder.decodeInt32ForKey("t", orElse: 0)) ?? .dayClassic
+                self = .builtin(reference)
             case 1:
                 if let localTheme = decoder.decodeObjectForKey("localTheme", decoder: { PresentationLocalTheme(decoder: $0) }) as? PresentationLocalTheme {
                     self = .local(localTheme)
@@ -672,7 +677,7 @@ public struct PresentationThemeSettings: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: StringCodingKey.self)
 
-        if let themeData = try container.decodeIfPresent(EngineAdaptedPostboxDecoder.RawObjectData.self, forKey: "t") {
+        if let themeData = try? container.decodeIfPresent(EngineAdaptedPostboxDecoder.RawObjectData.self, forKey: "t") {
             self.theme = PresentationThemeReference(decoder: EnginePostboxDecoder(buffer: EngineMemoryBuffer(data: themeData.data)))
         } else {
             self.theme = .builtin(.dayClassic)
@@ -687,14 +692,14 @@ public struct PresentationThemeSettings: Codable {
         }
         self.themePreferredBaseTheme = mappedThemePreferredBaseTheme
 
-        let themeSpecificChatWallpapersDict = try container.decode([DictionaryKey: TelegramWallpaperNativeCodable].self, forKey: "themeSpecificChatWallpapers")
+        let themeSpecificChatWallpapersDict = (try? container.decode([DictionaryKey: TelegramWallpaperNativeCodable].self, forKey: "themeSpecificChatWallpapers")) ?? [:]
         var mappedThemeSpecificChatWallpapers: [Int64: TelegramWallpaper] = [:]
         for (key, value) in themeSpecificChatWallpapersDict {
             mappedThemeSpecificChatWallpapers[key.key] = value.value
         }
         self.themeSpecificChatWallpapers = mappedThemeSpecificChatWallpapers
 
-        let themeSpecificAccentColorsDict = try container.decode([DictionaryKey: EngineAdaptedPostboxDecoder.RawObjectData].self, forKey: "themeSpecificAccentColors")
+        let themeSpecificAccentColorsDict = (try? container.decode([DictionaryKey: EngineAdaptedPostboxDecoder.RawObjectData].self, forKey: "themeSpecificAccentColors")) ?? [:]
         var mappedThemeSpecificAccentColors: [Int64: PresentationThemeAccentColor] = [:]
         for (key, value) in themeSpecificAccentColorsDict {
             let innerDecoder = EnginePostboxDecoder(buffer: EngineMemoryBuffer(data: value.data))

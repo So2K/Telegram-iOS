@@ -55,9 +55,13 @@ final class GradientPasscodeBackground: PasscodeBackground {
             let gradientColors = [backgroundColors.1.cgColor, backgroundColors.0.cgColor] as CFArray
             var locations: [CGFloat] = [0.0, 1.0]
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations)!
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
-        })!
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+            } else {
+                context.setFillColor(backgroundColors.1.cgColor)
+                context.fill(CGRect(origin: .zero, size: size))
+            }
+        })
         self.foregroundImage = generateImage(CGSize(width: 1.0, height: 1.0), contextGenerator: { size, context in
             let bounds = CGRect(origin: CGPoint(), size: size)
             context.clear(bounds)
@@ -67,7 +71,7 @@ final class GradientPasscodeBackground: PasscodeBackground {
                 context.setFillColor(UIColor.white.withAlphaComponent(0.5).cgColor)
             }
             context.fill(bounds)
-        })!
+        })
     }
     
     func makeBackgroundNode() -> ASDisplayNode? {
@@ -86,9 +90,14 @@ final class ImageBasedPasscodeBackground: PasscodeBackground {
     
     init(image: UIImage, size: CGSize) {
         self.size = size
+        guard let sourceImage = image.cgImage else {
+            return
+        }
         
         let contextSize = size.aspectFilled(CGSize(width: 320.0, height: 320.0))
-        let foregroundContext = DrawingContext(size: contextSize, scale: 1.0)!
+        guard let foregroundContext = DrawingContext(size: contextSize, scale: 1.0) else {
+            return
+        }
         let bounds = CGRect(origin: CGPoint(), size: contextSize)
         
         let filledImageSize = image.size.aspectFilled(contextSize)
@@ -96,7 +105,7 @@ final class ImageBasedPasscodeBackground: PasscodeBackground {
         
         foregroundContext.withFlippedContext { c in
             c.interpolationQuality = .medium
-            c.draw(image.cgImage!, in: filledImageRect)
+            c.draw(sourceImage, in: filledImageRect)
         }
         telegramFastBlurMore(Int32(contextSize.width), Int32(contextSize.height), Int32(foregroundContext.bytesPerRow), foregroundContext.bytes)
         telegramFastBlurMore(Int32(contextSize.width), Int32(contextSize.height), Int32(foregroundContext.bytesPerRow), foregroundContext.bytes)
@@ -107,12 +116,14 @@ final class ImageBasedPasscodeBackground: PasscodeBackground {
             c.setFillColor(UIColor(white: 1.0, alpha: 0.1).cgColor)
             c.fill(bounds)
         }
-        self.foregroundImage = foregroundContext.generateImage()!
+        self.foregroundImage = foregroundContext.generateImage()
         
-        let backgroundContext = DrawingContext(size: contextSize, scale: 1.0)!
+        guard let backgroundContext = DrawingContext(size: contextSize, scale: 1.0) else {
+            return
+        }
         backgroundContext.withFlippedContext { c in
             c.interpolationQuality = .medium
-            c.draw(image.cgImage!, in: filledImageRect)
+            c.draw(sourceImage, in: filledImageRect)
         }
         telegramFastBlurMore(Int32(contextSize.width), Int32(contextSize.height), Int32(backgroundContext.bytesPerRow), backgroundContext.bytes)
         telegramFastBlurMore(Int32(contextSize.width), Int32(contextSize.height), Int32(backgroundContext.bytesPerRow), backgroundContext.bytes)
@@ -122,7 +133,7 @@ final class ImageBasedPasscodeBackground: PasscodeBackground {
             context.setFillColor(UIColor(white: 0.0, alpha: 0.35).cgColor)
             context.fill(bounds)
         }
-        self.backgroundImage = backgroundContext.generateImage()!
+        self.backgroundImage = backgroundContext.generateImage()
     }
 
     func makeBackgroundNode() -> ASDisplayNode? {

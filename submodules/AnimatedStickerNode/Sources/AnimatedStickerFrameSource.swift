@@ -9,6 +9,11 @@ import ManagedFile
 import AnimationCompression
 
 private let sharedStoreQueue = Queue.concurrentDefaultQueue()
+private let maxCachedAnimationHeaderSize = 5 * 4
+private let maxCachedAnimationDimension = 4096
+private let maxCachedAnimationFrameRate = 240
+private let maxCachedAnimationFrameCount = 10000
+private let maxCachedAnimationFrameBufferSize = 64 * 1024 * 1024
 
 public extension EmojiFitzModifier {
     var lottieFitzModifier: LottieFitzModifier {
@@ -78,6 +83,10 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
         var frameRate = 0
         var frameCount = 0
         
+        if self.data.count < maxCachedAnimationHeaderSize {
+            return nil
+        }
+
         if !self.data.withUnsafeBytes({ buffer -> Bool in
             guard let bytes = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return false
@@ -108,6 +117,20 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
             return nil
         }
         
+        let frameBufferSize = Int64(bytesPerRow) * Int64(height)
+        if frameRate <= 0 || frameRate > maxCachedAnimationFrameRate {
+            return nil
+        }
+        if frameCount <= 0 || frameCount > maxCachedAnimationFrameCount {
+            return nil
+        }
+        if width <= 0 || width > maxCachedAnimationDimension || height <= 0 || height > maxCachedAnimationDimension {
+            return nil
+        }
+        if bytesPerRow <= 0 || frameBufferSize <= 0 || frameBufferSize > Int64(maxCachedAnimationFrameBufferSize) {
+            return nil
+        }
+
         self.bytesPerRow = bytesPerRow
         
         self.width = width
@@ -165,8 +188,13 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
             
             var frameLength: Int32 = 0
             memcpy(&frameLength, bytes.advanced(by: self.offset), 4)
+            let frameLengthValue = Int(frameLength)
+
+            if frameLengthValue <= 0 {
+                return
+            }
             
-            if self.offset + 4 + Int(frameLength) > dataLength {
+            if self.offset + 4 + frameLengthValue > dataLength {
                 return
             }
             
@@ -188,7 +216,10 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
                                 return
                             }
 
-                            compression_decode_buffer(decodeBytes, decodeBufferLength, bytes.advanced(by: self.offset), Int(frameLength), UnsafeMutableRawPointer(scratchBytes), COMPRESSION_LZFSE)
+                            let resultLength = compression_decode_buffer(decodeBytes, decodeBufferLength, bytes.advanced(by: self.offset), frameLengthValue, UnsafeMutableRawPointer(scratchBytes), COMPRESSION_LZFSE)
+                            if resultLength == 0 {
+                                return
+                            }
                             
                             var lhs = UnsafeMutableRawPointer(frameBytes).assumingMemoryBound(to: UInt64.self)
                             var rhs = UnsafeRawPointer(decodeBytes).assumingMemoryBound(to: UInt64.self)
@@ -212,7 +243,7 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
             }
             
             self.frameIndex += 1
-            self.offset += Int(frameLength)
+            self.offset += frameLengthValue
             if self.offset == dataLength && self.dataComplete {
                 isLastFrame = true
                 self.frameIndex = 0
@@ -512,7 +543,9 @@ private final class AnimatedStickerDirectFrameSourceCache {
             if compressedData.count > 4 {
                 var magic: Int32 = 0
                 compressedData.withUnsafeBytes { bytes in
-                    let _ = memcpy(&magic, bytes.baseAddress!, 4)
+                    if let baseAddress = bytes.baseAddress {
+                        let _ = memcpy(&magic, baseAddress, 4)
+                    }
                 }
                 if magic == 0x543ee445 {
                     return AnimatedStickerFrame(data: compressedData, type: .dct, width: 0, height: 0, bytesPerRow: 0, index: index, isLastFrame: index == frameCount - 1, totalFrames: frameCount)
@@ -632,10 +665,10 @@ public final class AnimatedStickerDirectFrameSource: AnimatedStickerFrameSource 
     }
     
     public func skipToEnd() {
-        self.currentFrame = self.frameCount - 1
+        self.currentFrame = max(0, self.frameCount - 1)
     }
 
     public func skipToFrameIndex(_ index: Int) {
-        self.currentFrame = index
+        self.currentFrame = max(0, min(index, self.frameCount - 1))
     }
 }

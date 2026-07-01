@@ -51,6 +51,9 @@ private func adjustSaturationInContext(context: DrawingContext, saturation: CGFl
 
 
 private func generateBlurredThumbnail(image: UIImage, adjustSaturation: Bool = false) -> UIImage? {
+    guard let imageData = image.cgImage else {
+        return nil
+    }
     let thumbnailContextSize = CGSize(width: 32.0, height: 32.0)
     guard let thumbnailContext = DrawingContext(size: thumbnailContextSize, scale: 1.0) else {
         return nil
@@ -60,7 +63,7 @@ private func generateBlurredThumbnail(image: UIImage, adjustSaturation: Bool = f
     let imageRect = CGRect(origin: CGPoint(x: (thumbnailContextSize.width - filledSize.width) / 2.0, y: (thumbnailContextSize.height - filledSize.height) / 2.0), size: filledSize)
 
     thumbnailContext.withFlippedContext { c in
-        c.draw(image.cgImage!, in: imageRect)
+        c.draw(imageData, in: imageRect)
     }
     telegramFastBlurMore(Int32(thumbnailContextSize.width), Int32(thumbnailContextSize.height), Int32(thumbnailContext.bytesPerRow), thumbnailContext.bytes)
 
@@ -107,7 +110,9 @@ private func storeImage(context: DrawingContext, mediaBox: MediaBox, resourceId:
         target.height = UInt(context.size.height)
         target.rowBytes = Int(context.size.width) * 2
         let targetLength = Int(target.height) * target.rowBytes
-        let targetData = malloc(targetLength)!
+        guard targetLength > 0, let targetData = malloc(targetLength) else {
+            return nil
+        }
         defer {
             free(targetData)
         }
@@ -137,20 +142,32 @@ private func loadImage(data: Data) -> UIImage? {
     if data.count > 4 + 2 + 2 + 2 {
         var header: UInt32 = 0
         withUnsafeMutableBytes(of: &header, { header in
-            data.copyBytes(to: header.baseAddress!.assumingMemoryBound(to: UInt8.self), from: 0 ..< 4)
+            guard let baseAddress = header.baseAddress else {
+                return
+            }
+            data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: 0 ..< 4)
         })
         if header == 0xcaf1 {
             var width: UInt16 = 0
             withUnsafeMutableBytes(of: &width, { width in
-                data.copyBytes(to: width.baseAddress!.assumingMemoryBound(to: UInt8.self), from: 4 ..< (4 + 2))
+                guard let baseAddress = width.baseAddress else {
+                    return
+                }
+                data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: 4 ..< (4 + 2))
             })
             var height: UInt16 = 0
             withUnsafeMutableBytes(of: &height, { height in
-                data.copyBytes(to: height.baseAddress!.assumingMemoryBound(to: UInt8.self), from: (4 + 2) ..< (4 + 2 + 2))
+                guard let baseAddress = height.baseAddress else {
+                    return
+                }
+                data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: (4 + 2) ..< (4 + 2 + 2))
             })
             var bytesPerRow: UInt16 = 0
             withUnsafeMutableBytes(of: &bytesPerRow, { bytesPerRow in
-                data.copyBytes(to: bytesPerRow.baseAddress!.assumingMemoryBound(to: UInt8.self), from: (4 + 2 + 2) ..< (4 + 2 + 2 + 2))
+                guard let baseAddress = bytesPerRow.baseAddress else {
+                    return
+                }
+                data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: (4 + 2 + 2) ..< (4 + 2 + 2 + 2))
             })
 
             let imageData = data.subdata(in: (4 + 2 + 2 + 2) ..< data.count)
@@ -178,15 +195,26 @@ private func loadImage(data: Data) -> UIImage? {
         } else if header == 0xcaf2 {
             var width: UInt16 = 0
             withUnsafeMutableBytes(of: &width, { width in
-                data.copyBytes(to: width.baseAddress!.assumingMemoryBound(to: UInt8.self), from: 4 ..< (4 + 2))
+                guard let baseAddress = width.baseAddress else {
+                    return
+                }
+                data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: 4 ..< (4 + 2))
             })
             var height: UInt16 = 0
             withUnsafeMutableBytes(of: &height, { height in
-                data.copyBytes(to: height.baseAddress!.assumingMemoryBound(to: UInt8.self), from: (4 + 2) ..< (4 + 2 + 2))
+                guard let baseAddress = height.baseAddress else {
+                    return
+                }
+                data.copyBytes(to: baseAddress.assumingMemoryBound(to: UInt8.self), from: (4 + 2) ..< (4 + 2 + 2))
             })
+            guard width > 0, height > 0, data.count >= 4 + 2 + 2 + Int(width) * Int(height) * 2 else {
+                return nil
+            }
 
             return data.withUnsafeBytes { data -> UIImage? in
-                let sourceBytes = data.baseAddress!
+                guard let sourceBytes = data.baseAddress else {
+                    return nil
+                }
 
                 var source = vImage_Buffer()
                 source.width = UInt(width)
@@ -290,6 +318,11 @@ public final class DirectMediaImageCache {
 
             let data = dataSignal.start(next: { data in
                 if let data = data, let image = UIImage(data: data) {
+                    guard let imageData = image.cgImage else {
+                        subscriber.putNext(nil)
+                        subscriber.putCompletion()
+                        return
+                    }
                     let scaledSize = CGSize(width: CGFloat(width), height: floor(CGFloat(width) / aspectRatio))
                     guard let scaledContext = DrawingContext(size: scaledSize, scale: 1.0, opaque: true) else {
                         subscriber.putNext(nil)
@@ -299,7 +332,7 @@ public final class DirectMediaImageCache {
                     scaledContext.withFlippedContext { context in
                         let filledSize = image.size.aspectFilled(scaledSize)
                         let imageRect = CGRect(origin: CGPoint(x: (scaledSize.width - filledSize.width) / 2.0, y: (scaledSize.height - filledSize.height) / 2.0), size: filledSize)
-                        context.draw(image.cgImage!, in: imageRect)
+                        context.draw(imageData, in: imageRect)
                     }
 
                     if let scaledImage = storeImage(context: scaledContext, mediaBox: self.account.postbox.mediaBox, resourceId: resource.resource.id, imageType: .square(width: width, aspectRatio: aspectRatio)) {

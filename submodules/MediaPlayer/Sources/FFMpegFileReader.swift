@@ -12,10 +12,10 @@ import Postbox
 import ManagedFile
 
 private func FFMpegFileReader_readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    guard let buffer else {
+    guard let userData, let buffer, bufferSize > 0 else {
         return FFMPEG_CONSTANT_AVERROR_EOF
     }
-    let context = Unmanaged<FFMpegFileReader>.fromOpaque(userData!).takeUnretainedValue()
+    let context = Unmanaged<FFMpegFileReader>.fromOpaque(userData).takeUnretainedValue()
     
     switch context.source {
     case let .file(file):
@@ -68,7 +68,10 @@ private func FFMpegFileReader_readPacketCallback(userData: UnsafeMutableRawPoint
 }
 
 private func FFMpegFileReader_seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<FFMpegFileReader>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return -1
+    }
+    let context = Unmanaged<FFMpegFileReader>.fromOpaque(userData).takeUnretainedValue()
     if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
         switch context.source {
         case let .file(file):
@@ -79,11 +82,14 @@ private func FFMpegFileReader_seekCallback(userData: UnsafeMutableRawPointer?, o
     } else {
         switch context.source {
         case let .file(file):
-            let _ = file.seek(position: offset)
+            let boundedOffset = max(0, min(offset, file.getSize() ?? offset))
+            let _ = file.seek(position: boundedOffset)
+            return boundedOffset
         case let .resource(resource):
-            resource.readingPosition = offset
+            let boundedOffset = max(0, min(offset, resource.size))
+            resource.readingPosition = boundedOffset
+            return boundedOffset
         }
-        return offset
     }
 }
 

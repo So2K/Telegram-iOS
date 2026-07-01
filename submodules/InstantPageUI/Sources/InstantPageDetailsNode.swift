@@ -297,7 +297,9 @@ final class InstantPageDetailsArrowNode : ASDisplayNode {
     }
     
     @objc override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if let parameters = parameters as? InstantPageDetailsArrowNodeParameters {
             context.setStrokeColor(parameters.color.cgColor)

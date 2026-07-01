@@ -2650,8 +2650,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 if data.count != 1 {
                     return
                 }
-                let buttonType = data.withUnsafeBytes { buffer -> UInt8 in
-                    return buffer.baseAddress!.assumingMemoryBound(to: UInt8.self).pointee
+                guard let buttonType = data.first else {
+                    return
                 }
                 
                 switch buttonType {
@@ -2702,8 +2702,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 if data.count != 1 {
                     return
                 }
-                let buttonType = data.withUnsafeBytes { buffer -> UInt8 in
-                    return buffer.baseAddress!.assumingMemoryBound(to: UInt8.self).pointee
+                guard let buttonType = data.first else {
+                    return
                 }
                 
                 switch buttonType {
@@ -2738,8 +2738,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 if data.count != 1 {
                     return
                 }
-                let buttonType = data.withUnsafeBytes { buffer -> UInt8 in
-                    return buffer.baseAddress!.assumingMemoryBound(to: UInt8.self).pointee
+                guard let buttonType = data.first else {
+                    return
                 }
                 
                 if message.effectivelyIncoming(strongSelf.context.account.peerId) {
@@ -2898,8 +2898,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                     return false
                 }
             }), let data = data?.makeData(), data.count == 1 {
-                let buttonType = data.withUnsafeBytes { buffer -> UInt8 in
-                    return buffer.baseAddress!.assumingMemoryBound(to: UInt8.self).pointee
+                guard let buttonType = data.first else {
+                    return
                 }
                 if buttonType == 3 {
                     if let threadId = message.threadId {
@@ -4191,8 +4191,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                     self.interfaceInteraction?.displaySlowmodeTooltip(self.chatDisplayNode.view, rect)
                 }
                 return
-            } else {
-                let _ = self.context.engine.messages.sendScheduledMessageNowInteractively(messageId: messageIds.first!).startStandalone()
+            } else if let messageId = messageIds.first {
+                let _ = self.context.engine.messages.sendScheduledMessageNowInteractively(messageId: messageId).startStandalone()
             }
         }, editScheduledMessagesTime: { [weak self] messageIds in
             if let strongSelf = self, let messageId = messageIds.first {

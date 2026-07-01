@@ -129,6 +129,9 @@ public final class CompressedImageRenderer {
         
         let width = Int(readBuffer.readInt32())
         let height = Int(readBuffer.readInt32())
+        guard width > 0, height > 0 else {
+            return
+        }
         
         let compressedTextures: TextureSet
         if let current = self.compressedTextures, current.width == width, current.height == height {
@@ -171,7 +174,13 @@ public final class CompressedImageRenderer {
             let bytesPerRow = Int(readBuffer.readInt32())
             
             let planeSize = Int(readBuffer.readInt32())
+            guard planeWidth > 0, planeHeight > 0, bytesPerRow > 0, planeSize > 0 else {
+                return
+            }
             let planeData = readBuffer.readDataNoCopy(length: planeSize)
+            guard planeData.count == planeSize else {
+                return
+            }
             
             var tempData: Data?
             compressedTextures.textures[i].readDirect(width: planeWidth, height: planeHeight, bytesPerRow: bytesPerRow, read: { destinationBytes in
@@ -180,9 +189,12 @@ public final class CompressedImageRenderer {
                     return UnsafeRawPointer(destinationBytes)
                 } else {
                     tempData = Data(count: bytesPerRow * planeHeight)
-                    return tempData!.withUnsafeMutableBytes { bytes -> UnsafeRawPointer in
-                        readDCTBlocks(Int32(planeWidth), Int32(planeHeight), planeData, bytes.baseAddress!.assumingMemoryBound(to: Float32.self), Int32(bytesPerRow / 4))
-                        return UnsafeRawPointer(bytes.baseAddress!)
+                    return tempData?.withUnsafeMutableBytes { bytes -> UnsafeRawPointer? in
+                        guard let baseAddress = bytes.baseAddress else {
+                            return nil
+                        }
+                        readDCTBlocks(Int32(planeWidth), Int32(planeHeight), planeData, baseAddress.assumingMemoryBound(to: Float32.self), Int32(bytesPerRow / 4))
+                        return UnsafeRawPointer(baseAddress)
                     }
                 }
             })
@@ -307,6 +319,11 @@ public final class CompressedImageRenderer {
         self.outputTextures = nil
         self.yuvaTextures = nil
         
+        let requiredDataLength = bytesPerRow * height
+        guard width > 0, height > 0, bytesPerRow > 0, data.count >= requiredDataLength else {
+            return
+        }
+
         let rgbTexture: Texture
         if let current = self.rgbTexture, current.width == width, current.height == height {
             rgbTexture = current
@@ -319,12 +336,15 @@ public final class CompressedImageRenderer {
         }
         
         rgbTexture.readDirect(width: width, height: height, bytesPerRow: bytesPerRow, read: { destinationBytes in
-            return data.withUnsafeBytes { bytes -> UnsafeRawPointer in
+            return data.withUnsafeBytes { bytes -> UnsafeRawPointer? in
+                guard let baseAddress = bytes.baseAddress else {
+                    return nil
+                }
                 if let destinationBytes = destinationBytes {
-                    memcpy(destinationBytes, bytes.baseAddress!, bytes.count)
+                    memcpy(destinationBytes, baseAddress, requiredDataLength)
                     return UnsafeRawPointer(destinationBytes)
                 } else {
-                    return bytes.baseAddress!
+                    return baseAddress
                 }
             }
         })
@@ -382,6 +402,10 @@ public final class CompressedImageRenderer {
     
     private func updateYuvaTextures(width: Int, height: Int, data: Data) {
         if width % 2 != 0 || height % 2 != 0 {
+            return
+        }
+        let requiredDataLength = width * height * 2 + width / 2 * height
+        guard width > 0, height > 0, data.count >= requiredDataLength else {
             return
         }
         

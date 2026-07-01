@@ -20,10 +20,10 @@ struct MediaEditorAdjustments {
     var vignette: simd_float1
     var hasCurves: simd_float1
     var empty: simd_float2
-    
+
     var hasValues: Bool {
         let epsilon: simd_float1 = 0.005
-        
+
         if abs(self.shadows) > epsilon {
             return true
         }
@@ -66,7 +66,7 @@ struct MediaEditorAdjustments {
 
 final class AdjustmentsRenderPass: DefaultRenderPass {
     fileprivate var cachedTexture: MTLTexture?
-    
+
     var adjustments = MediaEditorAdjustments(
         dimensions: simd_float2(1.0, 1.0),
         aspectRatio: 0.0,
@@ -86,29 +86,29 @@ final class AdjustmentsRenderPass: DefaultRenderPass {
         hasCurves: 0.0,
         empty: simd_float2(0.0, 0.0)
     )
-    
+
     var allCurve: [Float] = Array(repeating: 0, count: 200)
     var redCurve: [Float] = Array(repeating: 0, count: 200)
     var greenCurve: [Float] = Array(repeating: 0, count: 200)
     var blueCurve: [Float] = Array(repeating: 0, count: 200)
-    
+
     override var fragmentShaderFunctionName: String {
         return "adjustmentsFragmentShader"
     }
-        
+
     override func process(input: MTLTexture, device: MTLDevice, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
 //        guard self.adjustments.hasValues else {
 //            return input
 //        }
         self.setupVerticesBuffer(device: device)
-                
+
         let width = input.width
         let height = input.height
-        
+
         if self.cachedTexture == nil || self.cachedTexture?.width != width || self.cachedTexture?.height != height {
             self.adjustments.dimensions = simd_float2(Float(width), Float(height))
             self.adjustments.aspectRatio = Float(width) / Float(height)
-            
+
             let textureDescriptor = MTLTextureDescriptor()
             textureDescriptor.textureType = .type2D
             textureDescriptor.width = width
@@ -122,39 +122,43 @@ final class AdjustmentsRenderPass: DefaultRenderPass {
             self.cachedTexture = texture
             texture.label = "adjustmentsTexture"
         }
-        
+
+        guard let cachedTexture = self.cachedTexture else {
+            return input
+        }
+
         let renderPassDescriptor = MTLRenderPassDescriptor()
-        renderPassDescriptor.colorAttachments[0].texture = self.cachedTexture!
+        renderPassDescriptor.colorAttachments[0].texture = cachedTexture
         renderPassDescriptor.colorAttachments[0].loadAction = .dontCare
         renderPassDescriptor.colorAttachments[0].storeAction = .store
         renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
         guard let renderCommandEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
             return input
         }
-        
+
         renderCommandEncoder.setViewport(MTLViewport(
             originX: 0, originY: 0,
             width: Double(width), height: Double(height),
             znear: -1.0, zfar: 1.0)
         )
-        
+
         renderCommandEncoder.setFragmentTexture(input, index: 0)
         renderCommandEncoder.setFragmentBytes(&self.adjustments, length: MemoryLayout<MediaEditorAdjustments>.size, index: 0)
-        
+
         let allCurve = self.allCurve
         let redCurve = self.redCurve
         let greenCurve = self.greenCurve
         let blueCurve = self.blueCurve
-        
+
         renderCommandEncoder.setFragmentBytes(allCurve, length: MemoryLayout<Float>.size * 200, index: 1)
         renderCommandEncoder.setFragmentBytes(redCurve, length: MemoryLayout<Float>.size * 200, index: 2)
         renderCommandEncoder.setFragmentBytes(greenCurve, length: MemoryLayout<Float>.size * 200, index: 3)
         renderCommandEncoder.setFragmentBytes(blueCurve, length: MemoryLayout<Float>.size * 200, index: 4)
-        
+
         self.encodeDefaultCommands(using: renderCommandEncoder)
-        
+
         renderCommandEncoder.endEncoding()
-        
-        return self.cachedTexture!
+
+        return cachedTexture
     }
 }

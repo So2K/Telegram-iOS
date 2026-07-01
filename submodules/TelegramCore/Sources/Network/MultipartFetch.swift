@@ -25,22 +25,41 @@ private final class MultipartDownloadState {
         self.decryptedSize = decryptedSize
     }
     
-    func transform(offset: Int64, data: Data) -> Data {
+    func transform(offset: Int64, data: Data) -> Data? {
         if self.aesKey.count != 0 {
+            guard let decryptedSize = self.decryptedSize else {
+                return nil
+            }
+            guard data.count % 16 == 0 else {
+                return nil
+            }
+            if data.isEmpty {
+                return data
+            }
             var decryptedData = data
-            assert(decryptedSize != nil)
-            assert(decryptedData.count % 16 == 0)
             let decryptedDataCount = decryptedData.count
             assert(offset == self.currentSize)
+            guard offset == self.currentSize else {
+                return nil
+            }
+            var didDecrypt = false
             decryptedData.withUnsafeMutableBytes { rawBytes -> Void in
-                let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return
+                }
                 self.aesIv.withUnsafeMutableBytes { rawIv -> Void in
-                    let iv = rawIv.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    guard let iv = rawIv.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                        return
+                    }
                     MTAesDecryptBytesInplaceAndModifyIv(bytes, decryptedDataCount, self.aesKey, iv)
+                    didDecrypt = true
                 }
             }
-            if self.currentSize + Int64(decryptedData.count) > self.decryptedSize! {
-                decryptedData.count = Int(self.decryptedSize! - self.currentSize)
+            guard didDecrypt else {
+                return nil
+            }
+            if self.currentSize + Int64(decryptedData.count) > decryptedSize {
+                decryptedData.count = Int(decryptedSize - self.currentSize)
             }
             self.currentSize += Int64(decryptedData.count)
             return decryptedData
@@ -433,12 +452,22 @@ private enum MultipartFetchSource {
                             } else {
                                 var partIv = iv
                                 let partIvCount = partIv.count
+                                guard partIvCount >= 4 else {
+                                    return .fail(.generic)
+                                }
+                                var didSetIvOffset = false
                                 partIv.withUnsafeMutableBytes { rawBytes -> Void in
-                                    let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                                    guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                                        return
+                                    }
                                     var ivOffset: Int32 = Int32(clamping: (offset / 16)).bigEndian
                                     memcpy(bytes.advanced(by: partIvCount - 4), &ivOffset, 4)
+                                    didSetIvOffset = true
                                 }
-                                return .single((MTAesCtrDecrypt(bytes.makeData(), key, partIv)!, info))
+                                guard didSetIvOffset, let decryptedData = MTAesCtrDecrypt(bytes.makeData(), key, partIv) else {
+                                    return .fail(.generic)
+                                }
+                                return .single((decryptedData, info))
                             }
                     }
                 }
@@ -782,7 +811,11 @@ private final class MultipartFetchManager {
                     
                     self.addSpeedRecord(byteCount: Int(partRange.upperBound - partRange.lowerBound))
                     
-                    self.partReady(offset, self.state.transform(offset: offset, data: data))
+                    guard let transformedData = self.state.transform(offset: offset, data: data) else {
+                        self.finishWithError(.generic)
+                        return
+                    }
+                    self.partReady(offset, transformedData)
                 }
             }
         }

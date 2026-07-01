@@ -9,6 +9,37 @@ import LegacyMediaPickerUI
 import SaveToCameraRoll
 import PresentationDataUtils
 
+private func sanitizedExportFileNameComponent(_ value: String) -> String {
+    var result = ""
+    for scalar in value.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
+        switch scalar.value {
+        case 0, 47, 58, 92:
+            result.append("_")
+        default:
+            result.append(String(scalar))
+        }
+    }
+    if result == "." || result == ".." {
+        return "_"
+    } else if result.hasPrefix("..") {
+        result = "__" + String(result.dropFirst(2))
+    }
+    if result.count > 120 {
+        result = String(result.prefix(120))
+    }
+    return result.isEmpty ? "_" : result
+}
+
+private func linkExportFile(sourcePath: String, targetPath: String) -> Bool {
+    try? FileManager.default.removeItem(atPath: targetPath)
+    do {
+        try FileManager.default.linkItem(atPath: sourcePath, toPath: targetPath)
+        return true
+    } catch {
+        return false
+    }
+}
+
 func saveMediaToFiles(context: AccountContext, fileReference: FileMediaReference, present: @escaping (ViewController, Any?) -> Void) -> Disposable {
     var title: String?
     var performer: String?
@@ -61,8 +92,9 @@ func saveMediaToFiles(context: AccountContext, fileReference: FileMediaReference
         case let .data(data):
             if data.isComplete {
                 var symlinkPath = data.path + ".mp3"
-                try? FileManager.default.removeItem(atPath: symlinkPath)
-                let _ = try? FileManager.default.linkItem(atPath: data.path, toPath: symlinkPath)
+                if !linkExportFile(sourcePath: data.path, targetPath: symlinkPath) {
+                    symlinkPath = data.path
+                }
                 
                 let audioUrl = URL(fileURLWithPath: symlinkPath)
                 let audioAsset = AVURLAsset(url: audioUrl)
@@ -105,11 +137,13 @@ func saveMediaToFiles(context: AccountContext, fileReference: FileMediaReference
                     }
                 }
                 if !nameComponents.isEmpty {
-                    try? FileManager.default.removeItem(atPath: symlinkPath)
-                    
-                    let fileName = "\(nameComponents.joined(separator: " – ")).\(fileExtension)"
-                    symlinkPath = symlinkPath.replacingOccurrences(of: audioUrl.lastPathComponent, with: fileName)
-                    let _ = try? FileManager.default.linkItem(atPath: data.path, toPath: symlinkPath)
+                    let sanitizedNameComponents = nameComponents.map(sanitizedExportFileNameComponent)
+                    let sanitizedExtension = sanitizedExportFileNameComponent(fileExtension)
+                    let fileName = "\(sanitizedNameComponents.joined(separator: " – ")).\(sanitizedExtension)"
+                    let updatedSymlinkPath = audioUrl.deletingLastPathComponent().appendingPathComponent(fileName).path
+                    if updatedSymlinkPath != symlinkPath && linkExportFile(sourcePath: data.path, targetPath: updatedSymlinkPath) {
+                        symlinkPath = updatedSymlinkPath
+                    }
                 }
                 
                 let url = URL(fileURLWithPath: symlinkPath)

@@ -103,6 +103,7 @@ private enum DebugControllerEntry: ItemListNodeEntry {
     case enableReactionOverrides(Bool)
     case compressedEmojiCache(Bool)
     case storiesJpegExperiment(Bool)
+    case hideStories(Bool)
     case checkSerializedData(Bool)
     case enableQuickReactionSwitch(Bool)
     case disableReloginTokens(Bool)
@@ -137,7 +138,7 @@ private enum DebugControllerEntry: ItemListNodeEntry {
             return DebugControllerSection.web.rawValue
         case .keepChatNavigationStack, .skipReadHistory, .alwaysDisplayTyping, .debugRatingLayout, .crashOnSlowQueries, .crashOnMemoryPressure:
             return DebugControllerSection.experiments.rawValue
-        case .clearTips, .resetNotifications, .crash, .fillLocalSavedMessageCache, .resetDatabase, .resetDatabaseAndCache, .resetHoles, .resetTagHoles, .reindexUnread, .resetCacheIndex, .reindexCache, .resetBiometricsData, .optimizeDatabase, .photoPreview, .knockoutWallpaper, .compressedEmojiCache, .storiesJpegExperiment, .checkSerializedData, .enableQuickReactionSwitch, .experimentalCompatibility, .enableDebugDataDisplay, .fakeGlass, .forceClearGlass, .debugRipple, .debugRichText, .browserExperiment, .allForumsHaveTabs, .enableReactionOverrides, .restorePurchases, .disableReloginTokens, .liveStreamV2, .experimentalCallMute, .playerV2, .devRequests, .enableUpdates, .pwa, .enableLocalTranslation:
+        case .clearTips, .resetNotifications, .crash, .fillLocalSavedMessageCache, .resetDatabase, .resetDatabaseAndCache, .resetHoles, .resetTagHoles, .reindexUnread, .resetCacheIndex, .reindexCache, .resetBiometricsData, .optimizeDatabase, .photoPreview, .knockoutWallpaper, .compressedEmojiCache, .storiesJpegExperiment, .hideStories, .checkSerializedData, .enableQuickReactionSwitch, .experimentalCompatibility, .enableDebugDataDisplay, .fakeGlass, .forceClearGlass, .debugRipple, .debugRichText, .browserExperiment, .allForumsHaveTabs, .enableReactionOverrides, .restorePurchases, .disableReloginTokens, .liveStreamV2, .experimentalCallMute, .playerV2, .devRequests, .enableUpdates, .pwa, .enableLocalTranslation:
             return DebugControllerSection.experiments.rawValue
         case .logTranslationRecognition, .resetTranslationStates:
             return DebugControllerSection.translation.rawValue
@@ -252,6 +253,8 @@ private enum DebugControllerEntry: ItemListNodeEntry {
             return 49
         case .storiesJpegExperiment:
             return 50
+        case .hideStories:
+            return 105
         case .disableReloginTokens:
             return 51
         case .checkSerializedData:
@@ -1371,6 +1374,14 @@ private enum DebugControllerEntry: ItemListNodeEntry {
                     })
                 }).start()
             })
+        case let .hideStories(value):
+            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Hide Stories [Restart App]", value: value, sectionId: self.section, style: .blocks, updated: { value in
+                let _ = updateExperimentalUISettingsInteractively(accountManager: arguments.sharedContext.accountManager, { settings in
+                    var settings = settings
+                    settings.hideStories = value
+                    return settings
+                }).start()
+            })
         case let .checkSerializedData(value):
             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Check Serialized Data", value: value, sectionId: self.section, style: .blocks, updated: { value in
                 let _ = arguments.sharedContext.accountManager.transaction ({ transaction in
@@ -1614,6 +1625,7 @@ private func debugControllerEntries(context: AccountContext?, sharedContext: Sha
                 
         entries.append(.compressedEmojiCache(experimentalSettings.compressedEmojiCache))
         entries.append(.storiesJpegExperiment(experimentalSettings.storiesJpegExperiment))
+        entries.append(.hideStories(experimentalSettings.hideStories))
         entries.append(.disableReloginTokens(experimentalSettings.disableReloginTokens))
         
         entries.append(.checkSerializedData(experimentalSettings.checkSerializedData))

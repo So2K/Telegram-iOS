@@ -39,8 +39,10 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
     private let sharedContext: SharedAccountContext
     private var account: UnauthorizedAccount
     private let otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)])
-    private let apiId: Int32
-    private let apiHash: String
+    private let defaultApiId: Int32
+    private let defaultApiHash: String
+    private var apiId: Int32
+    private var apiHash: String
     public var presentationData: PresentationData
     private let openUrl: (String) -> Void
     private let authorizationCompleted: () -> Void
@@ -67,8 +69,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         self.sharedContext = sharedContext
         self.account = account
         self.otherAccountPhoneNumbers = otherAccountPhoneNumbers
-        self.apiId = apiId
-        self.apiHash = apiHash
+        self.defaultApiId = apiId
+        self.defaultApiHash = apiHash
+        let apiCredentials = AuthorizationApiCredentialsStore.current(fallbackApiId: apiId, fallbackApiHash: apiHash)
+        self.apiId = apiCredentials.apiId
+        self.apiHash = apiCredentials.apiHash
         self.presentationData = presentationData
         self.openUrl = openUrl
         self.authorizationCompleted = authorizationCompleted
@@ -141,6 +146,21 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             controller = currentController
         } else {
             controller = AuthorizationSequenceSplashController(accountManager: self.sharedContext.accountManager, account: self.account, theme: self.presentationData.theme)
+            controller.apiCredentialsUpdated = { [weak self] credentials in
+                guard let self else {
+                    return
+                }
+                let apiCredentials = credentials ?? AuthorizationApiCredentials(apiId: self.defaultApiId, apiHash: self.defaultApiHash)
+                self.apiId = apiCredentials.apiId
+                self.apiHash = apiCredentials.apiHash
+                self.account.network.context.updateApiEnvironment { environment in
+                    guard let environment else {
+                        return nil
+                    }
+                    environment.apiId = apiCredentials.apiId
+                    return environment
+                }
+            }
             controller.nextPressed = { [weak self] strings in
                 if let strongSelf = self {
                     if let strings = strings {

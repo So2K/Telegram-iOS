@@ -81,13 +81,13 @@ private final class EmojiContainerView: UIView {
                     }
                 }
 
-                let gradient = CGGradient(colorsSpace: DeviceGraphicsContextSettings.shared.colorSpace, colors: colors.map { $0.cgColor } as CFArray, locations: &locations)!
-
                 context.setFillColor(UIColor.white.cgColor)
                 context.fill(CGRect(origin: CGPoint(x: 0.0, y: height), size: CGSize(width: imageSize.width, height: 1.0)))
 
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: height), options: CGGradientDrawingOptions())
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: imageSize.height), end: CGPoint(x: 0.0, y: imageSize.height - height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: DeviceGraphicsContextSettings.shared.colorSpace, colors: colors.map { $0.cgColor } as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: height), options: CGGradientDrawingOptions())
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: imageSize.height), end: CGPoint(x: 0.0, y: imageSize.height - height), options: CGGradientDrawingOptions())
+                }
             })
 
             let capInsets = UIEdgeInsets(top: borderWidth, left: 0, bottom: borderWidth, right: 0)

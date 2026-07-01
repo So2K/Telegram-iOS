@@ -118,7 +118,9 @@ public final class LiveLocationWavesNode: ASDisplayNode {
     }
     
     @objc public override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if !isRasterizing {
             context.setBlendMode(.copy)
@@ -158,7 +160,7 @@ public final class LiveLocationWavesNode: ASDisplayNode {
             
             var progress = parameters.progress + 0.5
             if progress > 1.0 {
-                progress = progress - 1.0
+                progress -= 1.0
             }
             
             let largerPos = progress

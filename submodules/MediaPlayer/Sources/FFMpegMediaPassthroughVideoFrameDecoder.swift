@@ -1,5 +1,12 @@
 import CoreMedia
 
+private func sampleBufferAttachmentDictionary(_ sampleBuffer: CMSampleBuffer) -> NSMutableDictionary? {
+    guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [Any], let firstAttachment = attachments.first as? NSMutableDictionary else {
+        return nil
+    }
+    return firstAttachment
+}
+
 final class FFMpegMediaPassthroughVideoFrameDecoder: MediaTrackFrameDecoder {
     final class VideoFormatData {
         let codecType: CMVideoCodecType
@@ -56,7 +63,9 @@ final class FFMpegMediaPassthroughVideoFrameDecoder: MediaTrackFrameDecoder {
         
         var blockBuffer: CMBlockBuffer?
         
-        let bytes = malloc(Int(frame.packet.size))!
+        guard frame.packet.size > 0, let bytes = malloc(Int(frame.packet.size)) else {
+            return nil
+        }
         memcpy(bytes, frame.packet.data, Int(frame.packet.size))
         guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: bytes, blockLength: Int(frame.packet.size), blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: Int(frame.packet.size), flags: 0, blockBufferOut: &blockBuffer) == noErr else {
             free(bytes)
@@ -66,20 +75,18 @@ final class FFMpegMediaPassthroughVideoFrameDecoder: MediaTrackFrameDecoder {
         var timingInfo = CMSampleTimingInfo(duration: frame.duration, presentationTimeStamp: frame.pts, decodeTimeStamp: frame.dts)
         var sampleBuffer: CMSampleBuffer?
         var sampleSize = Int(frame.packet.size)
-        guard CMSampleBufferCreate(allocator: nil, dataBuffer: blockBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: self.videoFormat, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timingInfo, sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &sampleBuffer) == noErr else {
+        guard CMSampleBufferCreate(allocator: nil, dataBuffer: blockBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: self.videoFormat, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timingInfo, sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize, sampleBufferOut: &sampleBuffer) == noErr, let sampleBuffer else {
             return nil
         }
         
         let resetDecoder = self.resetDecoderOnNextFrame
         if self.resetDecoderOnNextFrame {
             self.resetDecoderOnNextFrame = false
-            let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer!, createIfNecessary: true)! as NSArray
-            let dict = attachments[0] as! NSMutableDictionary
             
-            dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding as NSString as String)
+            sampleBufferAttachmentDictionary(sampleBuffer)?.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding as NSString as String)
         }
         
-        return MediaTrackFrame(type: .video, sampleBuffer: sampleBuffer!, resetDecoder: resetDecoder, decoded: false, rotationAngle: self.rotationAngle)
+        return MediaTrackFrame(type: .video, sampleBuffer: sampleBuffer, resetDecoder: resetDecoder, decoded: false, rotationAngle: self.rotationAngle)
     }
     
     func takeQueuedFrame() -> MediaTrackFrame? {

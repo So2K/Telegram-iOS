@@ -1,16 +1,28 @@
 import Foundation
 
+private let maxAudioWaveformSamples = 4096
+
 private func getBits(data: UnsafeRawPointer, length: Int, bitOffset: Int, numBits: Int) -> Int32 {
-    let normalizedNumBits = Int(pow(2.0, Double(numBits))) - 1
+    guard length > 0, bitOffset >= 0, numBits > 0, numBits < 31 else {
+        return 0
+    }
+
+    let normalizedNumBits = (1 << numBits) - 1
     let byteOffset = bitOffset / 8
+    guard byteOffset < length else {
+        return 0
+    }
+
     let normalizedData = data.advanced(by: byteOffset)
     let normalizedBitOffset = bitOffset % 8
-    
+
     var value: Int32 = 0
-    if byteOffset + 4 > length {
-        let remaining = length - byteOffset
+    let remaining = length - byteOffset
+    if remaining < 4 {
         withUnsafeMutableBytes(of: &value, { (bytes: UnsafeMutableRawBufferPointer) -> Void in
-            memcpy(bytes.baseAddress!, normalizedData, remaining)
+            if let baseAddress = bytes.baseAddress {
+                memcpy(baseAddress, normalizedData, remaining)
+            }
         })
     } else {
         value = normalizedData.assumingMemoryBound(to: Int32.self).pointee
@@ -19,6 +31,10 @@ private func getBits(data: UnsafeRawPointer, length: Int, bitOffset: Int, numBit
 }
 
 private func setBits(data: UnsafeMutableRawPointer, bitOffset: Int, numBits: Int, value: Int32) {
+    guard bitOffset >= 0, numBits > 0, numBits < 31 else {
+        return
+    }
+
     let normalizedData = data.advanced(by: bitOffset / 8)
     let normalizedBitOffset = bitOffset % 8
     
@@ -35,35 +51,61 @@ public final class AudioWaveform: Equatable {
     }
     
     public convenience init(bitstream: Data, bitsPerSample: Int) {
-        let numSamples = Int(Float(bitstream.count * 8) / Float(bitsPerSample))
+        guard bitsPerSample > 0, bitsPerSample < 31, !bitstream.isEmpty else {
+            self.init(samples: Data(), peak: 1)
+            return
+        }
+
+        let numSamples = min(maxAudioWaveformSamples, Int(Float(bitstream.count * 8) / Float(bitsPerSample)))
         var result = Data()
         result.count = numSamples * 2
+        let peak = Int32((1 << bitsPerSample) - 1)
         
         bitstream.withUnsafeBytes { bytes -> Void in
+            guard let bitstreamBaseAddress = bytes.baseAddress else {
+                return
+            }
+
             result.withUnsafeMutableBytes { samples -> Void in
-                let norm = Int64((1 << bitsPerSample) - 1)
+                guard let samplesBaseAddress = samples.baseAddress else {
+                    return
+                }
+
+                let norm = Int64(peak)
+                let samples = samplesBaseAddress.assumingMemoryBound(to: Int16.self)
                 for i in 0 ..< numSamples {
-                    samples.baseAddress!.assumingMemoryBound(to: Int16.self)[i] = Int16(Int64(getBits(data: bytes.baseAddress!.assumingMemoryBound(to: Int8.self), length: bitstream.count, bitOffset: i * 5, numBits: 5)) * norm / norm)
+                    let sample = Int64(getBits(data: bitstreamBaseAddress, length: bitstream.count, bitOffset: i * bitsPerSample, numBits: bitsPerSample)) * norm / norm
+                    samples[i] = Int16(max(Int64(Int16.min), min(Int64(Int16.max), sample)))
                 }
             }
         }
         
-        self.init(samples: result, peak: 31)
+        self.init(samples: result, peak: peak)
     }
     
     public func makeBitstream() -> Data {
-        let numSamples = self.samples.count / 2
+        let numSamples = min(maxAudioWaveformSamples, self.samples.count / 2)
+        if numSamples == 0 {
+            return Data()
+        }
+
         let bitstreamLength = (numSamples * 5) / 8 + (((numSamples * 5) % 8) == 0 ? 0 : 1)
         var result = Data()
         result.count = bitstreamLength + 4
         
-        let maxSample: Int32 = self.peak
+        let maxSample: Int32 = max(1, self.peak)
         
         self.samples.withUnsafeBytes { rawSamples -> Void in
-            let samples = rawSamples.baseAddress!.assumingMemoryBound(to: Int16.self)
+            guard let rawSamplesBaseAddress = rawSamples.baseAddress else {
+                return
+            }
+            let samples = rawSamplesBaseAddress.assumingMemoryBound(to: Int16.self)
             
             result.withUnsafeMutableBytes { rawBytes -> Void in
-                let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: Int16.self)
+                guard let rawBytesBaseAddress = rawBytes.baseAddress else {
+                    return
+                }
+                let bytes = rawBytesBaseAddress.assumingMemoryBound(to: Int16.self)
 
                 for i in 0 ..< numSamples {
                     let value: Int32 = min(Int32(31), abs(Int32(samples[i])) * 31 / maxSample)

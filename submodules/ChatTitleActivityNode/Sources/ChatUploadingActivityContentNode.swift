@@ -36,7 +36,9 @@ private class ChatUploadingActivityIndicatorNode: ChatTitleActivityIndicatorNode
     }
     
     @objc override class func draw(_ bounds: CGRect, withParameters parameters: Any?, isCancelled: () -> Bool, isRasterizing: Bool) {
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         if !isRasterizing {
             context.setBlendMode(.copy)

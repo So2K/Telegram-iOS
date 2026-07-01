@@ -33,12 +33,19 @@ public final class ItemListRevealOptionsGestureRecognizer: UIPanGestureRecognize
     override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
         
-        let touch = touches.first!
+        guard let touch = touches.first else {
+            self.state = .failed
+            return
+        }
         self.firstLocation = touch.location(in: self.view)
     }
     
     override public func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        let location = touches.first!.location(in: self.view)
+        guard let touch = touches.first else {
+            self.state = .failed
+            return
+        }
+        let location = touch.location(in: self.view)
         let translation = CGPoint(x: location.x - self.firstLocation.x, y: location.y - self.firstLocation.y)
         
         if !self.validatedGesture {

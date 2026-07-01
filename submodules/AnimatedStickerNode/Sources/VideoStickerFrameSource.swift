@@ -340,8 +340,9 @@ public final class VideoStickerDirectFrameSource: AnimatedStickerFrameSource {
             )
             if let source {
                 self.source = source
-                self.frameRate = min(30, source.frameRate())
-                self.duration = source.duration().seconds
+                self.frameRate = max(1, min(30, source.frameRate()))
+                let duration = source.duration().seconds
+                self.duration = duration.isFinite && duration > 0.0 ? duration : 0.0
             } else {
                 self.source = nil
                 self.frameRate = 30
@@ -367,11 +368,14 @@ public final class VideoStickerDirectFrameSource: AnimatedStickerFrameSource {
         self.currentFrame += 1
         if draw {
             if let image = self.image {
+                guard let cgImage = image.cgImage else {
+                    return nil
+                }
                 guard let context = DrawingContext(size: CGSize(width: self.width, height: self.height), scale: 1.0, opaque: false, clear: true, bytesPerRow: self.bytesPerRow) else {
                     return nil
                 }
                 context.withFlippedContext { c in
-                    c.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: context.size))
+                    c.draw(cgImage, in: CGRect(origin: CGPoint(), size: context.size))
                 }
                 let frameData = Data(bytes: context.bytes, count: self.bytesPerRow * self.height)
                                 
@@ -383,24 +387,37 @@ public final class VideoStickerDirectFrameSource: AnimatedStickerFrameSource {
                 switch frameAndLoop {
                 case let .frame(frame):
                     var frameData = Data(count: self.bytesPerRow * self.height)
-                    frameData.withUnsafeMutableBytes { buffer -> Void in
+                    let didRenderFrame = frameData.withUnsafeMutableBytes { buffer -> Bool in
                         guard let bytes = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                            return
+                            return false
                         }
                         
-                        let imageBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer)
-                        CVPixelBufferLockBaseAddress(imageBuffer!, CVPixelBufferLockFlags(rawValue: 0))
-                        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer!)
-                        let width = CVPixelBufferGetWidth(imageBuffer!)
-                        let height = CVPixelBufferGetHeight(imageBuffer!)
-                        let srcData = CVPixelBufferGetBaseAddress(imageBuffer!)
+                        guard let imageBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer) else {
+                            return false
+                        }
+                        let lockFlags = CVPixelBufferLockFlags(rawValue: 0)
+                        guard CVPixelBufferLockBaseAddress(imageBuffer, lockFlags) == kCVReturnSuccess else {
+                            return false
+                        }
+                        defer {
+                            CVPixelBufferUnlockBaseAddress(imageBuffer, lockFlags)
+                        }
+
+                        let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
+                        let width = CVPixelBufferGetWidth(imageBuffer)
+                        let height = CVPixelBufferGetHeight(imageBuffer)
+                        guard let srcData = CVPixelBufferGetBaseAddress(imageBuffer) else {
+                            return false
+                        }
                         
                         var sourceBuffer = vImage_Buffer(data: srcData, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: bytesPerRow)
                         var destBuffer = vImage_Buffer(data: bytes, height: vImagePixelCount(self.height), width: vImagePixelCount(self.width), rowBytes: self.bytesPerRow)
                                    
                         let _ = vImageScale_ARGB8888(&sourceBuffer, &destBuffer, nil, vImage_Flags(kvImageDoNotTile))
-                        
-                        CVPixelBufferUnlockBaseAddress(imageBuffer!, CVPixelBufferLockFlags(rawValue: 0))
+                        return true
+                    }
+                    if !didRenderFrame {
+                        return nil
                     }
 
                     self.cache?.storeUncompressedRgbFrame(index: frameIndex, rgbData: frameData)
@@ -448,10 +465,14 @@ public final class VideoStickerDirectFrameSource: AnimatedStickerFrameSource {
     }
     
     public func skipToEnd() {
-        self.currentFrame = self.frameCount - 1
+        self.currentFrame = max(0, self.frameCount - 1)
     }
 
     public func skipToFrameIndex(_ index: Int) {
-        self.currentFrame = index
+        if self.frameCount > 0 {
+            self.currentFrame = max(0, min(index, self.frameCount - 1))
+        } else {
+            self.currentFrame = max(0, index)
+        }
     }
 }

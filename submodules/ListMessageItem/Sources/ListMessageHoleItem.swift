@@ -5,7 +5,7 @@ import Display
 import TelegramCore
 import SwiftSignalKit
 
-final class ListMessageHoleItem: ListViewItem {
+public final class ListMessageHoleItem: ListViewItem {
     public init() {
     }
     

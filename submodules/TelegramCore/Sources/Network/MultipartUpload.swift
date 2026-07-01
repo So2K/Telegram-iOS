@@ -18,8 +18,19 @@ private struct UploadPart {
 }
 
 private func md5(_ data: Data) -> Data {
+    if data.isEmpty {
+        var emptyByte: UInt8 = 0
+        return withUnsafeBytes(of: &emptyByte) { rawBytes -> Data in
+            guard let bytes = rawBytes.baseAddress else {
+                return Data()
+            }
+            return CryptoMD5(bytes, 0)
+        }
+    }
     return data.withUnsafeBytes { rawBytes -> Data in
-        let bytes = rawBytes.baseAddress!
+        guard let bytes = rawBytes.baseAddress else {
+            return Data()
+        }
         return CryptoMD5(bytes, Int32(data.count))
     }
 }
@@ -45,7 +56,7 @@ private final class MultipartUploadState {
         return data
     }
     
-    func transform(data: Data) -> Data {
+    func transform(data: Data) -> Data? {
         if self.aesKey.count != 0 {
             var encryptedData = data
             var paddingSize = 0
@@ -53,18 +64,30 @@ private final class MultipartUploadState {
                 paddingSize += 1
             }
             if paddingSize != 0 {
-                encryptedData.count = encryptedData.count + paddingSize
+                encryptedData.count += paddingSize
             }
             let encryptedDataCount = encryptedData.count
+            guard encryptedDataCount != 0 else {
+                return encryptedData
+            }
+            var didEncrypt = false
             encryptedData.withUnsafeMutableBytes { rawBytes -> Void in
-                let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return
+                }
                 if paddingSize != 0 {
                     arc4random_buf(bytes.advanced(by: encryptedDataCount - paddingSize), paddingSize)
                 }
                 self.aesIv.withUnsafeMutableBytes { rawIv -> Void in
-                    let iv = rawIv.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    guard let iv = rawIv.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                        return
+                    }
                     MTAesEncryptBytesInplaceAndModifyIv(bytes, encryptedDataCount, self.aesKey, iv)
+                    didEncrypt = true
                 }
+            }
+            guard didEncrypt else {
+                return nil
             }
             self.effectiveSize += Int64(encryptedData.count)
             return encryptedData
@@ -347,7 +370,10 @@ private final class MultipartUploadManager {
                             }
                     }
                     if let partData = partData {
-                        let partData = self.state.transform(data: partData)
+                        guard let partData = self.state.transform(data: partData) else {
+                            self.completed(nil)
+                            return
+                        }
                         var currentBigTotalParts = self.bigTotalParts
                         if self.bigParts && resourceData.complete && partOffset + partSize == resourceData.size {
                             currentBigTotalParts = Int(resourceData.size / self.defaultPartSize) + (resourceData.size % self.defaultPartSize == 0 ? 0 : 1)
@@ -427,13 +453,25 @@ func multipartUpload(network: Network, postbox: Postbox, source: MultipartUpload
                 aesKey.count = 32
                 var aesIv = Data()
                 aesIv.count = 32
+                var didGenerateKey = false
                 aesKey.withUnsafeMutableBytes { rawBytes -> Void in
-                    let bytes = rawBytes.baseAddress!
+                    guard let bytes = rawBytes.baseAddress else {
+                        return
+                    }
                     arc4random_buf(bytes, 32)
+                    didGenerateKey = true
                 }
+                var didGenerateIv = false
                 aesIv.withUnsafeMutableBytes { rawBytes -> Void in
-                    let bytes = rawBytes.baseAddress!
+                    guard let bytes = rawBytes.baseAddress else {
+                        return
+                    }
                     arc4random_buf(bytes, 32)
+                    didGenerateIv = true
+                }
+                guard didGenerateKey && didGenerateIv else {
+                    subscriber.putError(.generic)
+                    return EmptyDisposable
                 }
                 encryptionKey = SecretFileEncryptionKey(aesKey: aesKey, aesIv: aesIv)
             }
@@ -492,17 +530,31 @@ func multipartUpload(network: Network, postbox: Postbox, source: MultipartUpload
                 if let result = result {
                     if let encryptionKey = encryptionKey {
                         let keyDigest = md5(encryptionKey.aesKey + encryptionKey.aesIv)
+                        guard keyDigest.count >= 8 else {
+                            subscriber.putError(.generic)
+                            return
+                        }
                         var fingerprint: Int32 = 0
+                        var didBuildFingerprint = false
                         keyDigest.withUnsafeBytes { rawBytes -> Void in
-                            let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                            
+                            guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                                return
+                            }
+
                             withUnsafeMutableBytes(of: &fingerprint, { ptr -> Void in
-                                let uintPtr = ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                                guard let uintPtr = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                                    return
+                                }
                                 uintPtr[0] = bytes[0] ^ bytes[4]
                                 uintPtr[1] = bytes[1] ^ bytes[5]
                                 uintPtr[2] = bytes[2] ^ bytes[6]
                                 uintPtr[3] = bytes[3] ^ bytes[7]
+                                didBuildFingerprint = true
                             })
+                        }
+                        guard didBuildFingerprint else {
+                            subscriber.putError(.generic)
+                            return
                         }
                         if let _ = result.bigTotalParts {
                             let inputFile = Api.InputEncryptedFile.inputEncryptedFileBigUploaded(.init(id: result.id, parts: result.partCount, keyFingerprint: fingerprint))

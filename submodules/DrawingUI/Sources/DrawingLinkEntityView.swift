@@ -34,9 +34,12 @@ private func generateIcon(style: DrawingLinkEntity.Style) -> UIImage? {
             var locations: [CGFloat] = [0.0, 1.0]
             let colorsArray = [green.cgColor, blue.cgColor] as NSArray
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations)!
-            
-            context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: size.height), end: CGPoint(x: 0.0, y: 0.0), options: CGGradientDrawingOptions())
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: size.height), end: CGPoint(x: 0.0, y: 0.0), options: CGGradientDrawingOptions())
+            } else {
+                context.setFillColor(green.cgColor)
+                context.fill(CGRect(origin: .zero, size: size))
+            }
         } else {
             context.setFillColor(UIColor.white.cgColor)
             context.fill(CGRect(origin: .zero, size: size))
@@ -119,8 +122,8 @@ public final class DrawingLinkEntityView: DrawingEntityView, UITextViewDelegate 
             
             let widthExtension = result.height * 0.65
             result.width = floorToScreenPixels(max(104.0, ceil(result.width) + 20.0) + widthExtension)
-            result.height = ceil(result.height * 1.2);
-            return result;
+            result.height = ceil(result.height * 1.2)
+            return result
         }
     }
     

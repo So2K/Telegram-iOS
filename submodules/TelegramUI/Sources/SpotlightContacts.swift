@@ -9,15 +9,22 @@ import MobileCoreServices
 private let roundCorners = { () -> UIImage in
     let diameter: CGFloat = 60.0
     UIGraphicsBeginImageContextWithOptions(CGSize(width: diameter, height: diameter), false, 0.0)
-    let context = UIGraphicsGetCurrentContext()!
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return UIImage()
+    }
     context.setBlendMode(.copy)
     context.setFillColor(UIColor.black.cgColor)
     context.fill(CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
     context.setFillColor(UIColor.clear.cgColor)
     context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
-    let image = UIGraphicsGetImageFromCurrentImageContext()!.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
-    UIGraphicsEndImageContext()
+    guard let image = UIGraphicsGetImageFromCurrentImageContext() else {
+        return UIImage()
+    }
     return image
+        .stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
 }()
 
 private struct SpotlightIndexStorageItem: Codable, Equatable {
@@ -130,13 +137,13 @@ private final class SpotlightIndexStorage {
                     let avatarPath = path + "/avatar.png"
                     let _ = try? FileManager.default.removeItem(atPath: avatarPath)
                     
-                    if let updatedAvatarSourcePathValue = updatedAvatarSourcePath, let avatarData = try? Data(contentsOf: URL(fileURLWithPath: self.appBasePath + "/" + updatedAvatarSourcePathValue)), let image = UIImage(data: avatarData) {
+                    if let updatedAvatarSourcePathValue = updatedAvatarSourcePath, let avatarData = try? Data(contentsOf: URL(fileURLWithPath: self.appBasePath + "/" + updatedAvatarSourcePathValue)), let image = UIImage(data: avatarData), let imageCGImage = image.cgImage, let roundCornersCGImage = roundCorners.cgImage {
                         let size = CGSize(width: 120.0, height: 120.0)
                         if let context = DrawingContext(size: size, scale: 1.0, clear: true) {
                             context.withFlippedContext { c in
-                                c.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                                c.draw(imageCGImage, in: CGRect(origin: CGPoint(), size: size))
                                 c.setBlendMode(.destinationOut)
-                                c.draw(roundCorners.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                                c.draw(roundCornersCGImage, in: CGRect(origin: CGPoint(), size: size))
                             }
                             if let resultImage = context.generateImage(), let resultData = resultImage.pngData(), let _ = try? resultData.write(to: URL(fileURLWithPath: avatarPath)) {
                                 resolvedAvatarPath = avatarPath

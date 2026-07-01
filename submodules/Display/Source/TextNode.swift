@@ -2293,7 +2293,9 @@ open class TextNode: ASDisplayNode, TextNodeProtocol {
             return
         }
         
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         context.setAllowsAntialiasing(true)
         
@@ -2361,25 +2363,29 @@ open class TextNode: ASDisplayNode, TextNodeProtocol {
                 switch blockQuote.data.kind {
                 case .quote:
                     let quoteRect = CGRect(origin: CGPoint(x: blockFrame.maxX - 4.0 - quoteIcon.size.width, y: blockFrame.minY + 4.0), size: quoteIcon.size)
-                    context.saveGState()
-                    context.translateBy(x: quoteRect.midX, y: quoteRect.midY)
-                    context.scaleBy(x: 1.0, y: -1.0)
-                    context.translateBy(x: -quoteRect.midX, y: -quoteRect.midY)
-                    context.clip(to: quoteRect, mask: quoteIcon.cgImage!)
-                    context.fill(quoteRect)
-                    context.restoreGState()
-                    context.resetClip()
-                case .code:
-                    if blockQuote.data.title != nil {
-                        let quoteRect = CGRect(origin: CGPoint(x: blockFrame.maxX - 4.0 - codeIcon.size.width, y: blockFrame.minY + 4.0), size: codeIcon.size)
+                    if let quoteIconImage = quoteIcon.cgImage {
                         context.saveGState()
                         context.translateBy(x: quoteRect.midX, y: quoteRect.midY)
                         context.scaleBy(x: 1.0, y: -1.0)
                         context.translateBy(x: -quoteRect.midX, y: -quoteRect.midY)
-                        context.clip(to: quoteRect, mask: codeIcon.cgImage!)
+                        context.clip(to: quoteRect, mask: quoteIconImage)
                         context.fill(quoteRect)
                         context.restoreGState()
                         context.resetClip()
+                    }
+                case .code:
+                    if blockQuote.data.title != nil {
+                        let quoteRect = CGRect(origin: CGPoint(x: blockFrame.maxX - 4.0 - codeIcon.size.width, y: blockFrame.minY + 4.0), size: codeIcon.size)
+                        if let codeIconImage = codeIcon.cgImage {
+                            context.saveGState()
+                            context.translateBy(x: quoteRect.midX, y: quoteRect.midY)
+                            context.scaleBy(x: 1.0, y: -1.0)
+                            context.translateBy(x: -quoteRect.midX, y: -quoteRect.midY)
+                            context.clip(to: quoteRect, mask: codeIconImage)
+                            context.fill(quoteRect)
+                            context.restoreGState()
+                            context.resetClip()
+                        }
                     }
                 }
                 
@@ -2594,21 +2600,24 @@ open class TextNode: ASDisplayNode, TextNodeProtocol {
                         }
                     }
                     if image.renderingMode == .alwaysOriginal {
+                        guard let imageData = image.cgImage else {
+                            continue
+                        }
                         let imageRect = CGRect(origin: CGPoint(x: attachment.frame.midX - image.size.width * 0.5, y: attachment.frame.midY - image.size.height * 0.5 + 1.0), size: image.size).offsetBy(dx: lineFrame.minX, dy: lineFrame.minY)
                         context.translateBy(x: imageRect.midX, y: imageRect.midY)
                         context.scaleBy(x: 1.0, y: -1.0)
                         context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-                        context.draw(image.cgImage!, in: imageRect)
+                        context.draw(imageData, in: imageRect)
                         context.translateBy(x: imageRect.midX, y: imageRect.midY)
                         context.scaleBy(x: 1.0, y: -1.0)
                         context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
                     } else if let textColor {
-                        if let tintedImage = generateTintedImage(image: image, color: textColor) {
+                        if let tintedImage = generateTintedImage(image: image, color: textColor), let tintedImageData = tintedImage.cgImage {
                             let imageRect = CGRect(origin: CGPoint(x: attachment.frame.midX - tintedImage.size.width * 0.5, y: attachment.frame.midY - tintedImage.size.height * 0.5 + 1.0), size: tintedImage.size).offsetBy(dx: lineFrame.minX, dy: lineFrame.minY)
                             context.translateBy(x: imageRect.midX, y: imageRect.midY)
                             context.scaleBy(x: 1.0, y: -1.0)
                             context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
-                            context.draw(tintedImage.cgImage!, in: imageRect)
+                            context.draw(tintedImageData, in: imageRect)
                             context.translateBy(x: imageRect.midX, y: imageRect.midY)
                             context.scaleBy(x: 1.0, y: -1.0)
                             context.translateBy(x: -imageRect.midX, y: -imageRect.midY)
@@ -2900,7 +2909,9 @@ open class TextView: UIView {
     public override func draw(_ rect: CGRect) {
         let layout = self.cachedLayout
         
-        let context = UIGraphicsGetCurrentContext()!
+        guard let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
         
         context.setAllowsAntialiasing(true)
         

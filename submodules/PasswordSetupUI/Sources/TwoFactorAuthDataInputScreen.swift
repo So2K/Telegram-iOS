@@ -958,7 +958,9 @@ private func generateTextHiddenImage(color: UIColor, on: Bool) -> UIImage? {
         guard let image = generateTintedImage(image: UIImage(bundleImageName: "PasswordSetup/TextHidden"), color: color) else {
             return
         }
-        context.draw(image.cgImage!, in: CGRect(origin: CGPoint(x: floor((size.width - size.width) / 2.0), y: floor((size.height - size.height) / 2.0)), size: size))
+        if let cgImage = image.cgImage {
+            context.draw(cgImage, in: CGRect(origin: CGPoint(x: floor((size.width - size.width) / 2.0), y: floor((size.height - size.height) / 2.0)), size: size))
+        }
         if !on {
             context.setLineCap(.round)
             
@@ -2020,4 +2022,3 @@ private final class TwoFactorDataInputScreenNode: ViewControllerTracingNode, ASS
         }
     }
 }
-

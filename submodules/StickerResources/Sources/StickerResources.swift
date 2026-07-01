@@ -399,10 +399,10 @@ public func chatMessageSticker(postbox: Postbox, userLocation: MediaResourceUser
                     c.setBlendMode(.copy)
                 }
                 
-                if let blurredThumbnailImage = blurredThumbnailImage {
+                if let blurredThumbnailImage = blurredThumbnailImage, let blurredThumbnailCgImage = blurredThumbnailImage.cgImage, blurredThumbnailImage.size.width > 0.0 {
                     c.interpolationQuality = .low
                     let thumbnailScaledInset = thumbnailInset * (fittedRect.width / blurredThumbnailImage.size.width)
-                    c.draw(blurredThumbnailImage.cgImage!, in: fittedRect.insetBy(dx: -thumbnailScaledInset, dy: -thumbnailScaledInset))
+                    c.draw(blurredThumbnailCgImage, in: fittedRect.insetBy(dx: -thumbnailScaledInset, dy: -thumbnailScaledInset))
                 }
                 
                 if let fullSizeImage = fullSizeImage, let cgImage = fullSizeImage.0.cgImage, let cgImageAlpha = fullSizeImage.1.cgImage {
@@ -496,12 +496,12 @@ public func chatMessageAnimatedSticker(postbox: Postbox, userLocation: MediaReso
                     c.setBlendMode(.copy)
                 }
                 
-                if let blurredThumbnailImage = blurredThumbnailImage {
+                if let blurredThumbnailImage = blurredThumbnailImage, let blurredThumbnailCgImage = blurredThumbnailImage.cgImage, blurredThumbnailImage.size.width > 0.0 {
                     c.interpolationQuality = .low
                     let thumbnailFittedSize = blurredThumbnailImage.size.aspectFilled(fittedRect.size)
                     let thumbnailFittedRect = CGRect(origin: CGPoint(x: fittedRect.origin.x - (thumbnailFittedSize.width - fittedRect.width) / 2.0, y: fittedRect.origin.y - (thumbnailFittedSize.height - fittedRect.height) / 2.0), size: thumbnailFittedSize)
                     let thumbnailScaledInset = thumbnailInset * (fittedRect.width / blurredThumbnailImage.size.width)
-                    c.draw(blurredThumbnailImage.cgImage!, in: thumbnailFittedRect.insetBy(dx: -thumbnailScaledInset, dy: -thumbnailScaledInset))
+                    c.draw(blurredThumbnailCgImage, in: thumbnailFittedRect.insetBy(dx: -thumbnailScaledInset, dy: -thumbnailScaledInset))
                 }
                 
                 if let fullSizeImage = fullSizeImage, let cgImage = fullSizeImage.0.cgImage, let cgImageAlpha = fullSizeImage.1.cgImage {

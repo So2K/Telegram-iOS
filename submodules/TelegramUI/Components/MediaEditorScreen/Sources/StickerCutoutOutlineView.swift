@@ -203,17 +203,30 @@ func findEdgePoints(in pixelBuffer: CVPixelBuffer) -> [CGPoint] {
     
     let width = CVPixelBufferGetWidth(pixelBuffer)
     let height = CVPixelBufferGetHeight(pixelBuffer)
+    guard width > 0, height > 0 else {
+        return []
+    }
     var edgePoints: Set<Point> = []
     var edgePath: [Point] = []
     
-    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
-    let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
+    guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess else {
+        return []
+    }
+    defer {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+    }
+
+    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        return []
+    }
     let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    guard bytesPerRow > 0 else {
+        return []
+    }
     
     func isPixelWhiteAt(x: Int, y: Int) -> Bool {
         let pixelOffset = y * bytesPerRow + x
-        let pixelPtr = baseAddress?.advanced(by: pixelOffset)
-        let pixel = pixelPtr?.load(as: UInt8.self) ?? 0
+        let pixel = baseAddress.advanced(by: pixelOffset).load(as: UInt8.self)
         return pixel >= 235
     }
     
@@ -294,8 +307,6 @@ func findEdgePoints(in pixelBuffer: CVPixelBuffer) -> [CGPoint] {
         }
     } while true
     
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
-    
     return Array(edgePath.map { $0.cgPoint })
 }
 
@@ -320,10 +331,16 @@ private func getEdgesBitmap(_ ciImage: CIImage) -> CVPixelBuffer? {
         return nil
     }
     
-    CVPixelBufferLockBaseAddress(buffer, [])
-    defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+    guard CVPixelBufferLockBaseAddress(buffer, []) == kCVReturnSuccess else {
+        return nil
+    }
+    defer {
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+    }
     
-    let pixelData = CVPixelBufferGetBaseAddress(buffer)
+    guard let pixelData = CVPixelBufferGetBaseAddress(buffer) else {
+        return nil
+    }
     let rgbColorSpace = CGColorSpaceCreateDeviceGray()
     guard let context = CGContext(data: pixelData,
                                   width: Int(size.width),
@@ -359,8 +376,11 @@ private extension CGPath {
         
         withUnsafeMutablePointer(to: &userInfo) { userInfoPointer in
             expandedPath.apply(info: userInfoPointer) { (userInfo, nextElementPointer) in
+                guard let userInfo else {
+                    return
+                }
                 let element = nextElementPointer.pointee
-                let userInfoPointer = userInfo!.assumingMemoryBound(to: UserInfo.self)
+                let userInfoPointer = userInfo.assumingMemoryBound(to: UserInfo.self)
                 let userInfo = userInfoPointer.pointee
                 
                 if !userInfo.passedFirst {
@@ -394,7 +414,12 @@ private func simplify(_ points: [CGPoint], tolerance: CGFloat?) -> [CGPoint] {
         return points
     }
     
-    let sqTolerance = tolerance != nil ? (tolerance! * tolerance!) : 1.0
+    let sqTolerance: CGFloat
+    if let tolerance, tolerance.isFinite {
+        sqTolerance = tolerance * tolerance
+    } else {
+        sqTolerance = 1.0
+    }
     var result = simplifyRadialDistance(points, tolerance: sqTolerance)
     result = simplifyDouglasPeucker(result, sqTolerance: sqTolerance)
     
@@ -402,11 +427,11 @@ private func simplify(_ points: [CGPoint], tolerance: CGFloat?) -> [CGPoint] {
 }
 
 private func simplifyRadialDistance(_ points: [CGPoint], tolerance: CGFloat) -> [CGPoint] {
-    guard points.count > 2 else {
+    guard let firstPoint = points.first, points.count > 2 else {
         return points
     }
     
-    var prevPoint = points.first!
+    var prevPoint = firstPoint
     var newPoints = [prevPoint]
     var currentPoint: CGPoint!
     
@@ -452,14 +477,14 @@ private func simplifyDPStep(_ points: [CGPoint], first: Int, last: Int, sqTolera
 }
 
 private func simplifyDouglasPeucker(_ points: [CGPoint], sqTolerance: CGFloat) -> [CGPoint] {
-    guard points.count > 1 else {
+    guard let firstPoint = points.first, let lastPoint = points.last, points.count > 1 else {
         return []
     }
     
     let last = (points.count - 1)
-    var simplied = [points.first!]
+    var simplied = [firstPoint]
     simplifyDPStep(points, first: 0, last: last, sqTolerance: sqTolerance, simplified: &simplied)
-    simplied.append(points.last!)
+    simplied.append(lastPoint)
     
     return simplied
 }
@@ -523,15 +548,20 @@ private class BezierPath {
     
     init(points: [CGPoint], smooth: Bool) {
         self.path = UIBezierPath()
+        guard let firstPoint = points.first else {
+            return
+        }
     
         if smooth {
             if points.count < 3 {
-                self.path.move(to: points.first ?? CGPoint.zero)
-                self.path.addLine(to: points[1])
-                self.length = points[1].distanceFrom(points[0])
+                self.path.move(to: firstPoint)
+                if points.count > 1 {
+                    self.path.addLine(to: points[1])
+                    self.length = points[1].distanceFrom(firstPoint)
+                }
                 return
             } else {
-                self.path.move(to: points.first!)
+                self.path.move(to: firstPoint)
                 
                 let n = points.count - 1
                 let tension = 0.5
@@ -575,32 +605,13 @@ private class BezierPath {
                 
                 self.path.close()
             }
-        } else if smooth {
-            let K: CGFloat = 0.2
-            var c1 = [Int: CGPoint]()
-            var c2 = [Int: CGPoint]()
-            let count = points.count - 1
-            for index in 1 ..< count {
-                let p = points[circularIndex: index]
-                let vP1 = points[circularIndex: index + 1]
-                let vP2 = points[index - 1]
-                let vP = CGPoint(x: vP1.x - vP2.x, y: vP1.y - vP2.y)
-                let v = CGPoint(x: vP.x * K, y: vP.y * K)
-                c2[(index + points.count - 1) % points.count] = CGPoint(x: p.x - v.x, y: p.y - v.y) //(p - v)
-                c1[(index + points.count) % points.count] = CGPoint(x: p.x + v.x, y: p.y + v.y) //(p + v)
-            }
-            self.path.move(to: points[0])
-            for index in 0 ..< points.count - 1 {
-                let c1 = c1[index] ?? points[points.circularIndex(index)]
-                let c2 = c2[index] ?? points[points.circularIndex(index + 1)]
-                self.path.addCurve(to: points[circularIndex: index + 1], controlPoint1: c1, controlPoint2: c2)
-            }
-            self.path.close()
         } else {
-            self.path.move(to: points[0])
-            for index in 1 ..< points.count - 1 {
-                self.length += points[index].distanceFrom(points[index - 1])
-                self.path.addLine(to: points[index])
+            self.path.move(to: firstPoint)
+            if points.count > 2 {
+                for index in 1 ..< points.count - 1 {
+                    self.length += points[index].distanceFrom(points[index - 1])
+                    self.path.addLine(to: points[index])
+                }
             }
             self.path.close()
         }

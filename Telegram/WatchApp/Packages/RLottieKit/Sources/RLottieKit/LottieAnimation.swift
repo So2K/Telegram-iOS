@@ -31,14 +31,22 @@ public final class LottieAnimation {
         let bufferSize = bytesPerRow * pixelHeight
 
         var buffer = [UInt8](repeating: 0, count: bufferSize)
+        var didRender = false
         buffer.withUnsafeMutableBufferPointer { ptr in
+            guard let baseAddress = ptr.baseAddress else {
+                return
+            }
             instance.renderFrame(
                 with: Int32(index),
-                into: ptr.baseAddress!,
+                into: baseAddress,
                 width: Int32(pixelWidth),
                 height: Int32(pixelHeight),
                 bytesPerRow: Int32(bytesPerRow)
             )
+            didRender = true
+        }
+        guard didRender else {
+            return nil
         }
 
         let data = Data(buffer)

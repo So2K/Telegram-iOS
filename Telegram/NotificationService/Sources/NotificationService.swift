@@ -73,12 +73,12 @@ private func getSharedDevideGraphicsContextSettings() -> DeviceGraphicsContextSe
             self.opaqueBitmapInfo = context.bitmapInfo
             if #available(iOS 10.0, *) {
                 if UIScreen.main.traitCollection.displayGamut == .P3 {
-                    self.colorSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? context.colorSpace!
+                    self.colorSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? context.colorSpace ?? CGColorSpaceCreateDeviceRGB()
                 } else {
-                    self.colorSpace = context.colorSpace!
+                    self.colorSpace = context.colorSpace ?? CGColorSpaceCreateDeviceRGB()
                 }
             } else {
-                self.colorSpace = context.colorSpace!
+                self.colorSpace = context.colorSpace ?? CGColorSpaceCreateDeviceRGB()
             }
             assert(self.rowAlignment == 32)
             assert(self.bitsPerPixel == 32)
@@ -118,24 +118,127 @@ private func getSharedDevideGraphicsContextSettings() -> DeviceGraphicsContextSe
         })
     } else {
         UIGraphicsBeginImageContextWithOptions(CGSize(width: 1.0, height: 1.0), true, 1.0)
-        let refContext = UIGraphicsGetCurrentContext()!
-        opaqueSettings = OpaqueSettings(context: refContext)
+        if let refContext = UIGraphicsGetCurrentContext() {
+            opaqueSettings = OpaqueSettings(context: refContext)
+        }
         UIGraphicsEndImageContext()
 
         UIGraphicsBeginImageContextWithOptions(CGSize(width: 1.0, height: 1.0), false, 1.0)
-        let refCtxTransparent = UIGraphicsGetCurrentContext()!
-        transparentSettings = TransparentSettings(context: refCtxTransparent)
+        if let refCtxTransparent = UIGraphicsGetCurrentContext() {
+            transparentSettings = TransparentSettings(context: refCtxTransparent)
+        }
         UIGraphicsEndImageContext()
     }
 
+    guard let opaqueSettings, let transparentSettings else {
+        return DeviceGraphicsContextSettings(
+            rowAlignment: 32,
+            bitsPerPixel: 32,
+            bitsPerComponent: 8,
+            opaqueBitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue),
+            transparentBitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+    }
+
     return DeviceGraphicsContextSettings(
-        rowAlignment: opaqueSettings!.rowAlignment,
-        bitsPerPixel: opaqueSettings!.bitsPerPixel,
-        bitsPerComponent: opaqueSettings!.bitsPerComponent,
-        opaqueBitmapInfo: opaqueSettings!.opaqueBitmapInfo,
-        transparentBitmapInfo: transparentSettings!.transparentBitmapInfo,
-        colorSpace: opaqueSettings!.colorSpace
+        rowAlignment: opaqueSettings.rowAlignment,
+        bitsPerPixel: opaqueSettings.bitsPerPixel,
+        bitsPerComponent: opaqueSettings.bitsPerComponent,
+        opaqueBitmapInfo: opaqueSettings.opaqueBitmapInfo,
+        transparentBitmapInfo: transparentSettings.transparentBitmapInfo,
+        colorSpace: opaqueSettings.colorSpace
     )
+}
+
+private func notificationPayloadInt64(_ value: Any?) -> Int64? {
+    switch value {
+    case let value as Int64:
+        return value
+    case let value as Int32:
+        return Int64(value)
+    case let value as Int:
+        return Int64(value)
+    case let value as NSNumber:
+        return value.int64Value
+    case let value as String:
+        return Int64(value)
+    case let value as NSString:
+        return Int64(value as String)
+    default:
+        return nil
+    }
+}
+
+private func notificationPayloadInt32(_ value: Any?) -> Int32? {
+    guard let value = notificationPayloadInt64(value), value >= Int64(Int32.min), value <= Int64(Int32.max) else {
+        return nil
+    }
+    return Int32(value)
+}
+
+private func notificationPayloadInt(_ value: Any?) -> Int? {
+    guard let value = notificationPayloadInt64(value), value >= Int64(Int.min), value <= Int64(Int.max) else {
+        return nil
+    }
+    return Int(value)
+}
+
+private func notificationPayloadPeerId(_ userInfo: [AnyHashable: Any]) -> PeerId? {
+    guard let value = notificationPayloadInt64(userInfo["peerId"]), value != 0 else {
+        return nil
+    }
+    return PeerId(value)
+}
+
+private func notificationPayloadMessageId(_ userInfo: [AnyHashable: Any]) -> MessageId? {
+    guard let peerId = notificationPayloadPeerId(userInfo), let messageId = notificationPayloadInt32(userInfo["msg_id"]) else {
+        return nil
+    }
+    return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: messageId)
+}
+
+private func notificationPayloadStoryId(_ userInfo: [AnyHashable: Any]) -> (peerId: PeerId, storyId: Int32)? {
+    guard let peerId = notificationPayloadPeerId(userInfo), let storyId = notificationPayloadInt32(userInfo["story_id"]) else {
+        return nil
+    }
+    return (peerId, storyId)
+}
+
+private func copyNotificationDataPart(targetData: inout Data, missingRanges: inout RangeSet<Int64>, resourceOffset: Int64, sourceData: Data, dataRange: Range<Int64>) {
+    guard resourceOffset >= 0, resourceOffset <= Int64(Int.max) else {
+        return
+    }
+    let sourceLowerBound = max(Int64(0), dataRange.lowerBound)
+    let sourceUpperBound = min(Int64(sourceData.count), dataRange.upperBound)
+    guard sourceLowerBound < sourceUpperBound, sourceLowerBound <= Int64(Int.max), sourceUpperBound <= Int64(Int.max) else {
+        return
+    }
+
+    let sourceRange = Int(sourceLowerBound) ..< Int(sourceUpperBound)
+    let targetLowerBound = Int(resourceOffset)
+    let copyCount = sourceRange.count
+    guard targetLowerBound <= Int.max - copyCount else {
+        return
+    }
+    let targetRange = targetLowerBound ..< (targetLowerBound + copyCount)
+    if targetData.count < targetRange.upperBound {
+        targetData.count = targetRange.upperBound
+    }
+
+    var didCopy = false
+    targetData.withUnsafeMutableBytes { buffer -> Void in
+        guard let baseAddress = buffer.baseAddress else {
+            return
+        }
+        let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
+        sourceData.copyBytes(to: bytes.advanced(by: targetLowerBound), from: sourceRange)
+        didCopy = true
+    }
+
+    if didCopy {
+        missingRanges.remove(contentsOf: Int64(targetRange.lowerBound) ..< Int64(targetRange.upperBound))
+    }
 }
 
 public struct DeviceGraphicsContextSettings {
@@ -296,7 +399,12 @@ private func convertLottieImage(data: Data, size: CGSize, forceSquare: Bool) -> 
 
 private func testAvatarImage(size: CGSize) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 2.0)
-    let context = UIGraphicsGetCurrentContext()!
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
 
     context.beginPath()
     context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
@@ -306,19 +414,23 @@ private func testAvatarImage(size: CGSize) -> UIImage? {
     context.fill(CGRect(origin: CGPoint(), size: size))
 
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
 private func avatarRoundImage(size: CGSize, source: UIImage, isStory: Bool) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-    let context = UIGraphicsGetCurrentContext()
+    defer {
+        UIGraphicsEndImageContext()
+    }
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
 
     if isStory {
         let lineWidth: CGFloat = 2.0
-        context?.beginPath()
-        context?.addEllipse(in: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: size.width, height: size.height)).insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5))
-        context?.clip()
+        context.beginPath()
+        context.addEllipse(in: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: size.width, height: size.height)).insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5))
+        context.clip()
         
         let colors: [CGColor] = [
             UIColor(rgb: 0x34C76F).cgColor,
@@ -327,29 +439,30 @@ private func avatarRoundImage(size: CGSize, source: UIImage, isStory: Bool) -> U
         var locations: [CGFloat] = [0.0, 1.0]
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+            return nil
+        }
         
-        context?.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
         
-        context?.setBlendMode(.copy)
-        context?.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: 2.0, dy: 2.0))
+        context.setBlendMode(.copy)
+        context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: 2.0, dy: 2.0))
         
-        context?.setBlendMode(.normal)
-        context?.beginPath()
-        context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height).insetBy(dx: 4.0, dy: 4.0))
-        context?.clip()
+        context.setBlendMode(.normal)
+        context.beginPath()
+        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height).insetBy(dx: 4.0, dy: 4.0))
+        context.clip()
         
         source.draw(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: 4.0, dy: 4.0))
     } else {
-        context?.beginPath()
-        context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
-        context?.clip()
+        context.beginPath()
+        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+        context.clip()
         
         source.draw(in: CGRect(origin: CGPoint(), size: size))
     }
 
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
@@ -371,15 +484,20 @@ private let gradientColors: [NSArray] = [
 
 private func avatarViewLettersImage(size: CGSize, peerId: PeerId, letters: [String], isStory: Bool) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 2.0)
-    let context = UIGraphicsGetCurrentContext()
-
-    context?.beginPath()
-    if isStory {
-        context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height).insetBy(dx: 4.0, dy: 4.0))
-    } else {
-        context?.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    defer {
+        UIGraphicsEndImageContext()
     }
-    context?.clip()
+    guard let context = UIGraphicsGetCurrentContext() else {
+        return nil
+    }
+
+    context.beginPath()
+    if isStory {
+        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height).insetBy(dx: 4.0, dy: 4.0))
+    } else {
+        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+    }
+    context.clip()
 
     let colorIndex: Int
     if peerId.namespace == .max {
@@ -390,11 +508,13 @@ private func avatarViewLettersImage(size: CGSize, peerId: PeerId, letters: [Stri
 
     let colorsArray = gradientColors[colorIndex % gradientColors.count]
     var locations: [CGFloat] = [1.0, 0.0]
-    let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
+    guard let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) else {
+        return nil
+    }
 
-    context?.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+    context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
 
-    context?.setBlendMode(.normal)
+    context.setBlendMode(.normal)
 
     let string = letters.count == 0 ? "" : (letters[0] + (letters.count == 1 ? "" : letters[1]))
     let attributedString = NSAttributedString(string: string, attributes: [NSAttributedString.Key.font: UIFont.systemFont(ofSize: 20.0), NSAttributedString.Key.foregroundColor: UIColor.white])
@@ -405,24 +525,22 @@ private func avatarViewLettersImage(size: CGSize, peerId: PeerId, letters: [Stri
     let lineOffset = CGPoint(x: string == "B" ? 1.0 : 0.0, y: 0.0)
     let lineOrigin = CGPoint(x: floor(-lineBounds.origin.x + (size.width - lineBounds.size.width) / 2.0) + lineOffset.x, y: floor(-lineBounds.origin.y + (size.height - lineBounds.size.height) / 2.0))
 
-    context?.translateBy(x: size.width / 2.0, y: size.height / 2.0)
-    context?.scaleBy(x: 1.0, y: -1.0)
-    context?.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
+    context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
+    context.scaleBy(x: 1.0, y: -1.0)
+    context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
 
-    context?.translateBy(x: lineOrigin.x, y: lineOrigin.y)
-    if let context = context {
-        CTLineDraw(line, context)
-    }
-    context?.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
+    context.translateBy(x: lineOrigin.x, y: lineOrigin.y)
+    CTLineDraw(line, context)
+    context.translateBy(x: -lineOrigin.x, y: -lineOrigin.y)
     
     if isStory {
-        context?.resetClip()
+        context.resetClip()
         
         let lineWidth: CGFloat = 2.0
-        context?.setLineWidth(lineWidth)
-        context?.addEllipse(in: CGRect(origin: CGPoint(x: size.width * 0.5, y: size.height * 0.5), size: CGSize(width: size.width, height: size.height)).insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5))
-        context?.replacePathWithStrokedPath()
-        context?.clip()
+        context.setLineWidth(lineWidth)
+        context.addEllipse(in: CGRect(origin: CGPoint(x: size.width * 0.5, y: size.height * 0.5), size: CGSize(width: size.width, height: size.height)).insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5))
+        context.replacePathWithStrokedPath()
+        context.clip()
         
         let colors: [CGColor] = [
             UIColor(rgb: 0x34C76F).cgColor,
@@ -431,13 +549,14 @@ private func avatarViewLettersImage(size: CGSize, peerId: PeerId, letters: [Stri
         var locations: [CGFloat] = [0.0, 1.0]
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
+        guard let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) else {
+            return nil
+        }
         
-        context?.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
     }
 
     let image = UIGraphicsGetImageFromCurrentImageContext()
-    UIGraphicsEndImageContext()
     return image
 }
 
@@ -445,7 +564,7 @@ private func avatarImage(path: String?, peerId: PeerId, letters: [String], size:
     if let path = path, let image = UIImage(contentsOfFile: path), let roundImage = avatarRoundImage(size: size, source: image, isStory: isStory) {
         return roundImage
     } else {
-        return avatarViewLettersImage(size: size, peerId: peerId, letters: letters, isStory: isStory)!
+        return avatarViewLettersImage(size: size, peerId: peerId, letters: letters, isStory: isStory) ?? testAvatarImage(size: size) ?? UIImage()
     }
 }
 
@@ -615,11 +734,13 @@ private struct NotificationContent: CustomStringConvertible {
                         } else {
                             continue
                         }
-                        
+
                         let emojiRange = NSRange(location: emoji.range.lowerBound, length: emoji.range.upperBound - emoji.range.lowerBound)
                         let substring = attributedString.attributedSubstring(from: emojiRange)
-                        
-                        let glyph = try! Customoji.makeGlyph(from: image, description: substring.string, tileSizes: [40], cropToSquare: false)
+
+                        guard let glyph = try? Customoji.makeGlyph(from: image, description: substring.string, tileSizes: [40], cropToSquare: false) else {
+                            continue
+                        }
                         let imageString = NSAttributedString(adaptiveImageGlyph: glyph, attributes: [:])
                         attributedString.replaceCharacters(in: emojiRange, with: "")
                         attributedString.insert(imageString, at: emojiRange.lowerBound)
@@ -693,7 +814,9 @@ private struct NotificationContent: CustomStringConvertible {
                 interaction.donate(completion: nil)
 
                 do {
-                    content = try content.updating(from: incomingCommunicationIntent) as! UNMutableNotificationContent
+                    if let updatedContent = try content.updating(from: incomingCommunicationIntent) as? UNMutableNotificationContent {
+                        content = updatedContent
+                    }
                 } catch let e {
                     print("Exception: \(e)")
                 }
@@ -1000,29 +1123,17 @@ private final class NotificationServiceHandler {
                     var callData: CallData?
                     var groupCallData: GroupCallData?
 
-                    if let messageIdString = payloadJson["msg_id"] as? String {
-                        messageId = Int32(messageIdString)
-                    }
-                    if let storyIdString = payloadJson["story_id"] as? String {
-                        storyId = Int32(storyIdString)
-                    }
+                    messageId = notificationPayloadInt32(payloadJson["msg_id"])
+                    storyId = notificationPayloadInt32(payloadJson["story_id"])
 
-                    if let fromIdString = payloadJson["from_id"] as? String {
-                        if let userIdValue = Int64(fromIdString) {
-                            peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(userIdValue))
-                        }
-                    } else if let chatIdString = payloadJson["chat_id"] as? String {
-                        if let chatIdValue = Int64(chatIdString) {
-                            peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(chatIdValue))
-                        }
-                    } else if let channelIdString = payloadJson["channel_id"] as? String {
-                        if let channelIdValue = Int64(channelIdString) {
-                            peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(channelIdValue))
-                        }
-                    } else if let encryptionIdString = payloadJson["encryption_id"] as? String {
-                        if let encryptionIdValue = Int64(encryptionIdString) {
-                            peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(encryptionIdValue))
-                        }
+                    if let userIdValue = notificationPayloadInt64(payloadJson["from_id"]), userIdValue > 0 {
+                        peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(userIdValue))
+                    } else if let chatIdValue = notificationPayloadInt64(payloadJson["chat_id"]), chatIdValue > 0 {
+                        peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(chatIdValue))
+                    } else if let channelIdValue = notificationPayloadInt64(payloadJson["channel_id"]), channelIdValue > 0 {
+                        peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(channelIdValue))
+                    } else if let encryptionIdValue = notificationPayloadInt64(payloadJson["encryption_id"]), encryptionIdValue > 0 {
+                        peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(encryptionIdValue))
                     }
                     
                     #if DEBUG
@@ -1030,51 +1141,47 @@ private final class NotificationServiceHandler {
                     }
                     #endif
 
-                    if let peerId, let locKey = payloadJson["loc-key"] as? String, (locKey == "CONF_CALL_REQUEST" || locKey == "CONF_VIDEOCALL_REQUEST"), let callIdString = payloadJson["call_id"] as? String, let messageIdString = payloadJson["msg_id"] as? String {
-                        if let callId = Int64(callIdString), let messageId = Int32(messageIdString) {
-                            if let fromTitle = payloadJson["call_conference_from"] as? String {
-                                let isVideo = locKey == "CONF_VIDEOCALL_REQUEST"
-                                var memberCount = 0
-                                if let callParticipantsCountString = payloadJson["call_participants_cnt"] as? String, let callParticipantsCount = Int(callParticipantsCountString) {
-                                    memberCount = callParticipantsCount
-                                }
-                                
-                                groupCallData = GroupCallData(
-                                    id: callId,
-                                    fromId: peerId,
-                                    fromTitle: fromTitle,
-                                    memberCount: memberCount,
-                                    isVideo: isVideo,
-                                    messageId: messageId,
-                                    accountId: recordId.int64
-                                )
-                            }
-                        }
-                    } else if let callIdString = payloadJson["call_id"] as? String, let callAccessHashString = payloadJson["call_ah"] as? String, let peerId = peerId, let updates = payloadJson["updates"] as? String {
-                        if let callId = Int64(callIdString), let callAccessHash = Int64(callAccessHashString) {
-                            var peer: EnginePeer?
-                            
-                            var updateString = updates
-                            updateString = updateString.replacingOccurrences(of: "-", with: "+")
-                            updateString = updateString.replacingOccurrences(of: "_", with: "/")
-                            while updateString.count % 4 != 0 {
-                                updateString.append("=")
-                            }
-                            if let updateData = Data(base64Encoded: updateString) {
-                                if let callUpdate = AccountStateManager.extractIncomingCallUpdate(data: updateData) {
-                                    peer = callUpdate.peer
-                                }
+                    if let peerId, let locKey = payloadJson["loc-key"] as? String, (locKey == "CONF_CALL_REQUEST" || locKey == "CONF_VIDEOCALL_REQUEST"), let callId = notificationPayloadInt64(payloadJson["call_id"]), let messageId = notificationPayloadInt32(payloadJson["msg_id"]) {
+                        if let fromTitle = payloadJson["call_conference_from"] as? String {
+                            let isVideo = locKey == "CONF_VIDEOCALL_REQUEST"
+                            var memberCount = 0
+                            if let callParticipantsCount = notificationPayloadInt(payloadJson["call_participants_cnt"]) {
+                                memberCount = callParticipantsCount
                             }
                             
-                            callData = CallData(
+                            groupCallData = GroupCallData(
                                 id: callId,
-                                accessHash: callAccessHash,
                                 fromId: peerId,
-                                updates: updates,
-                                accountId: recordId.int64,
-                                peer: peer
+                                fromTitle: fromTitle,
+                                memberCount: memberCount,
+                                isVideo: isVideo,
+                                messageId: messageId,
+                                accountId: recordId.int64
                             )
                         }
+                    } else if let callId = notificationPayloadInt64(payloadJson["call_id"]), let callAccessHash = notificationPayloadInt64(payloadJson["call_ah"]), let peerId = peerId, let updates = payloadJson["updates"] as? String {
+                        var peer: EnginePeer?
+
+                        var updateString = updates
+                        updateString = updateString.replacingOccurrences(of: "-", with: "+")
+                        updateString = updateString.replacingOccurrences(of: "_", with: "/")
+                        while updateString.count % 4 != 0 {
+                            updateString.append("=")
+                        }
+                        if let updateData = Data(base64Encoded: updateString) {
+                            if let callUpdate = AccountStateManager.extractIncomingCallUpdate(data: updateData) {
+                                peer = callUpdate.peer
+                            }
+                        }
+
+                        callData = CallData(
+                            id: callId,
+                            accessHash: callAccessHash,
+                            fromId: peerId,
+                            updates: updates,
+                            accountId: recordId.int64,
+                            peer: peer
+                        )
                     }
 
                     enum Action {
@@ -1133,18 +1240,14 @@ private final class NotificationServiceHandler {
                             }
                         case "READ_HISTORY":
                             if let peerId = peerId {
-                                if let messageIdString = payloadJson["max_id"] as? String {
-                                    if let maxId = Int32(messageIdString) {
-                                        action = .readMessage(MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: maxId))
-                                    }
+                                if let maxId = notificationPayloadInt32(payloadJson["max_id"]) {
+                                    action = .readMessage(MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: maxId))
                                 }
                             }
                         case "READ_STORIES":
                             if let peerId = peerId {
-                                if let storyIdString = payloadJson["max_id"] as? String {
-                                    if let maxId = Int32(storyIdString) {
-                                        action = .readStories(peerId: peerId, maxId: maxId)
-                                    }
+                                if let maxId = notificationPayloadInt32(payloadJson["max_id"]) {
+                                    action = .readStories(peerId: peerId, maxId: maxId)
                                 }
                             }
                         default:
@@ -1223,10 +1326,8 @@ private final class NotificationServiceHandler {
                             content.userInfo["peerId"] = "\(peerId.toInt64())"
                             content.userInfo["accountId"] = "\(recordId.int64)"
                             
-                            if let silentString = payloadJson["silent"] as? String {
-                                if let silentValue = Int(silentString), silentValue != 0 {
-                                    content.silent = true
-                                }
+                            if let silentValue = notificationPayloadInt(payloadJson["silent"]), silentValue != 0 {
+                                content.silent = true
                             }
                             if var attachmentDataString = payloadJson["attachb64"] as? String {
                                 attachmentDataString = attachmentDataString.replacingOccurrences(of: "-", with: "+")
@@ -1242,14 +1343,16 @@ private final class NotificationServiceHandler {
                             if let threadId = aps["thread-id"] as? String {
                                 content.threadId = threadId
                             }
-                            if let topicIdValue = payloadJson["topic_id"] as? String, let topicId = Int(topicIdValue) {
+                            if let topicId = notificationPayloadInt64(payloadJson["topic_id"]) {
                                 if let threadId = content.threadId {
                                     content.threadId = "\(threadId):\(topicId)"
                                 }
-                                content.userInfo["threadId"] = Int32(clamping: topicId)
+                                if topicId >= Int64(Int32.min), topicId <= Int64(Int32.max) {
+                                    content.userInfo["threadId"] = Int32(topicId)
+                                }
                             }
 
-                            if let ringtoneString = aps["ringtone"] as? String, let fileId = Int64(ringtoneString) {
+                            if let fileId = notificationPayloadInt64(aps["ringtone"]) {
                                 content.sound = "0.m4a"
                                 if let notificationSoundList = notificationSoundList {
                                     for sound in notificationSoundList.sounds {
@@ -1286,7 +1389,7 @@ private final class NotificationServiceHandler {
                                 action = .pollStories(peerId: peerId, content: content, storyId: storyId, isReaction: isReaction)
                             } else {
                                 var reportDelivery = false
-                                if let reportDeliveryUntilDate = aps["report_delivery_until_date"] as? String, let reportDeliveryUntilDateValue = Int32(reportDeliveryUntilDate) {
+                                if let reportDeliveryUntilDateValue = notificationPayloadInt32(aps["report_delivery_until_date"]) {
                                     let currentTime = Int32(CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970)
                                     if reportDeliveryUntilDateValue > currentTime {
                                         reportDelivery = true
@@ -1515,15 +1618,7 @@ private final class NotificationServiceHandler {
                                                                 let _ = collectedData.modify { current in
                                                                     let current = current
                                                                     
-                                                                    let fillRange = Int(offset) ..< (Int(offset) + data.count)
-                                                                    if current.data.count < fillRange.upperBound {
-                                                                        current.data.count = fillRange.upperBound
-                                                                    }
-                                                                    current.data.withUnsafeMutableBytes { buffer -> Void in
-                                                                        let bytes = buffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                                                                        data.copyBytes(to: bytes.advanced(by: Int(offset)), from: Int(dataRange.lowerBound) ..< Int(dataRange.upperBound))
-                                                                    }
-                                                                    current.missingRanges.remove(contentsOf: Int64(fillRange.lowerBound) ..< Int64(fillRange.upperBound))
+                                                                    copyNotificationDataPart(targetData: &current.data, missingRanges: &current.missingRanges, resourceOffset: offset, sourceData: data, dataRange: dataRange)
                                                                     
                                                                     if current.missingRanges.isEmpty {
                                                                         isCompleted = true
@@ -1687,15 +1782,7 @@ private final class NotificationServiceHandler {
                                                                     let _ = collectedData.modify { current in
                                                                         let current = current
                                                                         
-                                                                        let fillRange = Int(offset) ..< (Int(offset) + data.count)
-                                                                        if current.data.count < fillRange.upperBound {
-                                                                            current.data.count = fillRange.upperBound
-                                                                        }
-                                                                        current.data.withUnsafeMutableBytes { buffer -> Void in
-                                                                            let bytes = buffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                                                                            data.copyBytes(to: bytes.advanced(by: Int(offset)), from: Int(dataRange.lowerBound) ..< Int(dataRange.upperBound))
-                                                                        }
-                                                                        current.missingRanges.remove(contentsOf: Int64(fillRange.lowerBound) ..< Int64(fillRange.upperBound))
+                                                                        copyNotificationDataPart(targetData: &current.data, missingRanges: &current.missingRanges, resourceOffset: offset, sourceData: data, dataRange: dataRange)
                                                                         
                                                                         if current.missingRanges.isEmpty {
                                                                             isCompleted = true
@@ -2339,9 +2426,9 @@ private final class NotificationServiceHandler {
                                 UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
                                     var removeIdentifiers: [String] = []
                                     for notification in notifications {
-                                        if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerIdValue = Int64(peerIdString), let messageIdString = notification.request.content.userInfo["msg_id"] as? String, let messageIdValue = Int32(messageIdString) {
+                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
                                             for id in ids {
-                                                if PeerId(peerIdValue) == id.peerId && messageIdValue == id.id {
+                                                if messageId == id {
                                                     removeIdentifiers.append(notification.request.identifier)
                                                 }
                                             }
@@ -2389,9 +2476,9 @@ private final class NotificationServiceHandler {
                                     if notification.request.content.categoryIdentifier != "t" {
                                         continue
                                     }
-                                    if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerIdValue = Int64(peerIdString), let messageIdString = notification.request.content.userInfo["msg_id"] as? String, let messageIdValue = Int32(messageIdString) {
+                                    if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
                                         for id in ids {
-                                            if PeerId(peerIdValue) == id.peerId && messageIdValue == id.id {
+                                            if messageId == id {
                                                 removeIdentifiers.append(notification.request.identifier)
                                             }
                                         }
@@ -2425,8 +2512,8 @@ private final class NotificationServiceHandler {
                             |> deliverOn(strongSelf.queue)).start(completed: {
                                 UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
                                     let notificationDebugList = notifications.map { notification -> String in
-                                        if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerIdValue = Int64(peerIdString), let messageIdString = notification.request.content.userInfo["msg_id"] as? String, let messageIdValue = Int32(messageIdString) {
-                                            return "peerId: \(peerIdValue), messageId: \(messageIdValue)"
+                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
+                                            return "peerId: \(messageId.peerId.toInt64()), messageId: \(messageId.id)"
                                         } else {
                                             return "unknown: \(String(describing: notification.request.content.userInfo))"
                                         }
@@ -2435,8 +2522,8 @@ private final class NotificationServiceHandler {
                                     
                                     var removeIdentifiers: [String] = []
                                     for notification in notifications {
-                                        if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerIdValue = Int64(peerIdString), let messageIdString = notification.request.content.userInfo["msg_id"] as? String, let messageIdValue = Int32(messageIdString) {
-                                            if PeerId(peerIdValue) == id.peerId && messageIdValue <= id.id {
+                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
+                                            if messageId.peerId == id.peerId && messageId.id <= id.id {
                                                 removeIdentifiers.append(notification.request.identifier)
                                             }
                                         }
@@ -2484,8 +2571,8 @@ private final class NotificationServiceHandler {
                                 UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
                                     var removeIdentifiers: [String] = []
                                     for notification in notifications {
-                                        if let peerIdString = notification.request.content.userInfo["peerId"] as? String, let peerIdValue = Int64(peerIdString), let messageIdString = notification.request.content.userInfo["story_id"] as? String, let messageIdValue = Int32(messageIdString) {
-                                            if PeerId(peerIdValue) == peerId && messageIdValue <= maxId {
+                                        if let storyId = notificationPayloadStoryId(notification.request.content.userInfo) {
+                                            if storyId.peerId == peerId && storyId.storyId <= maxId {
                                                 removeIdentifiers.append(notification.request.identifier)
                                             }
                                         }

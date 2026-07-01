@@ -1008,9 +1008,9 @@ public final class PeerInfoAvatarListContainerNode: ASDisplayNode {
             let colors: [CGColor] = [topColor.cgColor, bottomColor.cgColor]
             
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-            
-            context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
         }).flatMap { UIColor(patternImage: $0) }
         self.leftHighlightNode.alpha = 0.0
         
@@ -1026,9 +1026,9 @@ public final class PeerInfoAvatarListContainerNode: ASDisplayNode {
             let colors: [CGColor] = [topColor.cgColor, bottomColor.cgColor]
             
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-            
-            context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: 0.0), end: CGPoint(x: 0.0, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(x: size.width, y: 0.0), end: CGPoint(x: 0.0, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
         }).flatMap { UIColor(patternImage: $0) }
         self.rightHighlightNode.alpha = 0.0
         
@@ -1073,6 +1073,9 @@ public final class PeerInfoAvatarListContainerNode: ASDisplayNode {
         do {
             let size = CGSize(width: 88.0, height: 88.0)
             UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+            defer {
+                UIGraphicsEndImageContext()
+            }
             if let context = UIGraphicsGetCurrentContext() {
                 context.clip(to: CGRect(origin: CGPoint(), size: size))
                 
@@ -1083,26 +1086,25 @@ public final class PeerInfoAvatarListContainerNode: ASDisplayNode {
                 let colors: [CGColor] = [topColor.cgColor, bottomColor.cgColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: size.width, y: 0.0), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                }
                 
                 let image = UIGraphicsGetImageFromCurrentImageContext()
-                UIGraphicsEndImageContext()
-                if let image = image {
+                if let image = image, let cgImage = image.cgImage {
                     self.topShadowNode.image = generateImage(image.size, contextGenerator: { size, context in
                         context.clear(CGRect(origin: CGPoint(), size: size))
                         context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                         context.rotate(by: -CGFloat.pi / 2.0)
                         context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                        context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                        context.draw(cgImage, in: CGRect(origin: CGPoint(), size: size))
                     })
                     self.bottomShadowNode.imageView.image = generateImage(image.size, contextGenerator: { size, context in
                         context.clear(CGRect(origin: CGPoint(), size: size))
                         context.translateBy(x: size.width / 2.0, y: size.height / 2.0)
                         context.rotate(by: CGFloat.pi / 2.0)
                         context.translateBy(x: -size.width / 2.0, y: -size.height / 2.0)
-                        context.draw(image.cgImage!, in: CGRect(origin: CGPoint(), size: size))
+                        context.draw(cgImage, in: CGRect(origin: CGPoint(), size: size))
                     })
                 }
             }

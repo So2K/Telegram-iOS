@@ -229,9 +229,9 @@ public extension UIColor {
         if f >= 1 {
             // mix toward white: t = 1 - 1/f (so f=1 → t=0, f→∞ → t→1)
             let t = 1 - 1/f
-            r = r + (1 - r) * t
-            g = g + (1 - g) * t
-            b = b + (1 - b) * t
+            r += (1 - r) * t
+            g += (1 - g) * t
+            b += (1 - b) * t
         } else {
             // scale toward black
             r *= f; g *= f; b *= f
@@ -563,11 +563,15 @@ public func assertNotOnMainThread(_ file: String = #file, line: Int = #line) {
 }
 
 public extension UIImage {
-    func precomposed() -> UIImage {        
+    func precomposed() -> UIImage {
         UIGraphicsBeginImageContextWithOptions(self.size, false, self.scale)
+        defer {
+            UIGraphicsEndImageContext()
+        }
         self.draw(at: CGPoint())
-        let result = UIGraphicsGetImageFromCurrentImageContext()!
-        UIGraphicsEndImageContext()
+        guard let result = UIGraphicsGetImageFromCurrentImageContext() else {
+            return self
+        }
         if self.capInsets != UIEdgeInsets() {
             return result.resizableImage(withCapInsets: self.capInsets, resizingMode: self.resizingMode)
         }

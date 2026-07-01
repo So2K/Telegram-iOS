@@ -5,6 +5,13 @@ import AsyncDisplayKit
 import SwiftSignalKit
 import AVFoundation
 
+private func sampleBufferAttachmentDictionary(_ sampleBuffer: CMSampleBuffer) -> NSMutableDictionary? {
+    guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [Any], let firstAttachment = attachments.first as? NSMutableDictionary else {
+        return nil
+    }
+    return firstAttachment
+}
+
 private final class MediaPlayerNodeLayerNullAction: NSObject, CAAction {
     @objc func run(forKey event: String, object anObject: Any, arguments dict: [AnyHashable : Any]?) {
     }
@@ -200,18 +207,20 @@ public final class MediaPlayerNode: ASDisplayNode {
                     let frame = frames[i]
                     let frameTime = CMTimeGetSeconds(frame.position)
                     state.maxTakenTime = frameTime
-                    let attachments = CMSampleBufferGetSampleAttachmentsArray(frame.sampleBuffer, createIfNecessary: true)! as NSArray
-                    let dict = attachments[0] as! NSMutableDictionary
+                    let dict = sampleBufferAttachmentDictionary(frame.sampleBuffer)
                     if i == 0 && !soft {
                         CMSetAttachment(frame.sampleBuffer, key: kCMSampleBufferAttachmentKey_ResetDecoderBeforeDecoding as NSString, value: kCFBooleanTrue as AnyObject, attachmentMode: kCMAttachmentMode_ShouldPropagate)
                         CMSetAttachment(frame.sampleBuffer, key: kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration as NSString, value: kCFBooleanTrue as AnyObject, attachmentMode: kCMAttachmentMode_ShouldPropagate)
                     }
                     if !soft {
                         if CMTimeCompare(frame.position, atTime) < 0 {
+                            guard let dict else {
+                                continue
+                            }
                             dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DoNotDisplay as NSString as String)
                         } else if CMTimeCompare(frame.position, atTime) == 0 {
-                            dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DisplayImmediately as NSString as String)
-                            dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration as NSString as String)
+                            dict?.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DisplayImmediately as NSString as String)
+                            dict?.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleBufferAttachmentKey_EndsPreviousSampleDuration as NSString as String)
                         }
                     }
                     Queue.mainQueue().async {
@@ -219,8 +228,7 @@ public final class MediaPlayerNode: ASDisplayNode {
                             return
                         }
                         videoLayer.enqueue(frame.sampleBuffer)
-                        if #available(iOS 17.4, *) {
-                        } else {
+                        if #unavailable(iOS 17.4) {
                             if !strongSelf.didNotifyVideoLayerReadyForDisplay {
                                 strongSelf.didNotifyVideoLayerReadyForDisplay = true
                                 strongSelf.hasSentFramesToDisplay?()

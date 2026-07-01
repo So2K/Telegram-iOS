@@ -110,8 +110,12 @@ private func decorationBottomGradientImage(dark: Bool) -> UIImage? {
         let color = dark ? fullscreenBackgroundColor : panelBackgroundColor
         let colorsArray = [color.withAlphaComponent(0.0).cgColor, color.cgColor] as CFArray
         var locations: [CGFloat] = [1.0, 0.0]
-        let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations)!
-        context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray, locations: &locations) {
+            context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+        } else {
+            context.setFillColor(color.cgColor)
+            context.fill(bounds)
+        }
     })
 }
 

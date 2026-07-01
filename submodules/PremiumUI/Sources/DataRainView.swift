@@ -66,7 +66,10 @@ public final class MatrixView: MTKView, MTKViewDelegate, PhoneDemoDecorationView
         pipelineStateDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
         pipelineStateDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         
-        self.drawPassthroughPipelineState = try! device.makeRenderPipelineState(descriptor: pipelineStateDescriptor)
+        guard let drawPassthroughPipelineState = try? device.makeRenderPipelineState(descriptor: pipelineStateDescriptor) else {
+            return nil
+        }
+        self.drawPassthroughPipelineState = drawPassthroughPipelineState
   
         guard let url = bundle.url(forResource: "chars", withExtension: "png"), let texture = try? textureLoader.newTexture(URL: url, options: nil) else {
             return nil

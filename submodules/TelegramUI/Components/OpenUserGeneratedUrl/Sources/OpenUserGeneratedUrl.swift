@@ -29,6 +29,10 @@ public func openUserGeneratedUrl(
     alertDisplayUpdated: ((ViewController?) -> Void)? = nil,
     concealedAlertOption: OpenUserGeneratedUrlConcealedAlertOption? = nil
 ) -> Disposable {
+    guard isSafeUserGeneratedUrl(url) else {
+        return EmptyDisposable
+    }
+
     var concealed = concealed
 
     var presentationData = context.sharedContext.currentPresentationData.with { $0 }
@@ -242,11 +246,17 @@ private struct Punycode {
 
                     while true {
                         let t: UInt32
-                        if k <= bias { t = UInt32(tmin) }
-                        else if k >= bias + tmax { t = UInt32(tmax) }
-                        else { t = UInt32(k - bias) }
+                        if k <= bias {
+                            t = UInt32(tmin)
+                        } else if k >= bias + tmax {
+                            t = UInt32(tmax)
+                        } else {
+                            t = UInt32(k - bias)
+                        }
 
-                        if q < t { break }
+                        if q < t {
+                            break
+                        }
 
                         let digit = Int(t + (q - t) % UInt32(base - Int(t)))
                         output.append(encodeDigit(digit))

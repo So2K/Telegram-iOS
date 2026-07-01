@@ -48,6 +48,7 @@ import ChatHistoryEntry
 import ChatMessageItem
 import ChatMessageItemImpl
 import ChatRecentActionsController
+import ListMessageItem
 import PeerInfoScreen
 import ChatQrCodeScreen
 import UndoUI
@@ -2009,9 +2010,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
 
                 let isVideo = controller?.isCallVideoOptionSelected ?? false
 
-                if peerIds.count == 1 {
+                if peerIds.count == 1, let peerId = peerIds.first {
                     controller?.dismiss()
-                    self.performCall(context: context, parentController: parentController, peerId: peerIds[0], isVideo: isVideo, began: {
+                    self.performCall(context: context, parentController: parentController, peerId: peerId, isVideo: isVideo, began: {
                         let _ = (context.sharedContext.hasOngoingCall.get()
                         |> filter { $0 }
                         |> timeout(1.0, queue: Queue.mainQueue(), alternate: .single(true))
@@ -2609,14 +2610,18 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             }
         }
         
+        guard let firstMessage = messages.first else {
+            return ListMessageHoleItem()
+        }
+
         let content: ChatMessageItemContent
         let chatLocation: ChatLocation
         if messages.count > 1 {
             content = .group(messages: messages.map { ($0, true, .none, entryAttributes, nil) })
-            chatLocation = .peer(id: messages.first!.id.peerId)
+            chatLocation = .peer(id: firstMessage.id.peerId)
         } else {
-            content = .message(message: messages.first!, read: true, selection: .none, attributes: entryAttributes, location: nil)
-            chatLocation = .peer(id: messages.first!.id.peerId)
+            content = .message(message: firstMessage, read: true, selection: .none, attributes: entryAttributes, location: nil)
+            chatLocation = .peer(id: firstMessage.id.peerId)
         }
         
         return ChatMessageItemImpl(
@@ -3775,7 +3780,11 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 }
                 return nil
             }, completion: { results, commit in
-                completion(results.first!, commit)
+                guard let result = results.first else {
+                    cancelled()
+                    return
+                }
+                completion(result, commit)
             } as ([MediaEditorScreenImpl.Result], @escaping (@escaping () -> Void) -> Void) -> Void
         )
         editorController.cancelled = { _ in

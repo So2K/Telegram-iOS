@@ -29,8 +29,8 @@ private func generateButtonImage(background: PasscodeBackground, frame: CGRect, 
         context.clip()
         
         context.setAlpha(0.8)
-        if let foregroundImage = background.foregroundImage {
-            context.draw(foregroundImage.cgImage!, in: relativeFrame)
+        if let foregroundImage = background.foregroundImage, let cgImage = foregroundImage.cgImage {
+            context.draw(cgImage, in: relativeFrame)
         }
         if highlighted {
             context.setFillColor(UIColor(white: 1.0, alpha: 0.65).cgColor)
@@ -188,9 +188,9 @@ final class PasscodeEntryButtonNode: HighlightTrackingButtonNode {
         if self.currentImage !== image {
             let currentContents = self.backgroundNode.layer.contents
             self.backgroundNode.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents, let image = image {
+            if let currentContents = currentContents as? CGImage, let image = image, let imageContents = image.cgImage {
                 self.backgroundNode.image = image
-                self.backgroundNode.layer.animate(from: currentContents as AnyObject, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.45 : 0.05)
+                self.backgroundNode.layer.animate(from: currentContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.45 : 0.05)
             } else {
                 self.backgroundNode.image = image
             }

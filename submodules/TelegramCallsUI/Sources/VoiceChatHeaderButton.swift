@@ -36,12 +36,12 @@ func panelButtonImage(dark: Bool) -> UIImage? {
         
         context.setFillColor(UIColor.white.cgColor)
         
-        if let image = UIImage(bundleImageName: "Call/PanelIcon") {
+        if let image = UIImage(bundleImageName: "Call/PanelIcon"), let cgImage = image.cgImage {
             let imageSize = image.size
             let imageRect = CGRect(origin: CGPoint(), size: imageSize)
             context.saveGState()
             context.translateBy(x: 7.0, y: 2.0)
-            context.clip(to: imageRect, mask: image.cgImage!)
+            context.clip(to: imageRect, mask: cgImage)
             context.fill(imageRect)
             context.restoreGState()
         }

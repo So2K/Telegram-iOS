@@ -53,9 +53,12 @@ private final class VoiceChatAccountHeaderActionSheetItemNode: ActionSheetItemNo
             var locations: [CGFloat] = [0.0, 1.0]
             let colorsArray: NSArray = [UIColor(rgb: 0x2a9ef1).cgColor, UIColor(rgb: 0x72d5fd).cgColor]
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations)!
-            
-            context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations) {
+                context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+            } else {
+                context.setFillColor(UIColor(rgb: 0x2a9ef1).cgColor)
+                context.fill(bounds)
+            }
         })
         
         self.iconNode = ASImageNode()

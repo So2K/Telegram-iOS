@@ -25,6 +25,9 @@ private func generateDotImage(color: UIColor, filled: Bool) -> UIImage? {
 }
 
 private func generateFieldBackgroundImage(backgroundImage: UIImage, backgroundSize: CGSize, frame: CGRect) -> UIImage? {
+    guard let backgroundCGImage = backgroundImage.cgImage else {
+        return nil
+    }
     return generateImage(frame.size, contextGenerator: { size, context in
         let bounds = CGRect(origin: CGPoint(), size: size)
         context.clear(bounds)
@@ -36,7 +39,7 @@ private func generateFieldBackgroundImage(backgroundImage: UIImage, backgroundSi
         context.addPath(path.cgPath)
         context.clip()
         
-        context.draw(backgroundImage.cgImage!, in: relativeFrame)
+        context.draw(backgroundCGImage, in: relativeFrame)
         
         context.setBlendMode(.clear)
         context.setFillColor(UIColor.clear.cgColor)
@@ -100,8 +103,8 @@ private class PasscodeEntryDotNode: ASImageNode {
     private var currentImage: UIImage
     
     init(color: UIColor) {
-        self.regularImage = generateDotImage(color: color, filled: false)!
-        self.filledImage = generateDotImage(color: color, filled: true)!
+        self.regularImage = generateDotImage(color: color, filled: false) ?? UIImage()
+        self.filledImage = generateDotImage(color: color, filled: true) ?? UIImage()
         self.currentImage = self.regularImage
         
         super.init()
@@ -114,8 +117,8 @@ private class PasscodeEntryDotNode: ASImageNode {
         if self.currentImage !== image {
             let currentContents = self.layer.contents
             self.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents, animated {
-                self.layer.animate(from: currentContents as AnyObject, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.25 : 0.05, delay: delay, removeOnCompletion: false, completion: { finished in
+            if let currentContents = currentContents as? CGImage, let imageContents = image.cgImage, animated {
+                self.layer.animate(from: currentContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.25 : 0.05, delay: delay, removeOnCompletion: false, completion: { finished in
                     if finished {
                         self.image = image
                     }
@@ -379,4 +382,3 @@ public final class PasscodeInputFieldNode: ASDisplayNode, UITextFieldDelegate {
         return true
     }
 }
-

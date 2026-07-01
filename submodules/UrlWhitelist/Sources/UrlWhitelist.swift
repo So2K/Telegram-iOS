@@ -7,6 +7,18 @@ private let whitelistedHosts: Set<String> = Set([
     "telesco.pe",
     "fragment.com"
 ])
+private let maxUserGeneratedUrlLength = 8192
+
+public func isSafeUserGeneratedUrl(_ url: String) -> Bool {
+    let trimmedUrl = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedUrl.isEmpty || trimmedUrl.utf16.count > maxUserGeneratedUrlLength {
+        return false
+    }
+    if trimmedUrl.lowercased().hasPrefix("data:") {
+        return false
+    }
+    return true
+}
 
 public func isConcealedUrlWhitelisted(_ url: URL) -> Bool {
     if var host = url.host?.lowercased() {

@@ -332,9 +332,9 @@ public final class SparseDiscreteScrollingArea: ASDisplayNode {
                 lineColor = UIColor(white: 0.0, alpha: 0.3)
             }
             if let image = generateStretchableFilledCircleImage(diameter: self.isDragging ? 6.0 : 3.0, color: lineColor, strokeColor: nil, strokeWidth: nil, backgroundColor: nil) {
-                if transition.isAnimated, let previousImage = self.lineIndicator.image {
+                if transition.isAnimated, let previousImage = self.lineIndicator.image, let previousCgImage = previousImage.cgImage, let cgImage = image.cgImage {
                     self.lineIndicator.image = image
-                    self.lineIndicator.layer.animate(from: previousImage.cgImage!, to: image.cgImage!, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
+                    self.lineIndicator.layer.animate(from: previousCgImage, to: cgImage, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, duration: 0.2)
                 } else {
                     self.lineIndicator.image = image
                 }

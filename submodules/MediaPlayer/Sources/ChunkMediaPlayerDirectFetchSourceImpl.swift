@@ -7,7 +7,10 @@ import RangeSet
 import CoreMedia
 
 private func FFMpegLookaheadReader_readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: UnsafeMutablePointer<UInt8>?, bufferSize: Int32) -> Int32 {
-    let context = Unmanaged<FFMpegLookaheadReader>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData, let buffer, bufferSize > 0 else {
+        return FFMPEG_CONSTANT_AVERROR_EOF
+    }
+    let context = Unmanaged<FFMpegLookaheadReader>.fromOpaque(userData).takeUnretainedValue()
     
     let readCount = min(256 * 1024, Int64(bufferSize))
     let requestRange: Range<Int64> = context.readingOffset ..< (context.readingOffset + readCount)
@@ -38,13 +41,21 @@ private func FFMpegLookaheadReader_readPacketCallback(userData: UnsafeMutableRaw
     fetchDisposable.dispose()
     
     if let fetchedData = fetchedData {
-        fetchedData.withUnsafeBytes { byteBuffer -> Void in
-            guard let bytes = byteBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return
-            }
-            memcpy(buffer, bytes, fetchedData.count)
+        let copyCount = min(fetchedData.count, Int(bufferSize))
+        guard copyCount > 0 else {
+            return FFMPEG_CONSTANT_AVERROR_EOF
         }
-        let fetchedCount = Int32(fetchedData.count)
+        let didCopy = fetchedData.withUnsafeBytes { byteBuffer -> Bool in
+            guard let bytes = byteBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return false
+            }
+            memcpy(buffer, bytes, copyCount)
+            return true
+        }
+        guard didCopy else {
+            return FFMPEG_CONSTANT_AVERROR_EOF
+        }
+        let fetchedCount = Int32(copyCount)
         //print("Fetched from \(context.readingOffset) (\(fetchedCount) bytes)")
         context.setReadingOffset(offset: context.readingOffset + Int64(fetchedCount))
         if fetchedCount == 0 {
@@ -57,13 +68,17 @@ private func FFMpegLookaheadReader_readPacketCallback(userData: UnsafeMutableRaw
 }
 
 private func FFMpegLookaheadReader_seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whence: Int32) -> Int64 {
-    let context = Unmanaged<FFMpegLookaheadReader>.fromOpaque(userData!).takeUnretainedValue()
+    guard let userData else {
+        return -1
+    }
+    let context = Unmanaged<FFMpegLookaheadReader>.fromOpaque(userData).takeUnretainedValue()
     if (whence & FFMPEG_AVSEEK_SIZE) != 0 {
         return context.params.size
     } else {
-        context.setReadingOffset(offset: offset)
+        let boundedOffset = max(0, min(offset, context.params.size))
+        context.setReadingOffset(offset: boundedOffset)
         
-        return offset
+        return boundedOffset
     }
 }
 

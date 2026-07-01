@@ -476,8 +476,11 @@ private func fileQualityPreloadData(postbox: Postbox, playlistFile: FileMediaRef
             var durations: [Int] = []
             var byteRanges: [Range<Int>] = []
             
-            let extinfRegex = try! NSRegularExpression(pattern: "EXTINF:(\\d+)", options: [])
-            let byteRangeRegex = try! NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: [])
+            guard let extinfRegex = try? NSRegularExpression(pattern: "EXTINF:(\\d+)", options: []), let byteRangeRegex = try? NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: []) else {
+                subscriber.putNext(nil)
+                subscriber.putCompletion()
+                return
+            }
             
             let extinfResults = extinfRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
             for result in extinfResults {
@@ -1026,10 +1029,10 @@ public func chatMessagePhotoInternal(photoData: Signal<Tuple4<Data?, Data?, Chat
                             }
                                 
                                 
-                            if let blurredImage = sideBlurredImage {
+                            if let blurredImage = sideBlurredImage, let blurredCgImage = blurredImage.cgImage {
                                 let filledSize = thumbnailSize.aspectFilled(arguments.drawingRect.size)
                                 c.interpolationQuality = .medium
-                                c.draw(blurredImage.cgImage!, in: CGRect(origin: CGPoint(x:arguments.drawingRect.minX + (arguments.drawingRect.width - filledSize.width) / 2.0, y: arguments.drawingRect.minY + (arguments.drawingRect.height - filledSize.height) / 2.0), size: filledSize))
+                                c.draw(blurredCgImage, in: CGRect(origin: CGPoint(x:arguments.drawingRect.minX + (arguments.drawingRect.width - filledSize.width) / 2.0, y: arguments.drawingRect.minY + (arguments.drawingRect.height - filledSize.height) / 2.0), size: filledSize))
                                 c.setBlendMode(.normal)
                                 c.setFillColor((arguments.emptyColor ?? UIColor.white).withAlphaComponent(0.05).cgColor)
                                 c.fill(arguments.drawingRect)
@@ -1925,10 +1928,10 @@ public func internalMediaGridMessageVideo(postbox: Postbox, userLocation: MediaR
                                         sideBlurredImage = thumbnailContext.generateImage()
                                     }
                                     
-                                    if let blurredImage = sideBlurredImage {
+                                    if let blurredImage = sideBlurredImage, let blurredCgImage = blurredImage.cgImage {
                                         let filledSize = thumbnailSize.aspectFilled(arguments.drawingRect.size)
                                         c.interpolationQuality = .medium
-                                        c.draw(blurredImage.cgImage!, in: CGRect(origin: CGPoint(x: arguments.drawingRect.minX + (arguments.drawingRect.width - filledSize.width) / 2.0, y: arguments.drawingRect.minY + (arguments.drawingRect.height - filledSize.height) / 2.0), size: filledSize))
+                                        c.draw(blurredCgImage, in: CGRect(origin: CGPoint(x: arguments.drawingRect.minX + (arguments.drawingRect.width - filledSize.width) / 2.0, y: arguments.drawingRect.minY + (arguments.drawingRect.height - filledSize.height) / 2.0), size: filledSize))
                                         c.setBlendMode(.normal)
                                         c.setFillColor((arguments.emptyColor ?? UIColor.white).withAlphaComponent(0.05).cgColor)
                                         c.fill(arguments.drawingRect)
@@ -3333,8 +3336,12 @@ public func callDefaultBackground() -> Signal<(TransformImageArguments) -> Drawi
             let colors = [UIColor(rgb: 0x466f92).cgColor, UIColor(rgb: 0x244f74).cgColor]
             var locations: [CGFloat] = [1.0, 0.0]
             let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-            c.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: CGGradientDrawingOptions())
+            if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                c.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: arguments.drawingSize.height), options: CGGradientDrawingOptions())
+            } else {
+                c.setFillColor(UIColor(rgb: 0x244f74).cgColor)
+                c.fill(CGRect(origin: CGPoint(), size: arguments.drawingSize))
+            }
         }
         return context
     })

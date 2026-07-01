@@ -11,7 +11,7 @@ private func generateHistogram(cgImage: CGImage) -> ([[vImagePixelCount]], Int)?
     var cgImageFormat = vImage_CGImageFormat(
         bitsPerComponent: UInt32(cgImage.bitsPerComponent),
         bitsPerPixel: UInt32(cgImage.bitsPerPixel),
-        colorSpace: Unmanaged.passUnretained(cgImage.colorSpace!),
+        colorSpace: Unmanaged.passUnretained(cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()),
         bitmapInfo: cgImage.bitmapInfo,
         version: 0,
         decode: nil,
@@ -21,6 +21,9 @@ private func generateHistogram(cgImage: CGImage) -> ([[vImagePixelCount]], Int)?
     let noFlags = vImage_Flags(kvImageNoFlags)
     var error = vImageBuffer_InitWithCGImage(&sourceBuffer, &cgImageFormat, nil, cgImage, noFlags)
     assert(error == kvImageNoError)
+    guard error == kvImageNoError else {
+        return nil
+    }
     
     if cgImage.alphaInfo == .premultipliedLast {
         error = vImageUnpremultiplyData_RGBA8888(&sourceBuffer, &sourceBuffer, noFlags)
@@ -28,11 +31,15 @@ private func generateHistogram(cgImage: CGImage) -> ([[vImagePixelCount]], Int)?
         error = vImageUnpremultiplyData_ARGB8888(&sourceBuffer, &sourceBuffer, noFlags)
     }
     assert(error == kvImageNoError)
+    guard error == kvImageNoError else {
+        return nil
+    }
     
     var histogramBinZero = [vImagePixelCount](repeating: 0, count: 256)
     var histogramBinOne = [vImagePixelCount](repeating: 0, count: 256)
     var histogramBinTwo = [vImagePixelCount](repeating: 0, count: 256)
     var histogramBinThree = [vImagePixelCount](repeating: 0, count: 256)
+    var histogramSucceeded = true
     
     histogramBinZero.withUnsafeMutableBufferPointer { zeroPtr in
         histogramBinOne.withUnsafeMutableBufferPointer { onePtr in
@@ -40,16 +47,22 @@ private func generateHistogram(cgImage: CGImage) -> ([[vImagePixelCount]], Int)?
                 histogramBinThree.withUnsafeMutableBufferPointer { threePtr in
                     var histogramBins = [zeroPtr.baseAddress, onePtr.baseAddress, twoPtr.baseAddress, threePtr.baseAddress]
                     histogramBins.withUnsafeMutableBufferPointer { histogramBinsPtr in
-                        let error = vImageHistogramCalculation_ARGB8888(
-                            &sourceBuffer,
-                            histogramBinsPtr.baseAddress!,
-                            noFlags
-                        )
+                        guard let baseAddress = histogramBinsPtr.baseAddress else {
+                            histogramSucceeded = false
+                            return
+                        }
+                        let error = vImageHistogramCalculation_ARGB8888(&sourceBuffer, baseAddress, noFlags)
                         assert(error == kvImageNoError)
+                        if error != kvImageNoError {
+                            histogramSucceeded = false
+                        }
                     }
                 }
             }
         }
+    }
+    guard histogramSucceeded else {
+        return nil
     }
     
     let alphaBinIndex = [.last, .premultipliedLast].contains(cgImage.alphaInfo) ? 3 : 0
