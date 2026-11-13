@@ -83,3 +83,8 @@ xcode-files
 /buildbox/*
 **/node_modules/
 tools/sim-watcher/dist/
+/ipa-signing-work/
+/.zsign_cache/
+/output/
+/build-output/
+/bazel-Telegram

@@ -12,6 +12,26 @@ private func activeEdgeWidth(width: CGFloat) -> CGFloat {
     return floor(width * 0.4)
 }
 
+private final class GalleryPagerScrollView: UIScrollView {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === self.panGestureRecognizer {
+            var movement = self.panGestureRecognizer.velocity(in: self)
+            // SuperGram: only fall back to translation for genuinely slow drags; 1 pt/s is below any
+            // deliberate swipe, so the ratio test used to run on noisy velocity values.
+            if abs(movement.x) + abs(movement.y) < 50.0 {
+                movement = self.panGestureRecognizer.translation(in: self)
+            }
+            let horizontalMovement = abs(movement.x)
+            let verticalMovement = abs(movement.y)
+            // SuperGram: 1.8 keeps a 30 degree diagonal from paging the gallery (QA GEST-02).
+            if horizontalMovement + verticalMovement > 0.0 && horizontalMovement < verticalMovement * 1.8 {
+                return false
+            }
+        }
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+}
+
 let fadeWidth: CGFloat = 70.0
 private let leftFadeImage = generateImage(CGSize(width: fadeWidth, height: 32.0), opaque: false, rotatedContext: { size, context in
     let bounds = CGRect(origin: CGPoint(), size: size)
@@ -146,7 +166,7 @@ public final class GalleryPagerNode: ASDisplayNode, ASScrollViewDelegate, ASGest
         self.pageGap = pageGap
         self.disableTapNavigation = disableTapNavigation
 
-        self.scrollView = UIScrollView()
+        self.scrollView = GalleryPagerScrollView()
         if #available(iOSApplicationExtension 11.0, iOS 11.0, *) {
             self.scrollView.contentInsetAdjustmentBehavior = .never
         }
@@ -166,6 +186,7 @@ public final class GalleryPagerNode: ASDisplayNode, ASScrollViewDelegate, ASGest
         self.scrollView.alwaysBounceHorizontal = !pageGap.isZero
         self.scrollView.bounces = !pageGap.isZero
         self.scrollView.isPagingEnabled = true
+        self.scrollView.isDirectionalLockEnabled = true
         self.scrollView.delegate = self.wrappedScrollViewDelegate
         self.scrollView.clipsToBounds = false
         self.scrollView.scrollsToTop = false
@@ -237,6 +258,12 @@ public final class GalleryPagerNode: ASDisplayNode, ASScrollViewDelegate, ASGest
                 return .fail
             }
             
+            // SuperGram: with "show next media on tap" enabled, a video that seeks on edge double-taps must not switch
+            // to the neighbour on the first tap. A single tap still navigates once the double-tap window has passed.
+            if highlightedSide != nil, let centralIndex = strongSelf.centralItemIndex, let itemNode = strongSelf.visibleItemNode(at: centralIndex) as? ZoomableContentGalleryItemNode, itemNode.handlesDoubleTapAtEdges {
+                return .waitForDoubleTap
+            }
+
             if activeSide != nil {
                 return .waitForHold(timeout: 0.3, acceptTap: true)
             } else {

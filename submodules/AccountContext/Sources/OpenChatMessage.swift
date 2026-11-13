@@ -50,6 +50,10 @@ public final class OpenChatMessageParams {
     public let centralItemUpdated: ((EngineMessage.Id) -> Void)?
     public let navigateToMessageContext: ((EngineMessage) -> Void)?
     public let getSourceRect: (() -> CGRect?)?
+    public let beginMediaGalleryOpen: (() -> Int)?
+    public let setMediaGalleryOpenDisposable: ((Int, Disposable) -> Void)?
+    public let isMediaGalleryOpenCurrent: ((Int) -> Bool)?
+    public let endMediaGalleryOpen: ((Int) -> Void)?
     public let blockInteraction: Promise<Bool>
     
     public init(
@@ -84,7 +88,11 @@ public final class OpenChatMessageParams {
         gallerySource: GalleryControllerItemSource? = nil,
         centralItemUpdated: ((EngineMessage.Id) -> Void)? = nil,
         navigateToMessageContext: ((EngineMessage) -> Void)? = nil,
-        getSourceRect: (() -> CGRect?)? = nil
+        getSourceRect: (() -> CGRect?)? = nil,
+        beginMediaGalleryOpen: (() -> Int)? = nil,
+        setMediaGalleryOpenDisposable: ((Int, Disposable) -> Void)? = nil,
+        isMediaGalleryOpenCurrent: ((Int) -> Bool)? = nil,
+        endMediaGalleryOpen: ((Int) -> Void)? = nil
     ) {
         self.context = context
         self.updatedPresentationData = updatedPresentationData
@@ -118,6 +126,10 @@ public final class OpenChatMessageParams {
         self.centralItemUpdated = centralItemUpdated
         self.navigateToMessageContext = navigateToMessageContext
         self.getSourceRect = getSourceRect
+        self.beginMediaGalleryOpen = beginMediaGalleryOpen
+        self.setMediaGalleryOpenDisposable = setMediaGalleryOpenDisposable
+        self.isMediaGalleryOpenCurrent = isMediaGalleryOpenCurrent
+        self.endMediaGalleryOpen = endMediaGalleryOpen
         self.blockInteraction = Promise()
     }
 }

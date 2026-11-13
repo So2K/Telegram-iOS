@@ -1,3 +1,5 @@
+import SGSimpleSettings
+import TranslateUI
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -744,7 +746,11 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     
     private var summarizeButtonNode: ChatMessageShareButton?
     private var shareButtonNode: ChatMessageShareButton?
-    
+
+    // MARK: Swiftgram: quick translate button (SuperGram: non-destructive, see TranslateUI/SGTranslation.swift)
+    private var quickTranslateButtonNode: ChatMessageShareButton?
+    private let quickTranslateDisposable = MetaDisposable()
+
     private let messageAccessibilityArea: AccessibilityAreaNode
 
     private var backgroundType: ChatMessageBackgroundType?
@@ -843,6 +849,10 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                 return .none
             }
             if !strongSelf.backgroundNode.frame.contains(location) {
+                return .none
+            }
+            // SuperGram: holding a finger on an inline text selection (dragging a knob) never opens the menu
+            if strongSelf.superGramTouchIsOnInlineSelection(location) {
                 return .none
             }
             if strongSelf.selectionNode != nil {
@@ -997,6 +1007,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     deinit {
+        self.quickTranslateDisposable.dispose()
     }
 
     override public func updateTrailingItemSpace(_ height: CGFloat, transition: ContainedViewLayoutTransition) {
@@ -1306,7 +1317,11 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                 if let shareButtonNode = strongSelf.shareButtonNode, shareButtonNode.frame.contains(point) {
                     return .fail
                 }
-                
+                // MARK: Swiftgram
+                if let quickTranslateButtonNode = strongSelf.quickTranslateButtonNode, quickTranslateButtonNode.frame.contains(point) {
+                    return .fail
+                }
+
                 if let actionButtonsNode = strongSelf.actionButtonsNode {
                     if let _ = actionButtonsNode.hitTest(strongSelf.view.convert(point, to: actionButtonsNode.view), with: nil) {
                         return .fail
@@ -1393,6 +1408,10 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         }
         recognizer.longTap = { [weak self] point, recognizer in
             guard let strongSelf = self else {
+                return
+            }
+            if strongSelf.superGramTouchIsOnInlineSelection(point) {
+                recognizer.cancel()
                 return
             }
 
@@ -1822,10 +1841,21 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         }
         
         let isFailed = item.content.firstMessage.effectivelyFailed(timestamp: item.context.account.network.getApproximateRemoteTimestamp())
-        
+
+        // MARK: Swiftgram: quick translate button. SuperGram computes visibility here (thread-safe helper that
+        // skips secret chats, non-cloud messages and Do Not Translate languages) and passes it to applyLayout.
+        var sgLocalNeedsQuickTranslateButton = false
+        if incoming && !isPreview && !isFailed && !isSidePanelOpen && item.message.adAttribute == nil {
+            if let subject = item.associatedData.subject, case .messageOptions = subject {
+            } else if sgShouldShowQuickTranslateButton(context: item.context, messageId: item.message.id, text: item.message.text, isIncoming: incoming, chatTranslateToLanguage: item.associatedData.translateToLanguage) {
+                sgLocalNeedsQuickTranslateButton = true
+            }
+        }
+
         var needsShareButton = false
+        var mayHaveSeparateCommentsButton = false // MARK: Swiftgram
         var needsSummarizeButton = false
-    
+
         if incoming, case let .customChatContents(contents) = item.associatedData.subject, case .hashTagSearch = contents.kind {
             needsShareButton = true
         } else if case .pinnedMessages = item.associatedData.subject {
@@ -1838,7 +1868,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             }
         } else if case let .replyThread(replyThreadMessage) = item.chatLocation, replyThreadMessage.effectiveTopId == item.message.id {
             needsShareButton = false
-            allowFullWidth = true
+            if !sgLocalNeedsQuickTranslateButton { // MARK: Swiftgram
+                allowFullWidth = true
+            }
         } else if isFailed || Namespaces.Message.allNonRegular.contains(item.message.id.namespace) {
             needsShareButton = false
         } else if item.message.id.peerId == item.context.account.peerId {
@@ -1879,7 +1911,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                     needsShareButton = true
                 }
             }
-            var mayHaveSeparateCommentsButton = false
+            // var mayHaveSeparateCommentsButton = false // MARK: Swiftgram
             if !needsShareButton {
                 loop: for media in item.message.media {
                     if media is TelegramMediaGame || media is TelegramMediaInvoice {
@@ -1935,17 +1967,33 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             needsShareButton = false
         }*/
                         
+        // SuperGram: hide only the plain share / repost button. The same node renders the Comments button of a
+        // channel post only when the post is a round video (otherwise the bubble draws its own "N Comments" bar
+        // and passes disableComments: true), and the "go to message" button in monoforums.
+        if !superGramShowsMessageShareButton {
+            var shareButtonCommentsDisabled = true
+            for media in item.message.media {
+                if let file = media as? TelegramMediaFile, file.isInstantVideo {
+                    shareButtonCommentsDisabled = false
+                    break
+                }
+            }
+            if !superGramShareButtonActsAsNavigation(item: item, commentsDisabled: shareButtonCommentsDisabled) {
+                needsShareButton = false
+            }
+        }
+
         var tmpWidth: CGFloat
         if allowFullWidth {
             tmpWidth = baseWidth
-            if (needsShareButton && !isSidePanelOpen) || isAd {
+            if (needsShareButton && !isSidePanelOpen) || isAd || sgLocalNeedsQuickTranslateButton /* MARK: Swiftgram */ {
                 tmpWidth -= 45.0
             } else {
                 tmpWidth -= 3.0
             }
         } else {
             tmpWidth = layoutConstants.bubble.maximumWidthFill.widthFor(baseWidth)
-            if ((needsShareButton && !isSidePanelOpen) || isAd) && tmpWidth + 32.0 > baseWidth {
+            if ((needsShareButton && !isSidePanelOpen) || isAd || sgLocalNeedsQuickTranslateButton /* MARK: Swiftgram */) && tmpWidth + 32.0 > baseWidth {
                 tmpWidth = baseWidth - 32.0
             }
         }
@@ -1956,11 +2004,23 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         }
         
         tmpWidth -= deliveryFailedInset
-        
+        // MARK: Swifgram
+        // SuperGram: also skipped for posts with a summarize button (it sits outside the bubble) and for ads.
+        let renderWideChannelPosts: Bool
+        if let channel = item.message.peers[item.message.id.peerId] as? TelegramChannel, case .broadcast = channel.info, SGSimpleSettings.shared.wideChannelPosts, !(mayHaveSeparateCommentsButton && hasCommentButton(item: item)), !needsSummarizeButton, !isAd {
+            renderWideChannelPosts = true
+
+            tmpWidth = baseWidth
+            needsShareButton = false
+            sgLocalNeedsQuickTranslateButton = false
+        } else {
+            renderWideChannelPosts = false
+        }
+
         let (contentNodeMessagesAndClasses, needSeparateContainers, needReactions) = contentNodeMessagesAndClassesForItem(item)
-        
+
         var maximumContentWidth = floor(tmpWidth - layoutConstants.bubble.edgeInset * 3.0 - layoutConstants.bubble.contentInsets.left - layoutConstants.bubble.contentInsets.right - avatarInset)
-        if (needsShareButton && !isSidePanelOpen) {
+        if (needsShareButton && !isSidePanelOpen) || sgLocalNeedsQuickTranslateButton /* MARK: Swiftgram */ {
             maximumContentWidth -= 10.0
         }
         
@@ -2498,14 +2558,30 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         var mosaicStatusSizeAndApply: (CGSize, (ListViewItemUpdateAnimation) -> ChatMessageDateAndStatusNode)?
         
         if let mosaicRange = mosaicRange {
-            let maxSize = layoutConstants.image.maxDimensions.fittedToWidthOrSmaller(maximumContentWidth - layoutConstants.image.bubbleInsets.left - layoutConstants.image.bubbleInsets.right)
-            let (innerFramesAndPositions, innerSize) = chatMessageBubbleMosaicLayout(maxSize: maxSize, itemSizes: contentPropertiesAndLayouts[mosaicRange].map { item in
+            // MARK: Swiftgram
+            var maxDimensions = layoutConstants.image.maxDimensions
+            if renderWideChannelPosts {
+                maxDimensions.width = maximumContentWidth
+            }
+            var maxSize = maxDimensions.fittedToWidthOrSmaller(maximumContentWidth - layoutConstants.image.bubbleInsets.left - layoutConstants.image.bubbleInsets.right)
+            var (innerFramesAndPositions, innerSize) = chatMessageBubbleMosaicLayout(maxSize: maxSize, itemSizes: contentPropertiesAndLayouts[mosaicRange].map { item in
                 guard let size = item.0, size.width > 0.0, size.height > 0 else {
                     return CGSize(width: 256.0, height: 256.0)
                 }
                 return size
             })
-            
+            // MARK: Swiftgram
+            if innerSize.height > maxSize.height, maxDimensions.width != layoutConstants.image.maxDimensions.width {
+                maxDimensions.width = max(round(maxDimensions.width * maxSize.height / innerSize.height), layoutConstants.image.maxDimensions.width)
+                maxSize = maxDimensions.fittedToWidthOrSmaller(maximumContentWidth - layoutConstants.image.bubbleInsets.left - layoutConstants.image.bubbleInsets.right)
+                (innerFramesAndPositions, innerSize) = chatMessageBubbleMosaicLayout(maxSize: maxSize, itemSizes: contentPropertiesAndLayouts[mosaicRange].map { item in
+                    guard let size = item.0, size.width > 0.0, size.height > 0 else {
+                        return CGSize(width: 256.0, height: 256.0)
+                    }
+                    return size
+                })
+            }
+
             let framesAndPositions = innerFramesAndPositions.map { ($0.0.offsetBy(dx: layoutConstants.image.bubbleInsets.left, dy: layoutConstants.image.bubbleInsets.top), $0.1) }
             
             let size = CGSize(width: innerSize.width + layoutConstants.image.bubbleInsets.left + layoutConstants.image.bubbleInsets.right, height: innerSize.height + layoutConstants.image.bubbleInsets.top + layoutConstants.image.bubbleInsets.bottom)
@@ -3719,6 +3795,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                 mediaInfoSizeAndApply: mediaInfoSizeApply,
                 needsSummarizeButton: needsSummarizeButton,
                 needsShareButton: needsShareButton,
+                needsQuickTranslateButton: sgLocalNeedsQuickTranslateButton,
                 shareButtonOffset: shareButtonOffset,
                 avatarOffset: avatarOffset,
                 hidesHeaders: hidesHeaders,
@@ -3786,6 +3863,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         mediaInfoSizeAndApply: (CGSize, (Bool) -> ChatMessageStarsMediaInfoNode?),
         needsSummarizeButton: Bool,
         needsShareButton: Bool,
+        needsQuickTranslateButton: Bool,
         shareButtonOffset: CGPoint?,
         avatarOffset: CGFloat?,
         hidesHeaders: Bool,
@@ -4664,6 +4742,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                     if !strongSelf.backgroundNode.frame.contains(location) {
                         return false
                     }
+                    if strongSelf.superGramTouchIsOnInlineSelection(location) {
+                        return false
+                    }
                     if strongSelf.selectionNode != nil {
                         return false
                     }
@@ -5124,7 +5205,22 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             strongSelf.shareButtonNode = nil
             shareButtonNode.removeFromSupernode()
         }
-        
+
+        // MARK: Swiftgram
+        if needsQuickTranslateButton {
+            if strongSelf.quickTranslateButtonNode == nil {
+                let quickTranslateButtonNode = ChatMessageShareButton()
+                strongSelf.quickTranslateButtonNode = quickTranslateButtonNode
+                strongSelf.insertSubnode(quickTranslateButtonNode, belowSubnode: strongSelf.messageAccessibilityArea)
+                quickTranslateButtonNode.pressed = { [weak strongSelf] in
+                    strongSelf?.quickTranslateButtonPressed()
+                }
+            }
+        } else if let quickTranslateButtonNode = strongSelf.quickTranslateButtonNode {
+            strongSelf.quickTranslateButtonNode = nil
+            quickTranslateButtonNode.removeFromSupernode()
+        }
+
         let offset: CGFloat = params.leftInset + (incoming ? 42.0 : 0.0)
         let selectionFrame = CGRect(origin: CGPoint(x: -offset, y: 0.0), size: CGSize(width: params.width, height: layout.contentSize.height))
         strongSelf.selectionNode?.frame = selectionFrame
@@ -5345,6 +5441,29 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                 animation.animator.updateAlpha(layer: shareButtonNode.layer, alpha: (isCurrentlyPlayingMedia || isSidePanelOpen) ? 0.0 : 1.0, completion: nil)
                 animation.animator.updateScale(layer: shareButtonNode.layer, scale: (isCurrentlyPlayingMedia || isSidePanelOpen) ? 0.001 : 1.0, completion: nil)
             }
+            // MARK: Swiftgram
+            if let quickTranslateButtonNode = strongSelf.quickTranslateButtonNode {
+                let buttonSize = quickTranslateButtonNode.update(hasTranslation: sgQuickTranslationLanguage(messageId: item.message.id) != nil, presentationData: item.presentationData, controllerInteraction: item.controllerInteraction, chatLocation: item.chatLocation, subject: item.associatedData.subject, message: EngineMessage(item.message), accountPeerId: item.context.account.peerId, disableComments: true)
+
+                var buttonFrame = CGRect(origin: CGPoint(x: !incoming ? backgroundFrame.minX - buttonSize.width - 8.0 : backgroundFrame.maxX + 8.0, y: backgroundFrame.maxY - buttonSize.width - 1.0), size: buttonSize)
+                if let shareButtonOffset = shareButtonOffset {
+                    if incoming {
+                        buttonFrame.origin.x = shareButtonOffset.x
+                    }
+                    buttonFrame.origin.y = buttonFrame.origin.y + shareButtonOffset.y - (buttonSize.height - 30.0)
+                } else if !disablesComments {
+                    buttonFrame.origin.y = buttonFrame.origin.y - (buttonSize.height - 30.0)
+                }
+
+                // Spacing from current shareButton
+                if let shareButtonNode = strongSelf.shareButtonNode {
+                    buttonFrame.origin.y += -4.0 - shareButtonNode.bounds.height
+                }
+
+                animation.animator.updatePosition(layer: quickTranslateButtonNode.layer, position: buttonFrame.center, completion: nil)
+                animation.animator.updateBounds(layer: quickTranslateButtonNode.layer, bounds: CGRect(origin: CGPoint(), size: buttonFrame.size), completion: nil)
+                animation.animator.updateAlpha(layer: quickTranslateButtonNode.layer, alpha: isCurrentlyPlayingMedia ? 0.0 : 1.0, completion: nil)
+            }
         } else {
             /*if let _ = strongSelf.backgroundFrameTransition {
                 strongSelf.animateFrameTransition(1.0, backgroundFrame.size.height)
@@ -5403,7 +5522,30 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                 animation.animator.updateAlpha(layer: shareButtonNode.layer, alpha: (isCurrentlyPlayingMedia || isSidePanelOpen) ? 0.0 : 1.0, completion: nil)
                 animation.animator.updateScale(layer: shareButtonNode.layer, scale: (isCurrentlyPlayingMedia || isSidePanelOpen) ? 0.001 : 1.0, completion: nil)
             }
-            
+
+            // MARK: Swiftgram
+            if let quickTranslateButtonNode = strongSelf.quickTranslateButtonNode {
+                let buttonSize = quickTranslateButtonNode.update(hasTranslation: sgQuickTranslationLanguage(messageId: item.message.id) != nil, presentationData: item.presentationData, controllerInteraction: item.controllerInteraction, chatLocation: item.chatLocation, subject: item.associatedData.subject, message: EngineMessage(item.message), accountPeerId: item.context.account.peerId, disableComments: true)
+
+                var buttonFrame = CGRect(origin: CGPoint(x: !incoming ? backgroundFrame.minX - buttonSize.width - 8.0 : backgroundFrame.maxX + 8.0, y: backgroundFrame.maxY - buttonSize.width - 1.0), size: buttonSize)
+                if let shareButtonOffset = shareButtonOffset {
+                    if incoming {
+                        buttonFrame.origin.x = shareButtonOffset.x
+                    }
+                    buttonFrame.origin.y = buttonFrame.origin.y + shareButtonOffset.y - (buttonSize.height - 30.0)
+                } else if !disablesComments {
+                    buttonFrame.origin.y = buttonFrame.origin.y - (buttonSize.height - 30.0)
+                }
+
+                // Spacing from current shareButton
+                if let shareButtonNode = strongSelf.shareButtonNode {
+                    buttonFrame.origin.y += -4.0 - shareButtonNode.bounds.height
+                }
+
+                quickTranslateButtonNode.frame = buttonFrame
+                quickTranslateButtonNode.alpha = isCurrentlyPlayingMedia ? 0.0 : 1.0
+            }
+
             if case .System = animation, strongSelf.mainContextSourceNode.isExtractedToContextPreview {
                 legacyTransition.updateFrame(node: strongSelf.backgroundNode, frame: backgroundFrame)
                 if let backgroundHighlightNode = strongSelf.backgroundHighlightNode {
@@ -5527,6 +5669,36 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         super.animateFrameTransition(progress, currentValue)
     }
     
+    // SuperGram: double tap on message text selects the tapped word right in the chat (selection handles + the
+    // copy/quote bubble menu, no context menu). Returns false when the location is not over text.
+    private func superGramTouchIsOnInlineSelection(_ location: CGPoint) -> Bool {
+        for contentNode in self.contentNodes {
+            guard let textContentNode = contentNode as? ChatMessageTextBubbleContentNode, textContentNode.superGramInlineSelectionActive else {
+                continue
+            }
+            if textContentNode.superGramInlineSelectionContains(textContentNode.view.convert(location, from: self.view)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func superGramSelectTextOnDoubleTap(location: CGPoint, subFrame: CGRect?) -> Bool {
+        for contentNode in self.contentNodes {
+            guard let textContentNode = contentNode as? ChatMessageTextBubbleContentNode else {
+                continue
+            }
+            let pointInContent = textContentNode.view.convert(location, from: self.view)
+            guard textContentNode.bounds.contains(pointInContent) else {
+                continue
+            }
+            if textContentNode.superGramBeginInlineSelection(at: pointInContent) {
+                return true
+            }
+        }
+        return false
+    }
+
     @objc private func tapLongTapOrDoubleTapGesture(_ recognizer: TapLongTapOrDoubleTapGestureRecognizer) {
         switch recognizer.state {
         case .ended:
@@ -5541,18 +5713,55 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
                     case let .optionalAction(f):
                         f()
                     case let .openContextMenu(openContextMenu):
-                        if canAddMessageReactions(message: EngineMessage(openContextMenu.tapMessage)) {
-                            item.controllerInteraction.updateMessageReaction(openContextMenu.tapMessage, .default, false, nil)
-                        } else {
-                            item.controllerInteraction.openMessageContextMenu(openContextMenu.tapMessage, openContextMenu.selectAll, self, openContextMenu.subFrame, nil, nil)
+                        // MARK: Swiftgram
+                        // SuperGram: when the message can't be edited, sgStartMessageEdit returns false and the default action runs.
+                        let defaultAction: () -> Void = {
+                            if canAddMessageReactions(message: EngineMessage(openContextMenu.tapMessage)) {
+                                item.controllerInteraction.updateMessageReaction(openContextMenu.tapMessage, .default, false, nil)
+                            } else {
+                                item.controllerInteraction.openMessageContextMenu(openContextMenu.tapMessage, openContextMenu.selectAll, self, openContextMenu.subFrame, nil, nil)
+                            }
                         }
+                        // SuperGram: double tap selects the word under the finger instead of reacting
+                        if case .doubleTap = gesture, SGSimpleSettings.shared.sgDoubleTapSelectsText {
+                            sgHandleDoubleTapMessageAction(incoming: openContextMenu.tapMessage.effectivelyIncoming(item.context.account.peerId), message: openContextMenu.tapMessage, editAction: {
+                                if !item.controllerInteraction.sgStartMessageEdit(openContextMenu.tapMessage) {
+                                    let _ = self.superGramSelectTextOnDoubleTap(location: location, subFrame: openContextMenu.subFrame)
+                                }
+                            }, defaultAction: {
+                                let _ = self.superGramSelectTextOnDoubleTap(location: location, subFrame: openContextMenu.subFrame)
+                            })
+                        } else if case .doubleTap = gesture {
+                            sgHandleDoubleTapMessageAction(incoming: openContextMenu.tapMessage.effectivelyIncoming(item.context.account.peerId), message: openContextMenu.tapMessage, editAction: {
+                                if !item.controllerInteraction.sgStartMessageEdit(openContextMenu.tapMessage) {
+                                    defaultAction()
+                                }
+                            }, defaultAction: defaultAction)
+                        } else {
+                            defaultAction()
+                        }
+                        //
                     }
                 } else if case .tap = gesture {
                     item.controllerInteraction.clickThroughMessage(self.view, location)
                 } else if case .doubleTap = gesture {
-                    if canAddMessageReactions(message: EngineMessage(item.message)) {
-                        item.controllerInteraction.updateMessageReaction(item.message, .default, false, nil)
+                    // MARK: Swiftgram
+                    let defaultAction: () -> Void = {
+                        // SuperGram: double tap selects the word under the finger instead of reacting
+                        if SGSimpleSettings.shared.sgDoubleTapSelectsText {
+                            let _ = self.superGramSelectTextOnDoubleTap(location: location, subFrame: nil)
+                            return
+                        }
+                        if canAddMessageReactions(message: EngineMessage(item.message)) {
+                            item.controllerInteraction.updateMessageReaction(item.message, .default, false, nil)
+                        }
                     }
+                    sgHandleDoubleTapMessageAction(incoming: item.message.effectivelyIncoming(item.context.account.peerId), message: item.message, editAction: {
+                        if !item.controllerInteraction.sgStartMessageEdit(item.message) {
+                            defaultAction()
+                        }
+                    }, defaultAction: defaultAction)
+                    //
                 }
             }
         default:
@@ -6327,7 +6536,11 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         if let shareButtonNode = self.shareButtonNode, shareButtonNode.frame.contains(point) {
             return shareButtonNode.view.hitTest(self.view.convert(point, to: shareButtonNode.view), with: event)
         }
-        
+        // MARK: Swiftgram
+        if let quickTranslateButtonNode = self.quickTranslateButtonNode, quickTranslateButtonNode.frame.contains(point) {
+            return quickTranslateButtonNode.view.hitTest(self.view.convert(point, to: quickTranslateButtonNode.view), with: event)
+        }
+
         if let selectionNode = self.selectionNode {
             if let result = self.traceSelectionNodes(parent: self, point: point.offsetBy(dx: -42.0, dy: 0.0)) {
                 return result.view
@@ -6777,6 +6990,24 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
         }
     }
     
+    // MARK: Swiftgram: SuperGram's non-destructive quick translate. The stored message text is never rewritten:
+    // the translation lands in the regular TranslationMessageAttribute and the text content node shows it while
+    // sgQuickTranslationLanguage(messageId:) is set. A second press shows the original text again.
+    private func quickTranslateButtonPressed() {
+        guard let item = self.item else {
+            return
+        }
+        let controllerInteraction = item.controllerInteraction
+        let messageId = item.message.id
+        let context = item.context
+        self.quickTranslateDisposable.set(sgToggleQuickTranslation(context: context, messageId: messageId, text: item.message.text, updated: {
+            controllerInteraction.requestMessageUpdate(messageId, false, nil)
+        }, failed: { reason in
+            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+            controllerInteraction.displayUndo(.info(title: nil, text: sgChatTranslationFailureText(reason: reason, isPremium: context.isPremium, offerOnDevice: false, strings: presentationData.strings), timeout: nil, customUndoText: nil))
+        }))
+    }
+
     @objc private func shareButtonPressed() {
         if let item = self.item {
             if item.message.adAttribute != nil {
@@ -7065,7 +7296,16 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
             
             shareButtonNode.updateAbsoluteRect(shareButtonNodeFrame, within: containerSize)
         }
-        
+
+        // MARK: Swiftgram
+        if let quickTranslateButtonNode = self.quickTranslateButtonNode {
+            var quickTranslateButtonNodeFrame = quickTranslateButtonNode.frame
+            quickTranslateButtonNodeFrame.origin.x += rect.minX
+            quickTranslateButtonNodeFrame.origin.y += rect.minY
+
+            quickTranslateButtonNode.updateAbsoluteRect(quickTranslateButtonNodeFrame, within: containerSize)
+        }
+
         if let actionButtonsNode = self.actionButtonsNode {
             var actionButtonsNodeFrame = actionButtonsNode.frame
             actionButtonsNodeFrame.origin.x += rect.minX
@@ -7331,8 +7571,16 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
     }
     
     override public func makeContentSnapshot() -> (UIImage, CGRect)? {
-        UIGraphicsBeginImageContextWithOptions(self.backgroundNode.view.bounds.size, false, 0.0)
-        let context = UIGraphicsGetCurrentContext()!
+        let size = self.backgroundNode.view.bounds.size
+        // SuperGram: a zero-sized node (or a failed context) used to trap on UIGraphicsGetCurrentContext().
+        guard size.width > 0.0, size.height > 0.0 else {
+            return nil
+        }
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        guard let context = UIGraphicsGetCurrentContext() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
         
         context.translateBy(x: -self.backgroundNode.frame.minX, y: -self.backgroundNode.frame.minY)
         

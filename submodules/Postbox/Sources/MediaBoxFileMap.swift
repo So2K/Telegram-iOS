@@ -3,6 +3,8 @@ import RangeSet
 import Crc32
 
 final class MediaBoxFileMap {
+    // Cache metadata is recoverable. Bound memory before allocating disk-controlled payloads.
+    private static let maxSerializedPayloadLength: Int64 = 8 * 1024 * 1024
     enum FileMapError: Error {
         case generic
     }
@@ -65,13 +67,16 @@ final class MediaBoxFileMap {
                     throw FileMapError.generic
                 }
                 
-                if count < 0 || length < 4 + 4 + 4 + 8 + count * 2 * 8 {
+                // The count is untrusted disk data. Widen before multiplying so a torn/corrupt header
+                // cannot trap in Int32 arithmetic before the checksum is checked.
+                let payloadLength = 8 + Int64(count) * 2 * 8
+                if payloadLength > Self.maxSerializedPayloadLength || length < 4 + 4 + 4 + payloadLength {
                     throw FileMapError.generic
                 }
                 
                 var truncationSizeValue: Int64 = 0
                 
-                var data = Data(count: Int(8 + count * 2 * 8))
+                var data = Data(count: Int(payloadLength))
                 let dataCount = data.count
                 if !(data.withUnsafeMutableBytes { rawBytes -> Bool in
                     let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
@@ -88,6 +93,7 @@ final class MediaBoxFileMap {
                     }
                     
                     var offset = 8
+                    var previousUpperBound: Int64 = 0
                     for _ in 0 ..< count {
                         var intervalOffset: Int64 = 0
                         var intervalLength: Int64 = 0
@@ -95,7 +101,12 @@ final class MediaBoxFileMap {
                         memcpy(&intervalLength, bytes.advanced(by: offset + 8), 8)
                         offset += 8 * 2
                         
-                        ranges.insert(contentsOf: intervalOffset ..< (intervalOffset + intervalLength))
+                        let (upperBound, didOverflow) = intervalOffset.addingReportingOverflow(intervalLength)
+                        guard intervalOffset >= previousUpperBound, intervalLength > 0, !didOverflow else {
+                            return false
+                        }
+                        previousUpperBound = upperBound
+                        ranges.insert(contentsOf: intervalOffset ..< upperBound)
                         
                         sum += intervalLength
                     }
@@ -109,7 +120,7 @@ final class MediaBoxFileMap {
                 if truncationSizeValue == -1 {
                     mappedTruncationSize = nil
                 } else if truncationSizeValue < 0 {
-                    mappedTruncationSize = nil
+                    throw FileMapError.generic
                 } else {
                     mappedTruncationSize = truncationSizeValue
                 }
@@ -123,7 +134,7 @@ final class MediaBoxFileMap {
             } else {
                 let crc: UInt32 = firstUInt32
                 var count: Int32 = 0
-                var sum: Int32 = 0
+                var sum: Int64 = 0
                 var ranges = RangeSet<Int64>()
                 
                 guard fd.read(&count, 4) == 4 else {
@@ -134,13 +145,14 @@ final class MediaBoxFileMap {
                     throw FileMapError.generic
                 }
                 
-                if count < 0 || UInt64(length) < 4 + 4 + UInt64(count) * 2 * 4 {
+                let payloadLength = 4 + Int64(count) * 2 * 4
+                if payloadLength > Self.maxSerializedPayloadLength || length < 4 + 4 + payloadLength {
                     throw FileMapError.generic
                 }
                 
                 var truncationSizeValue: Int32 = 0
                 
-                var data = Data(count: Int(4 + count * 2 * 4))
+                var data = Data(count: Int(payloadLength))
                 let dataCount = data.count
                 if !(data.withUnsafeMutableBytes { rawBytes -> Bool in
                     let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
@@ -157,6 +169,7 @@ final class MediaBoxFileMap {
                     }
                     
                     var offset = 4
+                    var previousUpperBound: Int64 = 0
                     for _ in 0 ..< count {
                         var intervalOffset: Int32 = 0
                         var intervalLength: Int32 = 0
@@ -164,9 +177,14 @@ final class MediaBoxFileMap {
                         memcpy(&intervalLength, bytes.advanced(by: offset + 4), 4)
                         offset += 8
                         
-                        ranges.insert(contentsOf: Int64(intervalOffset) ..< Int64(intervalOffset + intervalLength))
+                        let upperBound = Int64(intervalOffset) + Int64(intervalLength)
+                        guard Int64(intervalOffset) >= previousUpperBound, intervalLength > 0 else {
+                            return false
+                        }
+                        previousUpperBound = upperBound
+                        ranges.insert(contentsOf: Int64(intervalOffset) ..< upperBound)
                         
-                        sum += intervalLength
+                        sum += Int64(intervalLength)
                     }
                     
                     return true
@@ -177,12 +195,14 @@ final class MediaBoxFileMap {
                 let mappedTruncationSize: Int64?
                 if truncationSizeValue == -1 {
                     mappedTruncationSize = nil
+                } else if truncationSizeValue < 0 {
+                    throw FileMapError.generic
                 } else {
                     mappedTruncationSize = Int64(truncationSizeValue)
                 }
                 
                 result = MediaBoxFileMap(
-                    sum: Int64(sum),
+                    sum: sum,
                     ranges: ranges,
                     truncationSize: mappedTruncationSize,
                     progress: nil
@@ -196,41 +216,56 @@ final class MediaBoxFileMap {
         return result
     }
     
-    func serialize(manager: MediaBoxFileManager, to path: String) {
+    @discardableResult
+    func serialize(manager: MediaBoxFileManager, to path: String) -> Bool {
         guard let fileItem = manager.open(path: path, mode: .readwrite) else {
             postboxLog("MediaBoxFile: serialize: cannot open file")
-            return
+            return false
         }
-        
-        let _ = try? fileItem.access { file in
-            let _ = file.seek(position: 0)
-            let buffer = WriteBuffer()
-            var magic: UInt32 = 0x7bac1487
-            buffer.write(&magic, offset: 0, length: 4)
-            
-            var zero: Int32 = 0
-            buffer.write(&zero, offset: 0, length: 4)
-            
-            let rangeView = self.ranges.ranges
-            var count: Int32 = Int32(rangeView.count)
-            buffer.write(&count, offset: 0, length: 4)
-            
-            var truncationSizeValue: Int64 = self.truncationSize ?? -1
-            buffer.write(&truncationSizeValue, offset: 0, length: 8)
-            
-            for range in rangeView {
-                var intervalOffset = range.lowerBound
-                var intervalLength = range.upperBound - range.lowerBound
-                buffer.write(&intervalOffset, offset: 0, length: 8)
-                buffer.write(&intervalLength, offset: 0, length: 8)
+
+        var didWrite = false
+        do {
+            try fileItem.access { file in
+                guard file.seek(position: 0) else { return }
+                let rangeView = self.ranges.ranges
+                guard rangeView.count <= (Self.maxSerializedPayloadLength - 8) / 16 else {
+                    postboxLog("MediaBoxFile: serialize: map exceeds cache metadata budget")
+                    return
+                }
+                let buffer = WriteBuffer()
+                var magic: UInt32 = 0x7bac1487
+                buffer.write(&magic, offset: 0, length: 4)
+
+                var zero: Int32 = 0
+                buffer.write(&zero, offset: 0, length: 4)
+
+                var count: Int32 = Int32(rangeView.count)
+                buffer.write(&count, offset: 0, length: 4)
+
+                var truncationSizeValue: Int64 = self.truncationSize ?? -1
+                buffer.write(&truncationSizeValue, offset: 0, length: 8)
+
+                for range in rangeView {
+                    var intervalOffset = range.lowerBound
+                    var intervalLength = range.upperBound - range.lowerBound
+                    buffer.write(&intervalOffset, offset: 0, length: 8)
+                    buffer.write(&intervalLength, offset: 0, length: 8)
+                }
+                var crc: UInt32 = Crc32(buffer.memory.advanced(by: 4 + 4 + 4), Int32(buffer.length - (4 + 4 + 4)))
+                memcpy(buffer.memory.advanced(by: 4), &crc, 4)
+                let written = file.write(buffer.memory, count: buffer.length)
+                guard written == buffer.length else {
+                    postboxLog("MediaBoxFile: serialize: incomplete map write")
+                    return
+                }
+                didWrite = true
             }
-            var crc: UInt32 = Crc32(buffer.memory.advanced(by: 4 + 4 + 4), Int32(buffer.length - (4 + 4 + 4)))
-            memcpy(buffer.memory.advanced(by: 4), &crc, 4)
-            let written = file.write(buffer.memory, count: buffer.length)
-            assert(written == buffer.length)
+        } catch {
+            return false
         }
+        return didWrite
     }
-    
+
     func fill(_ range: Range<Int64>) {
         var previousCount: Int64 = 0
         for intersectionRange in self.ranges.intersection(RangeSet<Int64>(range)).ranges {

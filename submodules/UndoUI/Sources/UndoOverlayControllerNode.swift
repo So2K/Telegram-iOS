@@ -25,6 +25,17 @@ import AnimatedTextComponent
 import ComponentDisplayAdapters
 import PhotoResources
 
+// SuperGram: turns "[Telegram Premium]()" style markdown links into plain text
+private func superGramStripMarkdownLinks(_ string: String) -> String {
+    guard string.contains("](") else {
+        return string
+    }
+    guard let regex = try? NSRegularExpression(pattern: "\\[([^\\]]*)\\]\\([^)]*\\)", options: []) else {
+        return string
+    }
+    return regex.stringByReplacingMatches(in: string, options: [], range: NSRange(string.startIndex..., in: string), withTemplate: "$1")
+}
+
 final class UndoOverlayControllerNode: ViewControllerTracingNode {
     private let presentationData: PresentationData
     private let elevatedLayout: Bool
@@ -1289,11 +1300,21 @@ final class UndoOverlayControllerNode: ViewControllerTracingNode {
                 } else {
                     displayUndo = false
                 }
-            case let .premiumPaywall(title, text, customUndoText, timeout, linkAction):
+            case let .premiumPaywall(rawTitle, rawText, rawCustomUndoText, timeout, rawLinkAction):
+                // SuperGram: paywall toasts stay informational (no Premium link, no action button, no tap-through) (UPS-06)
+                let title = superGramHidePremiumUpsell ? rawTitle.map(superGramStripMarkdownLinks) : rawTitle
+                let text = superGramHidePremiumUpsell ? superGramStripMarkdownLinks(rawText) : rawText
+                let customUndoText = superGramHidePremiumUpsell ? nil : rawCustomUndoText
+                let linkAction = superGramHidePremiumUpsell ? nil : rawLinkAction
+
                 self.avatarNode = nil
                 self.iconNode = nil
                 self.iconCheckNode = nil
-                self.animationNode = AnimationNode(animation: "PremiumStar", colors: [:], scale: 0.066)
+                if superGramHidePremiumUpsell {
+                    self.animationNode = AnimationNode(animation: "anim_infotip", colors: ["info1.info1.stroke": self.animationBackgroundColor, "info2.info2.Fill": self.animationBackgroundColor], scale: 1.0)
+                } else {
+                    self.animationNode = AnimationNode(animation: "PremiumStar", colors: [:], scale: 0.066)
+                }
                 self.animatedStickerNode = nil
             
                 if let title = title, text.isEmpty {

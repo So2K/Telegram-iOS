@@ -210,6 +210,10 @@ public extension EmojiPagerContentComponent {
             ApplicationSpecificNotice.dismissedTrendingEmojiPacks(accountManager: context.sharedContext.accountManager)
         )
         |> map { view, hasPremium, featuredEmojiPacks, availableReactions, searchCategories, iconStatusEmoji, peerSpecificPack, dismissedTrendingEmojiPacks -> EmojiPagerContentComponent in
+            // SuperGram: premium-locked emoji/reactions are not shown to non-premium users, so their lock-tap upsells are unreachable (UPS-07)
+            let hideLockedPremiumContent = isPremiumDisabled || (superGramHidePremiumUpsell && !hasPremium)
+            let hideLockedPremiumReactions = superGramHidePremiumUpsell && !hasPremium
+
             struct ItemGroup {
                 var supergroupId: AnyHashable
                 var id: AnyHashable
@@ -325,14 +329,14 @@ public extension EmojiPagerContentComponent {
                     let supergroupId = "featuredTop"
                     let groupId: AnyHashable = supergroupId
                     let isPremiumLocked: Bool = item.file.isPremiumSticker && !hasPremium
-                    if isPremiumLocked && isPremiumDisabled {
+                    if isPremiumLocked && hideLockedPremiumContent {
                         continue
                     }
                     if let groupIndex = itemGroupIndexById[groupId] {
                         itemGroups[groupIndex].items.append(resultItem)
                     } else {
                         itemGroupIndexById[groupId] = itemGroups.count
-                        
+
                         let title = strings.EmojiInput_TrendingEmoji
                         itemGroups.append(ItemGroup(supergroupId: groupId, id: groupId, title: title, subtitle: nil, badge: nil, isPremiumLocked: false, isFeatured: false, collapsedLineCount: 0, isClearable: false, headerItem: nil, items: [resultItem]))
                     }
@@ -749,19 +753,22 @@ public extension EmojiPagerContentComponent {
                             continue
                         }
                         existingIds.insert(reactionItem.value)
-                        
+
                         let icon: EmojiPagerContentComponent.Item.Icon
                         if !hasPremium, case .custom = reactionItem.value {
+                            if hideLockedPremiumReactions {
+                                continue
+                            }
                             icon = .locked
                         } else {
                             icon = .none
                         }
-                        
+
                         var tintMode: Item.TintMode = .none
                         if reactionItem.selectAnimation.isCustomTemplateEmoji {
                             tintMode = .primary
                         }
-                        
+
                         let animationFile = reactionItem.selectAnimation
                         let animationData = EntityKeyboardAnimationData(file: animationFile, isReaction: true)
                         let resultItem = EmojiPagerContentComponent.Item(
@@ -772,7 +779,7 @@ public extension EmojiPagerContentComponent {
                             icon: icon,
                             tintMode: tintMode
                         )
-                        
+
                         let groupId = "liked"
                         if let groupIndex = itemGroupIndexById[groupId] {
                             itemGroups[groupIndex].items.append(resultItem)
@@ -888,9 +895,12 @@ public extension EmojiPagerContentComponent {
                                 continue
                             }
                             existingIds.insert(reactionItem.value)
-                            
+
                             let icon: EmojiPagerContentComponent.Item.Icon
                             if !hasPremium, case .custom = reactionItem.value {
+                                if hideLockedPremiumReactions {
+                                    continue
+                                }
                                 icon = .locked
                             } else {
                                 icon = .none
@@ -969,8 +979,11 @@ public extension EmojiPagerContentComponent {
                                 }
                                 existingIds.insert(.custom(file.fileId.id))
                                 animationFile = file
-                                
+
                                 if !hasPremium {
+                                    if hideLockedPremiumReactions {
+                                        continue
+                                    }
                                     icon = .locked
                                 } else {
                                     icon = .none
@@ -1215,7 +1228,7 @@ public extension EmojiPagerContentComponent {
                         continue
                     }
                     
-                    if case let .file(file) = item.content, isPremiumDisabled, file.isPremiumEmoji {
+                    if case let .file(file) = item.content, hideLockedPremiumContent, file.isPremiumEmoji {
                         continue
                     }
                     
@@ -1327,6 +1340,9 @@ public extension EmojiPagerContentComponent {
                     
                     var icon: EmojiPagerContentComponent.Item.Icon = .none
                     if [.reaction(onlyTop: false), .quickReaction].contains(subject), !hasPremium {
+                        if hideLockedPremiumReactions {
+                            continue
+                        }
                         icon = .locked
                     }
                     
@@ -1377,14 +1393,14 @@ public extension EmojiPagerContentComponent {
                     )
                     
                     let isPremiumLocked: Bool = item.file.isPremiumEmoji && !hasPremium
-                    if isPremiumLocked && isPremiumDisabled {
+                    if isPremiumLocked && hideLockedPremiumContent {
                         continue
                     }
                     if let groupIndex = itemGroupIndexById[groupId] {
                         itemGroups[groupIndex].items.append(resultItem)
                     } else {
                         itemGroupIndexById[groupId] = itemGroups.count
-                        
+
                         var title = ""
                         var headerItem: EntityKeyboardAnimationData?
                         inner: for (id, info, _) in view.collectionInfos {
@@ -1468,7 +1484,7 @@ public extension EmojiPagerContentComponent {
                             )
                             
                             let isPremiumLocked: Bool = item.file.isPremiumEmoji && !hasPremium
-                            if isPremiumLocked && isPremiumDisabled {
+                            if isPremiumLocked && hideLockedPremiumContent {
                                 continue
                             }
                             if let groupIndex = itemGroupIndexById[groupId] {
@@ -1734,6 +1750,16 @@ public extension EmojiPagerContentComponent {
         )
         |> map { view, hasPremium, featuredStickerPacks, featuredStickersConfiguration, dismissedTrendingStickerPacks, peerSpecificPack, searchCategories -> EmojiPagerContentComponent in
             let hasPremium = forceHasPremium || hasPremium
+            // SuperGram: premium stickers are not shown to non-premium users, so their lock-tap upsells are unreachable (UPS-07)
+            let hideLockedPremiumContent = isPremiumDisabled || (superGramHidePremiumUpsell && !hasPremium)
+            var searchCategories = searchCategories
+            if superGramHidePremiumUpsell && !hasPremium, let currentSearchCategories = searchCategories {
+                searchCategories = EmojiSearchCategories(
+                    hash: currentSearchCategories.hash,
+                    groups: currentSearchCategories.groups.filter { $0.kind != .premium }
+                )
+            }
+
             struct ItemGroup {
                 var supergroupId: AnyHashable
                 var id: AnyHashable
@@ -1823,7 +1849,7 @@ public extension EmojiPagerContentComponent {
                     let supergroupId = "featuredTop"
                     let groupId: AnyHashable = supergroupId
                     let isPremiumLocked: Bool = item.file.isPremiumSticker && !hasPremium
-                    if isPremiumLocked && isPremiumDisabled {
+                    if isPremiumLocked && hideLockedPremiumContent {
                         continue
                     }
                     if let groupIndex = itemGroupIndexById[groupId] {
@@ -1859,7 +1885,7 @@ public extension EmojiPagerContentComponent {
                     guard let item = item.contents.get(SavedStickerItem.self) else {
                         continue
                     }
-                    if isPremiumDisabled && item.file.isPremiumSticker {
+                    if hideLockedPremiumContent && item.file.isPremiumSticker {
                         continue
                     }
                     
@@ -1894,7 +1920,7 @@ public extension EmojiPagerContentComponent {
                     guard let item = item.contents.get(RecentMediaItem.self) else {
                         continue
                     }
-                    if isPremiumDisabled && item.media.isPremiumSticker {
+                    if hideLockedPremiumContent && item.media.isPremiumSticker {
                         continue
                     }
                     
@@ -1942,7 +1968,7 @@ public extension EmojiPagerContentComponent {
                 var processedIds = Set<MediaId>()
                 let groupId = "peerSpecific"
                 for item in peerSpecificPack.items {
-                    if isPremiumDisabled && item.file.isPremiumSticker {
+                    if hideLockedPremiumContent && item.file.isPremiumSticker {
                         continue
                     }
                     if processedIds.contains(item.file.fileId) {
@@ -1991,12 +2017,15 @@ public extension EmojiPagerContentComponent {
                 guard let item = entry.item as? StickerPackItem else {
                     continue
                 }
-                
+                if superGramHidePremiumUpsell && !hasPremium && item.file.isPremiumSticker {
+                    continue
+                }
+
                 var tintMode: Item.TintMode = .none
                 if item.file.isCustomTemplateEmoji {
                     tintMode = .primary
                 }
-                
+
                 let animationData = EntityKeyboardAnimationData(file: item.file)
                 let resultItem = EmojiPagerContentComponent.Item(
                     animationData: animationData,
@@ -2087,7 +2116,7 @@ public extension EmojiPagerContentComponent {
                     let supergroupId = featuredStickerPack.info.id
                     let groupId: AnyHashable = supergroupId
                     let isPremiumLocked: Bool = item.file.isPremiumSticker && !hasPremium
-                    if isPremiumLocked && isPremiumDisabled {
+                    if isPremiumLocked && hideLockedPremiumContent {
                         continue
                     }
                     if let groupIndex = itemGroupIndexById[groupId] {
@@ -2250,7 +2279,8 @@ public extension EmojiPagerContentComponent {
                 for i in 0 ..< 2 {
                     let groupId = i == 0 ? "reactions" : "stickers"
                     for item in i == 0 ? reactionEffects : stickerEffects {
-                        if item.isPremium && isPremiumDisabled {
+                        // SuperGram: premium message effects are not shown to non-premium users (UPS-07)
+                        if item.isPremium && (isPremiumDisabled || (superGramHidePremiumUpsell && !hasPremium)) {
                             continue
                         }
                         

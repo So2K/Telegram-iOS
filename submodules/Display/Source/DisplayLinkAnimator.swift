@@ -70,7 +70,10 @@ public final class SharedDisplayLinkDriver {
         }
         
         public func invalidate() {
-            self.isValid = false
+            if self.isValid {
+                self.isValid = false
+                self.driver.requestUpdate()
+            }
         }
     }
     
@@ -139,16 +142,26 @@ public final class SharedDisplayLinkDriver {
     }
     
     private func update() {
+        if self.isProcessingEvent {
+            self.isUpdateRequested = true
+            return
+        }
+        // Pausing the last animator stops the display link before its next cleanup tick.
+        // Drop expired requests here as well so repeated short animations cannot leave them behind.
+        self.requests.removeAll { request in
+            guard let link = request.link else {
+                return true
+            }
+            return !link.isValid
+        }
         var hasActiveItems = false
         var maxFramesPerSecond: FramesPerSecond = .fps(30)
+        // SuperGram: take the frame rate only from valid, running links and look at all of them
         for request in self.requests {
-            if let link = request.link {
+            if let link = request.link, link.isValid, !link.isPaused {
+                hasActiveItems = true
                 if link.framesPerSecond > maxFramesPerSecond {
                     maxFramesPerSecond = link.framesPerSecond
-                }
-                if link.isValid && !link.isPaused {
-                    hasActiveItems = true
-                    break
                 }
             }
         }
@@ -183,7 +196,9 @@ public final class SharedDisplayLinkDriver {
                     
                     if displayLink.preferredFrameRateRange != frameRateRange {
                         displayLink.preferredFrameRateRange = frameRateRange
+                        #if DEBUG
                         print("SharedDisplayLinkDriver: switch to \(frameRateRange)")
+                        #endif
                     }
                 }
             }
@@ -239,9 +254,7 @@ public final class SharedDisplayLinkDriver {
                 self.requests.remove(at: index)
             }
             
-            if self.requests.isEmpty {
-                self.isUpdateRequested = true
-            }
+            self.isUpdateRequested = true
         }
         
         self.isProcessingEvent = false
@@ -255,7 +268,7 @@ public final class SharedDisplayLinkDriver {
         let link = LinkImpl(driver: self, framesPerSecond: framesPerSecond, update: update)
         self.requests.append(RequestContext(link: link, framesPerSecond: framesPerSecond))
         
-        self.update()
+        self.requestUpdate()
         
         return link
     }
@@ -384,4 +397,3 @@ public final class ConstantDisplayLinkAnimator {
         self.update()
     }
 }
-

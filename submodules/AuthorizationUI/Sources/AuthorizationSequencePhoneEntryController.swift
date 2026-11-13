@@ -18,35 +18,35 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
     private var controllerNode: AuthorizationSequencePhoneEntryControllerNode {
         return self.displayNode as! AuthorizationSequencePhoneEntryControllerNode
     }
-    
+
     private var validLayout: ContainerViewLayout?
-    
+
     private let sharedContext: SharedAccountContext
     private var account: UnauthorizedAccount?
-    private let apiId: Int32
-    private let apiHash: String
+    private var apiId: Int32
+    private var apiHash: String
     private let isTestingEnvironment: Bool
     private let otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)])
     private let network: Network
     private let presentationData: PresentationData
     private let openUrl: (String) -> Void
-    
+
     private let back: () -> Void
-    
+
     private var currentData: (Int32, String?, String)?
-        
+
     var codeNode: ASDisplayNode {
         return self.controllerNode.codeNode
     }
-    
+
     var numberNode: ASDisplayNode {
         return self.controllerNode.numberNode
     }
-    
+
     var buttonNode: ASDisplayNode {
         return self.controllerNode.buttonNode
     }
-    
+
     public var inProgress: Bool = false {
         didSet {
             self.updateNavigationItems()
@@ -56,14 +56,16 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
     }
     public var loginWithNumber: ((String, Bool) -> Void)?
     public var loginWithPasskey: ((AuthorizationPasskeyData, Bool) -> Void)?
+    public var apiCredentialsUpdated: ((AuthorizationApiCredentials?) -> Void)?
     var accountUpdated: ((UnauthorizedAccount) -> Void)?
-    
+
     weak var confirmationController: PhoneConfirmationController?
-    
+
     private let termsDisposable = MetaDisposable()
-    
+
     private let hapticFeedback = HapticFeedback()
-    
+    private var didPromptApiCredentials = false
+
     public init(sharedContext: SharedAccountContext, account: UnauthorizedAccount?, countriesConfiguration: CountriesConfiguration? = nil, apiId: Int32, apiHash: String, isTestingEnvironment: Bool, otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)]), network: Network, presentationData: PresentationData, openUrl: @escaping (String) -> Void, back: @escaping () -> Void) {
         self.sharedContext = sharedContext
         self.account = account
@@ -75,13 +77,13 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
         self.presentationData = presentationData
         self.openUrl = openUrl
         self.back = back
-                
+
         super.init(navigationBarPresentationData: NavigationBarPresentationData(theme: AuthorizationSequenceController.navigationBarTheme(presentationData.theme), strings: NavigationBarStrings(presentationStrings: presentationData.strings)))
-        
+
         self.supportedOrientations = ViewControllerSupportedOrientations(regularSize: .all, compactSize: .portrait)
-        
+
         self.hasActiveInput = true
-        
+
         self.statusBar.statusBarStyle = presentationData.theme.intro.statusBarStyle.style
         self.attemptNavigation = { _ in
             return false
@@ -89,59 +91,148 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
         self.navigationBar?.backPressed = {
             back()
         }
-        
+
         if !otherAccountPhoneNumbers.1.isEmpty {
             self.navigationItem.leftBarButtonItem = UIBarButtonItem(title: "___close", style: .plain, target: self, action: #selector(self.cancelPressed))
         }
-        
+
         if let countriesConfiguration {
             AuthorizationSequenceCountrySelectionController.setupCountryCodes(countries: countriesConfiguration.countries, codesByPrefix: countriesConfiguration.countriesByPrefix)
         }
     }
-    
+
     required init(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
     deinit {
         self.termsDisposable.dispose()
     }
-    
+
     @objc private func cancelPressed() {
         self.back()
     }
-    
-    func updateNavigationItems() {
-        guard let layout = self.validLayout, layout.size.width < 360.0 else {
+
+    public func applyApiCredentials(_ credentials: AuthorizationApiCredentials) {
+        self.apiId = credentials.apiId
+        self.apiHash = credentials.apiHash
+    }
+
+    @objc func apiCredentialsPressed() {
+        let current = AuthorizationApiCredentialsStore.currentOverride()
+        let fallback: AuthorizationApiCredentials?
+        if AuthorizationApiCredentialsStore.isValid(apiId: self.apiId, apiHash: self.apiHash) {
+            fallback = AuthorizationApiCredentials(apiId: self.apiId, apiHash: self.apiHash)
+        } else {
+            fallback = nil
+        }
+
+        let alertController = UIAlertController(title: "API Credentials", message: "Enter api_id and api_hash from my.telegram.org/apps before logging in.", preferredStyle: .alert)
+        alertController.addTextField { textField in
+            textField.placeholder = "api_id"
+            textField.keyboardType = .numberPad
+            textField.text = (current ?? fallback).map { "\($0.apiId)" } ?? ""
+        }
+        alertController.addTextField { textField in
+            textField.placeholder = "api_hash"
+            textField.autocorrectionType = .no
+            textField.autocapitalizationType = .none
+            textField.text = (current ?? fallback)?.apiHash ?? ""
+        }
+        alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        if current != nil {
+            alertController.addAction(UIAlertAction(title: "Clear", style: .destructive, handler: { [weak self] _ in
+                guard AuthorizationApiCredentialsStore.clear() else {
+                    self?.presentInvalidApiCredentials("Please try again.", title: "Couldn't Clear API Credentials")
+                    return
+                }
+                self?.apiId = 0
+                self?.apiHash = ""
+                self?.apiCredentialsUpdated?(nil)
+            }))
+        }
+        alertController.addAction(UIAlertAction(title: "Save", style: .default, handler: { [weak self, weak alertController] _ in
+            let apiIdText = alertController?.textFields?.first?.text ?? ""
+            let apiHashText = alertController?.textFields?.dropFirst().first?.text ?? ""
+            switch AuthorizationApiCredentialsStore.parse(apiIdText: apiIdText, apiHashText: apiHashText) {
+            case let .success(credentials):
+                guard AuthorizationApiCredentialsStore.store(credentials) else {
+                    self?.presentInvalidApiCredentials("Please try again.", title: "Couldn't Save API Credentials")
+                    return
+                }
+                self?.applyApiCredentials(credentials)
+                self?.apiCredentialsUpdated?(credentials)
+            case let .failure(error):
+                self?.presentInvalidApiCredentials(error.displayText)
+            }
+        }))
+        self.present(alertController, animated: true)
+    }
+
+    private func presentInvalidApiCredentials(_ message: String, title: String = "Invalid API Credentials") {
+        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alertController.addAction(UIAlertAction(title: "OK", style: .default, handler: { [weak self] _ in
+            self?.apiCredentialsPressed()
+        }))
+        self.present(alertController, animated: true)
+    }
+
+    private func promptForApiCredentialsIfNeeded() {
+        guard !self.didPromptApiCredentials else {
             return
         }
-                
+        guard !AuthorizationApiCredentialsStore.isValid(apiId: self.apiId, apiHash: self.apiHash) else {
+            return
+        }
+        self.didPromptApiCredentials = true
+        Queue.mainQueue().after(0.3) { [weak self] in
+            self?.apiCredentialsPressed()
+        }
+    }
+
+    private func promptForApiCredentialsAfterIntroAnimation() {
+        Queue.mainQueue().after(0.45) { [weak self] in
+            guard let self else {
+                return
+            }
+            self.animatingIn = false
+            self.promptForApiCredentialsIfNeeded()
+        }
+    }
+
+    func updateNavigationItems() {
+        guard let layout = self.validLayout else {
+            return
+        }
+
         if self.inProgress {
             let item = UIBarButtonItem(customDisplayNode: ProgressNavigationButtonNode(color: self.presentationData.theme.rootController.navigationBar.accentTextColor))
             self.navigationItem.rightBarButtonItem = item
-        } else {
+        } else if layout.size.width < 360.0 {
             self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: self.presentationData.strings.Common_Next, style: .done, target: self, action: #selector(self.nextPressed))
+        } else {
+            self.navigationItem.rightBarButtonItem = UIBarButtonItem(title: "API", style: .plain, target: self, action: #selector(self.apiCredentialsPressed))
         }
     }
-    
+
     public func updateData(countryCode: Int32, countryName: String?, number: String) {
         self.currentData = (countryCode, countryName, number)
         if self.isNodeLoaded {
             self.controllerNode.codeAndNumber = (countryCode, countryName, number)
         }
     }
-    
+
     private var shouldAnimateIn = false
     private var transitionInArguments: (buttonFrame: CGRect, buttonTitle: String, animationSnapshot: UIView, textSnapshot: UIView)?
-    
+
     func animateWithSplashController(_ controller: AuthorizationSequenceSplashController) {
         self.shouldAnimateIn = true
-        
+
         if let animationSnapshot = controller.animationSnapshot, let textSnapshot = controller.textSnaphot {
             self.transitionInArguments = (controller.buttonFrame, controller.buttonTitle, animationSnapshot, textSnapshot)
         }
     }
-    
+
     override public func loadDisplayNode() {
         self.displayNode = AuthorizationSequencePhoneEntryControllerNode(sharedContext: self.sharedContext, account: self.account, strings: self.presentationData.strings, theme: self.presentationData.theme, debugAction: { [weak self] in
             guard let strongSelf = self else {
@@ -163,14 +254,14 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
             }
             self.loadAndPresentPasskey(force: true)
         }
-        
+
         if let (code, name, number) = self.currentData {
             self.controllerNode.codeAndNumber = (code, name, number)
         }
         self.displayNodeDidLoad()
-        
+
         self.controllerNode.view.disableAutomaticKeyboardHandling = [.forward, .backward]
-        
+
         self.controllerNode.selectCountryCode = { [weak self] in
             if let strongSelf = self {
                 let controller = AuthorizationSequenceCountrySelectionController(strings: strongSelf.presentationData.strings, theme: strongSelf.presentationData.theme, glass: true)
@@ -180,7 +271,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                         strongSelf.controllerNode.activateInput()
                     }
                 }
-                controller.dismissed = { 
+                controller.dismissed = {
                     self?.controllerNode.activateInput()
                 }
                 strongSelf.push(controller)
@@ -189,7 +280,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
         self.controllerNode.checkPhone = { [weak self] in
             self?.nextPressed()
         }
-        
+
         if let account = self.account {
             loadServerCountryCodes(accountManager: sharedContext.accountManager, engine: TelegramEngineUnauthorized(account: account), completion: { [weak self] in
                 if let strongSelf = self {
@@ -199,17 +290,17 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
         } else {
             self.controllerNode.updateCountryCode()
         }
-        
+
         self.loadAndPresentPasskey(force: false)
     }
-    
+
     private func loadAndPresentPasskey(force: Bool) {
         if #available(iOS 16.0, *) {
             Task { @MainActor [weak self] in
                 guard let self, let account = self.account else {
                     return
                 }
-                
+
                 let decodeBase64: (String) -> Data? = { string in
                     var string = string.replacingOccurrences(of: "-", with: "+")
                         .replacingOccurrences(of: "_", with: "/")
@@ -218,7 +309,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                     }
                     return Data(base64Encoded: string)
                 }
-                
+
                 let engine = TelegramEngineUnauthorized(account: account)
                 let passkeyDataString = await engine.auth.requestPasskeyLoginData(apiId: self.apiId, apiHash: self.apiHash).get()
                 guard let passkeyDataString, let passkeyData = passkeyDataString.data(using: .utf8) else {
@@ -239,7 +330,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                 guard let challengeData = decodeBase64(challengeBase64) else {
                     return
                 }
-                
+
                 let platformProvider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: relyingPartyIdentifier)
                 let platformKeyRequest = platformProvider.createCredentialAssertionRequest(challenge: challengeData)
                 let authController = ASAuthorizationController(authorizationRequests: [platformKeyRequest])
@@ -253,13 +344,13 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
             }
         }
     }
-    
+
     public func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         Task { @MainActor [weak self] in
             guard let self, let account = self.account else {
                 return
             }
-            
+
             let encodeBase64URL: (Data) -> String = { data in
                 var string = data.base64EncodedString()
                 string = string
@@ -268,7 +359,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                 string = string.replacingOccurrences(of: "=", with: "")
                 return string
             }
-            
+
             if #available(iOS 17.0, *) {
                 if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
                     guard let clientData = String(data: credential.rawClientDataJSON, encoding: .utf8) else {
@@ -285,7 +376,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                         userHandle: userHandle
                     )
                     self.loginWithPasskey?(passkey, self.controllerNode.syncContacts)
-                    
+
                     /*if let clientData = String(data: credential.rawClientDataJSON, encoding: .utf8), let attestationObject = credential.rawAttestationObject {
                         let passkey = await component.context.engine.auth.requestCreatePasskey(id: encodeBase64URL(credential.credentialID), clientData: clientData, attestationObject: attestationObject).get()
                         if let passkey {
@@ -311,22 +402,22 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
             }
         }
     }
-    
+
     public func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         guard let windowScene = self.view.window?.windowScene else {
             preconditionFailure()
         }
         return ASPresentationAnchor(windowScene: windowScene)
     }
-    
+
     public func updateCountryCode() {
         self.controllerNode.updateCountryCode()
     }
-    
+
     private var animatingIn = false
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        
+
         if self.shouldAnimateIn {
             self.animatingIn = true
             if let (buttonFrame, buttonTitle, animationSnapshot, textSnapshot) = self.transitionInArguments {
@@ -339,48 +430,50 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
             self.controllerNode.activateInput()
         }
     }
-    
+
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
+
         if !self.animatingIn {
             self.controllerNode.activateInput()
+            self.promptForApiCredentialsIfNeeded()
         }
     }
-    
+
     override public func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        
+
         if let confirmationController = self.confirmationController {
             confirmationController.transitionOut()
         }
     }
-    
+
     override public func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         super.containerLayoutUpdated(layout, transition: transition)
-        
+
         let hadLayout = self.validLayout != nil
         self.validLayout = layout
-        
+
         if !hadLayout {
             self.updateNavigationItems()
         }
-    
+
         self.controllerNode.containerLayoutUpdated(layout, navigationBarHeight: self.navigationLayout(layout: layout).navigationFrame.maxY, transition: transition)
-        
-        if self.shouldAnimateIn, let inputHeight = layout.inputHeight, inputHeight > 0.0 {
+
+        if self.shouldAnimateIn {
             if let (buttonFrame, buttonTitle, animationSnapshot, textSnapshot) = self.transitionInArguments {
                 self.shouldAnimateIn = false
                 self.controllerNode.animateIn(buttonFrame: buttonFrame, buttonTitle: buttonTitle, animationSnapshot: animationSnapshot, textSnapshot: textSnapshot)
+                self.promptForApiCredentialsAfterIntroAnimation()
             }
         }
     }
-    
+
     public func dismissConfirmation() {
         self.confirmationController?.dismissAnimated()
         self.confirmationController = nil
     }
-    
+
     @objc func nextPressed() {
         guard self.confirmationController == nil else {
             return
@@ -394,7 +487,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
                     existing = (number, id)
                 }
             }
-            
+
             if let (_, id) = existing {
                 var actions: [TextAlertAction] = []
                 if let (current, _, _) = self.otherAccountPhoneNumbers.0, logInNumber != cleanPhoneNumber(current, removePlus: true) {
@@ -433,7 +526,7 @@ public final class AuthorizationSequencePhoneEntryController: ViewController, MF
             self.controllerNode.animateError()
         }
     }
-    
+
     public func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
         controller.dismiss(animated: true, completion: nil)
     }

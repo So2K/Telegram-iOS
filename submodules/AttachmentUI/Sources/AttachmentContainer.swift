@@ -392,7 +392,7 @@ final class AttachmentContainer: ASDisplayNode, ASGestureRecognizerDelegate {
                     
                         let distance = topInset - offset
                         let initialVelocity: CGFloat = distance.isZero ? 0.0 : abs(velocity.y / distance)
-                        let transition = ContainedViewLayoutTransition.animated(duration: 0.45, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity))
+                        let transition = ContainedViewLayoutTransition.animated(duration: 0.32, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity))
                         
                         self.isAnimating = true
                         self.update(layout: layout, controllers: controllers, coveredByModalTransition: coveredByModalTransition, transition: transition, completion: completion)
@@ -413,7 +413,7 @@ final class AttachmentContainer: ASDisplayNode, ASGestureRecognizerDelegate {
                    
                     let initialVelocity: CGFloat = offset.isZero ? 0.0 : abs(velocity.y / offset)
                     self.isAnimating = true
-                    self.update(layout: layout, controllers: controllers, coveredByModalTransition: coveredByModalTransition, transition: .animated(duration: 0.45, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity)), completion: completion)
+                    self.update(layout: layout, controllers: controllers, coveredByModalTransition: coveredByModalTransition, transition: .animated(duration: 0.32, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity)), completion: completion)
                 } else {
                     if let listNode = listNode {
                         listNode.scroller.setContentOffset(CGPoint(), animated: false)
@@ -532,7 +532,7 @@ final class AttachmentContainer: ASDisplayNode, ASGestureRecognizerDelegate {
             Queue.mainQueue().justDispatch {
                 var transition = transition
                 if modalProgress == 1.0 {
-                    transition = .animated(duration: 0.4, curve: .spring)
+                    transition = .animated(duration: 0.32, curve: .spring)
                 }
                 self.updateModalProgress?(modalProgress, topInset, self.bounds, transition)
             }

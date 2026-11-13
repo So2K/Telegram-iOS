@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -49,7 +51,10 @@ private class MediaHeaderItemNode: ASDisplayNode {
         if let playbackItem = playbackItem, let displayData = playbackItem.displayData {
             switch displayData {
                 case let .music(title, performer, _, long, _):
-                    rateButtonHidden = !long
+                    // MARK: Swiftgram
+                    // SuperGram (SGP-10): stock Telegram offers the playback-rate button only for tracks Telegram
+                    // considers "long" (podcast-length). With the switch on it is offered for every track.
+                    rateButtonHidden = SGSimpleSettings.shared.sgMusicPlaybackRateButton ? false : !long
                     let titleText: String = title ?? strings.MediaPlayer_UnknownTrack
                     let subtitleText: String = performer ?? strings.MediaPlayer_UnknownArtist
                     

@@ -475,7 +475,7 @@ public func generateGradientFilledCircleImage(diameter: CGFloat, colors: NSArray
             }
 
             context.drawLinearGradient(gradient, start: start, end:end, options: CGGradientDrawingOptions())
-        } else if let color = colors.lastObject as? CGColor {
+        } else if let color = colors.lastObject as! CGColor? {
             context.setFillColor(color)
             context.fill(bounds)
         }
@@ -916,7 +916,7 @@ public extension UIImage {
         CMSampleBufferCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixelBuffer, dataReady: true, makeDataReadyCallback: nil, refcon: nil, formatDescription: videoInfo, sampleTiming: &timingInfo, sampleBufferOut: &newSampleBuffer)
 
         if let newSampleBuffer = newSampleBuffer {
-            if let attachments = CMSampleBufferGetSampleAttachmentsArray(newSampleBuffer, createIfNecessary: true) as? NSArray, let dict = attachments.firstObject as? NSMutableDictionary {
+            if let attachments = CMSampleBufferGetSampleAttachmentsArray(newSampleBuffer, createIfNecessary: true), let dict = (attachments as NSArray).firstObject as? NSMutableDictionary {
                 dict.setValue(kCFBooleanTrue as AnyObject, forKey: kCMSampleAttachmentKey_DisplayImmediately as NSString as String)
             }
         }

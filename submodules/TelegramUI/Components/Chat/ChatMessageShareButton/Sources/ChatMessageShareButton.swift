@@ -33,6 +33,7 @@ public class ChatMessageShareButton: ASDisplayNode {
     private var isReplies: Bool = false
     private var hasMore: Bool = false
     private var isExpand: Bool = false
+    private var hasTranslation: Bool? // MARK: Swiftgram
     
     private var textNode: ImmediateTextNode?
     
@@ -106,7 +107,7 @@ public class ChatMessageShareButton: ASDisplayNode {
         self.morePressed?()
     }
     
-    public func update(presentationData: ChatPresentationData, controllerInteraction: ChatControllerInteraction, chatLocation: ChatLocation, subject: ChatControllerSubject?, message: EngineMessage, accountPeerId: EnginePeer.Id, disableComments: Bool = false, isSummarize: Bool = false) -> CGSize {
+    public func update(hasTranslation: Bool? = nil, presentationData: ChatPresentationData, controllerInteraction: ChatControllerInteraction, chatLocation: ChatLocation, subject: ChatControllerSubject?, message: EngineMessage, accountPeerId: EnginePeer.Id, disableComments: Bool = false, isSummarize: Bool = false) -> CGSize {
         var isReplies = false
         var isNavigate = false
         var replyCount = 0
@@ -142,16 +143,20 @@ public class ChatMessageShareButton: ASDisplayNode {
             isExpand = true
         }
         
-        if self.theme !== presentationData.theme.theme || self.isReplies != isReplies || self.hasMore != hasMore || self.isExpand != isExpand {
+        if self.theme !== presentationData.theme.theme || self.isReplies != isReplies || self.hasMore != hasMore || self.isExpand != isExpand || self.hasTranslation != hasTranslation /* MARK: Swiftgram */ {
             self.theme = presentationData.theme.theme
             self.isReplies = isReplies
             self.hasMore = hasMore
             self.isExpand = isExpand
+            self.hasTranslation = hasTranslation // MARK: Swiftgram
 
             var updatedIconImage: UIImage?
             var updatedBottomIconImage: UIImage?
             var updatedIconOffset = CGPoint()
-            if isSummarize {
+            // MARK: Swiftgram: quick translate button (checked first so the subject/peer icons below never replace it)
+            if let hasTranslation = hasTranslation {
+                updatedIconImage = PresentationResourcesChat.chatTranslateShareButtonIcon(presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper, undoTranslate: hasTranslation)
+            } else if isSummarize {
                 if isExpand {
                     updatedIconImage = PresentationResourcesChat.chatFreeExpandButtonIcon(presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper)
                 } else {

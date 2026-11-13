@@ -81,7 +81,9 @@ private func getCommonTimeline(friends: [Friend]?, in context: TimelineProviderC
     
     let baseAppBundleId = String(appBundleIdentifier[..<lastDotRange.lowerBound])
     
-    let appGroupName = "group.\(baseAppBundleId)"
+    // SuperGram: this build's provisioned app group is fixed and does not follow "group.<baseBundleId>",
+    // so every process (app and extensions) has to use exactly this value.
+    let appGroupName = "group.ffcd1c12e1a9728e.1"
     let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
     
     guard let appGroupUrl = maybeAppGroupUrl else {

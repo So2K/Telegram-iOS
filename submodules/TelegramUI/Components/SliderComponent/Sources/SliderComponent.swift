@@ -6,6 +6,22 @@ import TelegramPresentationData
 import LegacyComponents
 import ComponentFlow
 
+#if !compiler(>=6.2)
+private struct UISliderTrackConfiguration {
+    init(numberOfTicks: Int) {
+    }
+}
+
+private extension UISlider {
+    var trackConfiguration: UISliderTrackConfiguration? {
+        get {
+            return nil
+        } set {
+        }
+    }
+}
+#endif
+
 public final class SliderComponent: Component {
     public final class Discrete: Equatable {
         public let valueCount: Int

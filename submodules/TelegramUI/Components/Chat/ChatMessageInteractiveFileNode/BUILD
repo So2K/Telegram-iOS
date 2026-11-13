@@ -33,6 +33,8 @@ swift_library(
         "//submodules/ShimmerEffect",
         "//submodules/Media/ConvertOpusToAAC",
         "//submodules/Media/LocalAudioTranscription",
+        "//submodules/TelegramUIPreferences",
+        "//submodules/TelegramUI/Components/Chat/SuperGramLocalTranscription",
         "//submodules/TextSelectionNode",
         "//submodules/TelegramUI/Components/AudioTranscriptionPendingIndicatorComponent",
         "//submodules/UndoUI",

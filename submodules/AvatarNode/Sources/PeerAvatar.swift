@@ -436,7 +436,7 @@ public func drawPeerAvatarLetters(context: CGContext, size: CGSize, round: Bool 
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     if let gradient = CGGradient(colorsSpace: colorSpace, colors: colorsArray, locations: &locations) {
         context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
-    } else if let color = colorsArray.lastObject as? CGColor {
+    } else if let color = colorsArray.lastObject as! CGColor? {
         context.setFillColor(color)
         context.fill(CGRect(origin: CGPoint(), size: size))
     }
@@ -536,7 +536,7 @@ public func generateAvatarImage(size: CGSize, icon: UIImage?, iconScale: CGFloat
             } else {
                 context.drawLinearGradient(gradient, start: CGPoint(), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
             }
-        } else if let color = colorsArray.lastObject as? CGColor {
+        } else if let color = colorsArray.lastObject as! CGColor? {
             context.setFillColor(color)
             context.fill(CGRect(origin: CGPoint(), size: size))
         }

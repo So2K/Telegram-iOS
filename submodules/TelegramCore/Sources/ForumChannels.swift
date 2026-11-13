@@ -489,21 +489,29 @@ public enum SetForumChannelTopicPinnedError {
 
 func _internal_setForumChannelPinnedTopics(account: Account, id: EnginePeer.Id, threadIds: [Int64]) -> Signal<Never, SetForumChannelTopicPinnedError> {
     if id == account.peerId {
-        return account.postbox.transaction { transaction -> [Api.InputDialogPeer] in
-            transaction.setPeerPinnedThreads(peerId: id, threadIds: threadIds)
-            
-            return threadIds.compactMap { transaction.getPeer(PeerId($0)).flatMap(apiInputPeer).flatMap({ .inputDialogPeer(.init(peer: $0)) }) }
-        }
-        |> castError(SetForumChannelTopicPinnedError.self)
-        |> mapToSignal { inputPeers -> Signal<Never, SetForumChannelTopicPinnedError> in
-            return account.network.request(Api.functions.messages.reorderPinnedSavedDialogs(flags: 1 << 0, order: inputPeers))
-            |> mapError { _ -> SetForumChannelTopicPinnedError in
-                return .generic
+        return SavedPinnedThreadsSynchronizationState.withLocalMutation(postbox: account.postbox, accountPeerId: account.peerId, { scope in
+            return account.postbox.transaction { transaction -> [Api.InputDialogPeer]? in
+                guard scope.isActive else {
+                    return nil
+                }
+                transaction.setPeerPinnedThreads(peerId: id, threadIds: threadIds)
+
+                return threadIds.compactMap { transaction.getPeer(PeerId($0)).flatMap(apiInputPeer).flatMap({ .inputDialogPeer(.init(peer: $0)) }) }
             }
-            |> mapToSignal { _ -> Signal<Never, SetForumChannelTopicPinnedError> in
-                return .complete()
+            |> castError(SetForumChannelTopicPinnedError.self)
+            |> mapToSignal { inputPeers -> Signal<Never, SetForumChannelTopicPinnedError> in
+                guard let inputPeers, scope.isActive else {
+                    return .complete()
+                }
+                return account.network.request(Api.functions.messages.reorderPinnedSavedDialogs(flags: 1 << 0, order: inputPeers))
+                |> mapError { _ -> SetForumChannelTopicPinnedError in
+                    return .generic
+                }
+                |> mapToSignal { _ -> Signal<Never, SetForumChannelTopicPinnedError> in
+                    return .complete()
+                }
             }
-        }
+        })
     } else {
         return account.postbox.transaction { transaction -> Api.InputPeer? in
             guard let inputChannel = transaction.getPeer(id).flatMap(apiInputPeer) else {

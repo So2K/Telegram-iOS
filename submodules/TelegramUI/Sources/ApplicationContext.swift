@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import UserNotifications
 import Intents
 import TelegramPresentationData
 import TelegramUIPreferences
@@ -33,6 +34,7 @@ import PhoneNumberFormat
 import AttachmentUI
 import MinimizedContainer
 import BrowserUI
+import TelegramStringFormatting
 
 final class UnauthorizedApplicationContext {
     let sharedContext: SharedAccountContextImpl
@@ -98,6 +100,71 @@ final class UnauthorizedApplicationContext {
     }
 }
 
+private struct BackgroundMessageNotificationAlbumKey: Hashable {
+    let peerId: PeerId
+    let namespace: Int32
+    let groupingKey: Int64
+}
+
+private func coalescedBackgroundMessageNotificationBatch(_ messageList: [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)]) -> [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)] {
+    // This batch belongs to one account context. Each incoming album member can resolve to the
+    // same complete album, with that member first; schedule only the first eligible entry here.
+    var seenAlbums = Set<BackgroundMessageNotificationAlbumKey>()
+    var result: [([Message], PeerGroupId, Bool, MessageHistoryThreadData?)] = []
+    result.reserveCapacity(messageList.count)
+    for entry in messageList {
+        guard entry.2, let firstMessage = entry.0.first else {
+            continue
+        }
+        // Scheduled reminders keep their existing semantics and do not consume an incoming album key.
+        if !firstMessage.flags.contains(.WasScheduled), let groupingKey = firstMessage.groupingKey {
+            let key = BackgroundMessageNotificationAlbumKey(peerId: firstMessage.id.peerId, namespace: firstMessage.id.namespace, groupingKey: groupingKey)
+            guard seenAlbums.insert(key).inserted else {
+                continue
+            }
+        }
+        result.append(entry)
+    }
+    return result
+}
+
+// SuperGram: how long the background local fallback waits for the server's plaintext APNs alert before it decides
+// the push did not come (see AuthorizedApplicationContext.scheduleBackgroundMessageNotification).
+private let superGramApnsDeduplicationDelay: Double = 4.0
+
+// SuperGram: true when `notification` is a server APNs alert (not this fork's local fallback) for `messageId`.
+// Plaintext Telegram pushes carry msg_id plus from_id / chat_id / channel_id (or encryption_id for secret chats),
+// either at the top level or inside the "custom" dictionary; both locations are accepted.
+private func superGramApnsNotification(_ notification: UNNotification, covers messageId: MessageId) -> Bool {
+    let userInfo = notification.request.content.userInfo
+    if (userInfo[telegramLocalNotificationFallbackKey] as? Bool) == true {
+        return false
+    }
+    var payloads: [[AnyHashable: Any]] = [userInfo]
+    if let custom = userInfo["custom"] as? [AnyHashable: Any] {
+        payloads.append(custom)
+    }
+    let peerRawId = messageId.peerId.id._internalGetInt64Value()
+    for payload in payloads {
+        if messageId.peerId.namespace == Namespaces.Peer.SecretChat {
+            // The secret-chat push is the generic ENCRYPTED_MESSAGE alert without a message id.
+            if let encryptionId = managedNotificationPayloadInt64(payload["encryption_id"]), encryptionId == peerRawId {
+                return true
+            }
+            continue
+        }
+        guard let pushMessageId = managedNotificationPayloadInt64(payload["msg_id"]), pushMessageId == Int64(messageId.id) else {
+            continue
+        }
+        for key in ["from_id", "chat_id", "channel_id"] {
+            if let value = managedNotificationPayloadInt64(payload[key]), value == peerRawId {
+                return true
+            }
+        }
+    }
+    return false
+}
+
 final class AuthorizedApplicationContext {
     let sharedApplicationContext: SharedApplicationContext
     let mainWindow: Window1
@@ -121,7 +188,9 @@ final class AuthorizedApplicationContext {
     private let watchNavigateToMessageDisposable = MetaDisposable()
     private let permissionsDisposable = MetaDisposable()
     private let appUpdateInfoDisposable = MetaDisposable()
-    
+    // SuperGram: pending notification-tap resolution; a newer tap replaces (cancels) an older one.
+    private let superGramNotificationOpenDisposable = MetaDisposable()
+
     private var inAppNotificationSettings: InAppNotificationSettings?
     
     var passcodeController: PasscodeEntryController?
@@ -130,6 +199,230 @@ final class AuthorizedApplicationContext {
     private var currentTermsOfServiceUpdate: TermsOfServiceUpdate?
     private var currentPermissionsController: PermissionController?
     private var currentPermissionsState: PermissionState?
+
+    private func superGramGenericNotificationBody(key: String = "PUSH_ENCRYPTED_MESSAGE") -> String {
+        // SuperGram: reuse an existing localisation instead of adding a new key to every language.
+        var value = Bundle.main.localizedString(forKey: key, value: "You have a new message", table: nil)
+        value = value.replacingOccurrences(of: "%1$@", with: "")
+        value = value.replacingOccurrences(of: "%2$@", with: "")
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "You have a new message" : trimmed
+    }
+
+    private func scheduleBackgroundMessageNotification(messages: [Message], notify: Bool) {
+        guard telegramLocalNotificationFallbackEnabled, notify, let firstMessage = messages.first else {
+            return
+        }
+        // The state-manager event retains the notification decision, including scheduled reminders.
+        // Resolve preview/sound policy again: that event drops the per-chat/global/topic preview value,
+        // and the in-app preview toggle alone cannot authorize a system notification's contents.
+        let _ = (self.context.account.postbox.transaction { transaction -> (PeerMessageSound, Bool, Bool) in
+            let (_, resolvedNotify, sound, displayContents, _) = messagesForNotification(transaction: transaction, id: firstMessage.id, alwaysReturnMessage: true)
+            return (sound, displayContents, resolvedNotify)
+        }
+        |> deliverOnMainQueue
+        |> mapToSignal { [weak self] sound, displayContents, resolvedNotify -> Signal<(Bool, PeerMessageSound, Bool, Bool), NoError> in
+            guard let self else {
+                return .complete()
+            }
+            // Take the lock snapshot after policy resolution, immediately before enqueueing on main.
+            let appLockContext = self.context.sharedContext.appLockContext as? AppLockContextImpl
+            let lockedSignal: Signal<Bool, NoError>
+            if let appLockContext {
+                // SuperGram: AppLockContextImpl.isCurrentlyLocked is `!appInForeground || locked`, i.e. always true
+                // while the app is in the background — even with no passcode at all. That made every background
+                // notification anonymous ("no sender, no text"). Only a configured passcode may hide the content.
+                lockedSignal = combineLatest(
+                    appLockContext.isCurrentlyLocked |> take(1),
+                    self.context.sharedContext.accountManager.accessChallengeData() |> take(1)
+                )
+                |> map { isCurrentlyLocked, accessChallengeData -> Bool in
+                    return isCurrentlyLocked && accessChallengeData.data.isLockable
+                }
+            } else {
+                lockedSignal = .single(false)
+            }
+            return lockedSignal
+            |> map { isLocked in
+                return (isLocked, sound, displayContents, resolvedNotify)
+            }
+        }
+        |> deliverOnMainQueue).start(next: { [weak self] policyAndLock in
+            guard let self else {
+                return
+            }
+            // SuperGram: de-duplication with plaintext APNs alerts. When this account's token is registered without
+            // a secret (no NotificationService extension, see SharedAccountContext), the server pushes a readable
+            // alert for every unmuted, unread message while the client is offline, and iOS displays it by itself
+            // while the app is in the background. Posting the local fallback as well would show the message twice.
+            // In the foreground-inactive state the APNs alert goes through willPresent, which suppresses it for the
+            // current account, so the fallback stays the only notification there and is posted immediately.
+            // In the background, wait briefly and post the fallback only if no APNs alert for this message has been
+            // delivered — this keeps the fallback for whatever APNs does not cover (muted chats with an override,
+            // a server that skipped the push because the session was still online, a push that never arrived).
+            let accountId = self.context.account.id
+            let serverWillPush = policyAndLock.3
+            SuperGramNotificationDiagnostics.shared.log("fallback candidate msg=\(firstMessage.id.peerId.namespace._internalGetInt32Value()):\(firstMessage.id.peerId.id._internalGetInt64Value()):\(firstMessage.id.id) account=\(accountId.int64) locked=\(policyAndLock.0) displayContents=\(policyAndLock.2) notify=\(serverWillPush) inAppPreviews=\((self.inAppNotificationSettings ?? InAppNotificationSettings.defaultSettings).displayPreviews)")
+            let isPlaintextPushAccount = superGramPlaintextPushAccountIds.with { $0.contains(accountId) }
+            if serverWillPush && isPlaintextPushAccount && UIApplication.shared.applicationState == .background {
+                let messageId = firstMessage.id
+                Queue.mainQueue().after(superGramApnsDeduplicationDelay, { [weak self] in
+                    UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { delivered in
+                        let coveredByApns = delivered.contains(where: { superGramApnsNotification($0, covers: messageId) })
+                        Queue.mainQueue().async {
+                            guard let self else {
+                                return
+                            }
+                            if coveredByApns {
+                                superGramNotificationLog("skipped \(messageId): delivered by APNs")
+                                return
+                            }
+                            self.enqueueBackgroundMessageNotification(messages: messages, notify: notify, isLocked: policyAndLock.0, sound: policyAndLock.1, displayContents: policyAndLock.2)
+                        }
+                    })
+                })
+            } else {
+                self.enqueueBackgroundMessageNotification(messages: messages, notify: notify, isLocked: policyAndLock.0, sound: policyAndLock.1, displayContents: policyAndLock.2)
+            }
+        })
+    }
+
+    private func enqueueBackgroundMessageNotification(messages: [Message], notify: Bool, isLocked: Bool, sound: PeerMessageSound, displayContents: Bool) {
+        guard telegramLocalNotificationFallbackEnabled, notify, let firstMessage = messages.first else {
+            return
+        }
+        if let forwardInfo = firstMessage.forwardInfo, forwardInfo.flags.contains(.isImported) {
+            return
+        }
+        for media in firstMessage.media {
+            if let action = media as? TelegramMediaAction {
+                if case .messageAutoremoveTimeoutUpdated = action.action {
+                    return
+                } else if case .conferenceCall = action.action {
+                    return
+                }
+            }
+        }
+
+        let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+        guard let peer = messageMainPeer(EngineMessage(firstMessage)) else {
+            return
+        }
+
+        // SuperGram: secret chats never get a content preview in a system notification. The server-side push for a
+        // secret chat is the generic ENCRYPTED_MESSAGE payload with no sender, and this local fallback must not be
+        // more revealing than the push path it replaces — a delivered notification persists in Notification Center,
+        // on the lock screen and on a paired watch.
+        let isSecretChat = firstMessage.id.peerId.namespace == Namespaces.Peer.SecretChat
+
+        let content = UNMutableNotificationContent()
+        content.title = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
+
+        let (description, _, _) = descriptionStringForMessage(
+            contentSettings: self.context.currentContentSettings.with { $0 },
+            message: EngineMessage(firstMessage),
+            strings: presentationData.strings,
+            nameDisplayOrder: presentationData.nameDisplayOrder,
+            dateTimeFormat: presentationData.dateTimeFormat,
+            accountPeerId: self.context.account.peerId
+        )
+        var body = description.string
+        if body.isEmpty {
+            body = firstMessage.text
+        }
+        if let author = firstMessage.author, author.id != peer.id {
+            body = "\(EnginePeer(author).compactDisplayTitle): \(body)"
+        }
+        let inAppNotificationSettings = self.inAppNotificationSettings ?? InAppNotificationSettings.defaultSettings
+        let isMuted = firstMessage.attributes.contains(where: { attribute in
+            if let attribute = attribute as? NotificationInfoMessageAttribute {
+                return attribute.flags.contains(.muted)
+            }
+            return false
+        })
+        if isSecretChat {
+            // No sender and no content for secret chats, exactly like the ENCRYPTED_MESSAGE push.
+            content.title = ""
+            body = self.superGramGenericNotificationBody(key: "PUSH_ENCRYPTED_MESSAGE")
+        } else if isLocked {
+            // SuperGram: never leak the sender or the message text while a passcode-protected app is locked.
+            content.title = ""
+            body = self.superGramGenericNotificationBody(key: "PUSH_LOCKED_MESSAGE")
+        } else if !displayContents || !inAppNotificationSettings.displayPreviews {
+            // SuperGram: "Message preview" off (per chat or for the chat type) hides the text but, like the official
+            // client, still says who wrote.
+            body = self.superGramGenericNotificationBody(key: "PUSH_ENCRYPTED_MESSAGE")
+        } else if body.isEmpty {
+            body = self.superGramGenericNotificationBody()
+        }
+        content.body = body
+        SuperGramNotificationDiagnostics.shared.log("fallback content msg=\(firstMessage.id.id) title=\(content.title.isEmpty ? "<empty>" : "\(content.title.count)ch") body=\(body.count)ch secret=\(isSecretChat) locked=\(isLocked) displayContents=\(displayContents) muted=\(isMuted)")
+        content.sound = (isMuted || sound == .none || !inAppNotificationSettings.playSounds) ? nil : .default
+
+        if let channel = firstMessage.peers[firstMessage.id.peerId] as? TelegramChannel {
+            if case .broadcast = channel.info {
+                content.categoryIdentifier = "c"
+            } else {
+                content.categoryIdentifier = "gr"
+            }
+        } else if firstMessage.id.peerId.namespace == Namespaces.Peer.CloudGroup {
+            content.categoryIdentifier = "gr"
+        } else {
+            content.categoryIdentifier = "r"
+        }
+
+        content.threadIdentifier = "account-\(self.context.account.id.int64)-peer-\(firstMessage.id.peerId.toInt64())"
+        var userInfo: [AnyHashable: Any] = [
+            // SuperGram: marks a notification produced by this fork's local fallback. The app can be in the
+            // foreground-but-inactive state (app switcher, Control Center, call banner) when the request is added,
+            // in which case `userNotificationCenter(_:willPresent:)` runs and would otherwise suppress it while the
+            // in-app overlay path was already skipped — the notification would be lost entirely.
+            telegramLocalNotificationFallbackKey: true,
+            "accountId": "\(self.context.account.id.int64)",
+            "peerId": "\(firstMessage.id.peerId.toInt64())",
+            "msg_id": "\(firstMessage.id.id)",
+            "messageId.namespace": firstMessage.id.namespace,
+            "messageId.id": firstMessage.id.id
+        ]
+        // SuperGram: every supergroup message carries a thread id (1 or the replied-to message id); only a real forum
+        // topic may be stored, otherwise a tap would open a fake, empty "topic" screen
+        if let threadId = firstMessage.threadId {
+            var isForumThread = false
+            if let channel = firstMessage.peers[firstMessage.id.peerId] as? TelegramChannel {
+                isForumThread = channel.flags.contains(.isForum) || channel.flags.contains(.isMonoforum)
+            } else if let user = firstMessage.peers[firstMessage.id.peerId] as? TelegramUser, let botInfo = user.botInfo {
+                isForumThread = botInfo.flags.contains(.hasForum)
+            }
+            if isForumThread {
+                userInfo["threadId"] = threadId
+            }
+        }
+        content.userInfo = userInfo
+        if #available(iOS 15.0, *) {
+            // SuperGram: muted chats and secret chats must not bypass Focus.
+            if isMuted || firstMessage.id.peerId.namespace == Namespaces.Peer.SecretChat {
+                content.interruptionLevel = .active
+            } else {
+                content.interruptionLevel = .timeSensitive
+            }
+            content.relevanceScore = 1.0
+        }
+
+        // Account identity prevents the same channel message on two accounts from replacing the other request.
+        let identifier = "a\(self.context.account.id.int64):m\(firstMessage.id.peerId.toInt64()):\(firstMessage.id.namespace):\(firstMessage.id.id)"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        let notificationCenter = UNUserNotificationCenter.current()
+        // SuperGram: tell the wakeup manager that the background keep-alive just earned its battery cost, so its
+        // idle duty cycle does not stop it under an active conversation (see SharedWakeupManager, P0-1).
+        superGramNoteBackgroundNotificationActivity()
+        notificationCenter.add(request, withCompletionHandler: { error in
+            if let error {
+                superGramNotificationLog("failed to add \(identifier): \(error)")
+            } else {
+                superGramNotificationLog("added \(identifier)")
+            }
+        })
+    }
     
     private let unlockedStatePromise = Promise<Bool>()
     var unlockedState: Signal<Bool, NoError> {
@@ -250,6 +543,14 @@ final class AuthorizedApplicationContext {
         
         if self.rootController.rootTabController == nil {
             self.rootController.addRootControllers(showCallsTab: self.showCallsTab)
+        }
+        // SuperGram: one-time switch of existing installs to the new default (no Contacts / Calls tabs). Later
+        // changes made in Settings are kept.
+        if !UserDefaults.standard.bool(forKey: "sgTabsDefaultMigration1") {
+            UserDefaults.standard.set(true, forKey: "sgTabsDefaultMigration1")
+            let _ = updateCallListSettingsInteractively(accountManager: accountManager, { settings in
+                return settings.withUpdatedShowContactsTab(false).withUpdatedShowTab(false)
+            }).start()
         }
         if let tabsController = self.rootController.viewControllers.first as? TabBarController, !tabsController.controllers.isEmpty, tabsController.selectedIndex >= 0 {
             let controller = tabsController.controllers[tabsController.selectedIndex]
@@ -444,29 +745,15 @@ final class AuthorizedApplicationContext {
                                             return false
                                         }
 
-                                        let proceedAction: (Bool) -> Bool = { allowExpansion in
+                                        // A regular tap navigates to the chat, including an existing controller lower
+                                        // in the stack. The banner's explicit expansion gesture owns the reply overlay.
+                                        let proceedAction: () -> Bool = {
                                             if let minimizedContainer = strongSelf.rootController.minimizedContainer, minimizedContainer.isExpanded {
                                                 minimizedContainer.collapse()
                                             } else if let topContoller = strongSelf.rootController.topViewController as? AttachmentController {
                                                 topContoller.minimizeIfNeeded()
                                             }  else if let topContoller = strongSelf.rootController.topViewController as? BrowserScreen {
                                                 topContoller.requestMinimize(topEdgeOffset: nil, initialVelocity: nil)
-                                            }
-
-                                            for controller in strongSelf.rootController.viewControllers {
-                                                if let controller = controller as? ChatControllerImpl, controller.chatLocation.peerId == chatLocation.peerId, (controller.chatLocation.threadId == nil || controller.chatLocation.threadId == chatLocation.threadId) {
-                                                    if allowExpansion {
-                                                        return true
-                                                    } else {
-                                                        strongSelf.notificationController.removeItemsWithGroupingKey(firstMessage.id.peerId)
-
-                                                        let chatController = ChatControllerImpl(context: strongSelf.context, chatLocation: chatLocation.asChatLocation, mode: .overlay(strongSelf.rootController))
-                                                        let presentationArguments = ChatControllerOverlayPresentationData(expandData: (nil, {}))
-                                                        chatController.presentationArguments = presentationArguments
-                                                        (strongSelf.rootController.viewControllers.last as? ViewController)?.present(chatController, in: .window(.root), with: presentationArguments)
-                                                        return false
-                                                    }
-                                                }
                                             }
 
                                             strongSelf.notificationController.removeItemsWithGroupingKey(firstMessage.id.peerId)
@@ -481,7 +768,9 @@ final class AuthorizedApplicationContext {
                                             }
 
                                             if !processed {
-                                                strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: strongSelf.rootController, context: strongSelf.context, chatLocation: chatLocation))
+                                                // SuperGram: same routing as a system notification tap — topic / discussion
+                                                // thread / Replies source at the message instead of the bare chat root.
+                                                strongSelf.openChatFromNotification(peerId: firstMessage.id.peerId, threadId: chatLocation.threadId, messageId: firstMessage.id, storyId: nil)
                                             }
 
                                             return false
@@ -489,14 +778,14 @@ final class AuthorizedApplicationContext {
 
                                         if let topController = strongSelf.rootController.topViewController as? ChatControllerImpl {
                                             let didPresentAlert = topController.presentVoiceMessageDiscardAlert(action: {
-                                                let _ = proceedAction(false)
+                                                let _ = proceedAction()
                                             }, discardIfVideo: true, performAction: false)
                                             if didPresentAlert {
                                                 return false
                                             }
                                         }
                                         
-                                        return proceedAction(true)
+                                        return proceedAction()
                                     }
                                     return false
                                 }, expandAction: { expandData in
@@ -508,6 +797,13 @@ final class AuthorizedApplicationContext {
                                 }))
                             }
                         })
+                    }
+                } else if UIApplication.shared.applicationState != .active {
+                    // SuperGram: notify while the app is merely inactive as well (app switcher, call banner,
+                    // partial cover), not only when it is fully in the background. The fallback replaces the
+                    // missing push path for this fork.
+                    for (backgroundMessages, _, backgroundNotify, _) in coalescedBackgroundMessageNotificationBatch(messageList) {
+                        strongSelf.scheduleBackgroundMessageNotification(messages: backgroundMessages, notify: backgroundNotify)
                     }
                 }
             }
@@ -771,7 +1067,7 @@ final class AuthorizedApplicationContext {
         self.removeNotificationsDisposable = (context.account.stateManager.appliedIncomingReadMessages
         |> deliverOnMainQueue).start(next: { [weak self] ids in
             if let strongSelf = self {
-                strongSelf.context.sharedContext.applicationBindings.clearMessageNotifications(ids)
+                strongSelf.context.sharedContext.applicationBindings.clearMessageNotificationsForAccount(strongSelf.context.account.id, ids)
             }
         })
        
@@ -846,8 +1142,9 @@ final class AuthorizedApplicationContext {
         self.watchNavigateToMessageDisposable.dispose()
         self.permissionsDisposable.dispose()
         self.scheduledCallPeerDisposable.dispose()
+        self.superGramNotificationOpenDisposable.dispose()
     }
-    
+
     func openNotificationSettings() {
         self.rootController.pushViewController(notificationsAndSoundsController(context: self.context, exceptionsList: nil))
     }
@@ -943,7 +1240,179 @@ final class AuthorizedApplicationContext {
             }
         }
     }
-    
+
+    // SuperGram: notification-tap routing, shared by the system notification default action (APNs and the local
+    // fallback notifications) and the in-app banner. It opens the place the message actually lives, scrolled to it:
+    //  - forum topic → that topic at the message;
+    //  - "Replies" service-chat entry → the discussion thread of the original post at the comment, else the discussion
+    //    group at the comment, and only as a last resort the Replies chat itself;
+    //  - comment in a channel discussion thread → that discussion thread at the message, else the group at it;
+    //  - any other group / channel message → that chat at the message;
+    //  - private and secret chats → the unchanged upstream path (openChatWithPeerId).
+    // A peer or message that is not in the local database yet (cold start from the tap) is waited for with a short
+    // timeout instead of opening an empty chat. A non-forum thread id is never turned into a forum replyThread: in
+    // supergroups Message.threadId is 1 for every plain message and the replied-to id for every reply, and the old
+    // `.replyThread(isForumPost: true)` built from it opened an empty, input-less "Replies" thread screen.
+    // Navigation goes through navigateToChatController with the default keepStack, so the SuperGram screen chain is kept.
+    func openChatFromNotification(peerId: PeerId, threadId: Int64?, messageId: MessageId?, storyId: StoryId?) {
+        if storyId != nil {
+            self.openChatWithPeerId(peerId: peerId, threadId: nil, messageId: messageId, storyId: storyId)
+            return
+        }
+        let context = self.context
+        let peerSignal: Signal<EnginePeer?, NoError> = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+        |> filter { $0 != nil }
+        |> take(1)
+        |> timeout(superGramNotificationPeerTimeout, queue: Queue.mainQueue(), alternate: .single(nil))
+
+        self.superGramNotificationOpenDisposable.set((peerSignal
+        |> mapToSignal { peer -> Signal<(EnginePeer?, Message?), NoError> in
+            guard let peer, let messageId else {
+                return .single((peer, nil))
+            }
+            // Private / secret chats keep the upstream path and do not need the message; avoid a network wait there.
+            if (peerId.namespace == Namespaces.Peer.CloudUser && !peerId.isReplies && !peer._asPeer().isForum) || peerId.namespace == Namespaces.Peer.SecretChat {
+                return .single((peer, nil))
+            }
+            return superGramNotificationMessage(context: context, id: messageId, timeout: superGramNotificationMessageTimeout)
+            |> map { message -> (EnginePeer?, Message?) in
+                return (peer, message)
+            }
+        }
+        |> deliverOnMainQueue).start(next: { [weak self] peer, message in
+            guard let self else {
+                return
+            }
+            guard let peer else {
+                Logger.shared.log("NotificationTap", "peer \(peerId) is not available locally; not opening an empty chat")
+                SuperGramNotificationDiagnostics.shared.log("tap route: peer \(peerId) not available, nothing opened")
+                return
+            }
+            self.superGramOpenNotificationTarget(peer: peer, message: message, messageId: messageId, threadId: threadId)
+        }))
+    }
+
+    private func superGramOpenNotificationTarget(peer: EnginePeer, message: Message?, messageId: MessageId?, threadId: Int64?) {
+        let rawPeer = peer._asPeer()
+        SuperGramNotificationDiagnostics.shared.log("tap route peer=\(peer.id.namespace._internalGetInt32Value()):\(peer.id.id._internalGetInt64Value()) msg=\(messageId.flatMap { "\($0.id)" } ?? "-") thread=\(threadId.flatMap { "\($0)" } ?? "-") messageLoaded=\(message != nil) replies=\(peer.id.isReplies) forum=\(rawPeer.isForumOrMonoForum)")
+
+        // "Replies" service chat (comment replies in discussion groups the account may not have joined).
+        if peer.id.isReplies, let message {
+            var sourceMessageId: MessageId?
+            var threadRootId: MessageId?
+            for attribute in message.attributes {
+                if let attribute = attribute as? SourceReferenceMessageAttribute {
+                    sourceMessageId = attribute.messageId
+                } else if let attribute = attribute as? ReplyMessageAttribute {
+                    threadRootId = attribute.threadMessageId
+                }
+            }
+            if let sourceMessageId {
+                let repliesMessageId = message.id
+                let openRepliesChat: () -> Void = { [weak self] in
+                    self?.superGramNavigateToNotificationChat(location: .peer(peer), messageId: repliesMessageId)
+                }
+                let openDiscussionGroup: () -> Void = { [weak self] in
+                    self?.superGramOpenPeerAtMessage(peerId: sourceMessageId.peerId, messageId: sourceMessageId, fallback: openRepliesChat)
+                }
+                if let threadRootId, threadRootId.peerId == sourceMessageId.peerId {
+                    self.superGramOpenDiscussionThread(rootId: threadRootId, messageId: sourceMessageId, fallback: openDiscussionGroup)
+                } else {
+                    openDiscussionGroup()
+                }
+                return
+            }
+        }
+
+        // Forum topics (and forum bots / monoforums): the thread id is a real topic id here.
+        if rawPeer.isForumOrMonoForum {
+            if let topicId = message?.threadId ?? threadId {
+                let location: NavigateToChatControllerParams.Location = .replyThread(ChatReplyThreadMessage(
+                    peerId: peer.id, threadId: topicId, channelMessageId: nil, isChannelPost: false, isForumPost: true, isMonoforumPost: rawPeer.isMonoForum, maxMessage: nil, maxReadIncomingMessageId: nil, maxReadOutgoingMessageId: nil, unreadCount: 0, initialFilledHoles: IndexSet(), initialAnchor: .automatic, isNotAvailable: false
+                ))
+                self.superGramNavigateToNotificationChat(location: location, messageId: message?.id)
+            } else {
+                self.superGramNavigateToNotificationChat(location: .peer(peer), messageId: nil)
+            }
+            return
+        }
+
+        // Non-forum groups and channels.
+        if peer.id.namespace == Namespaces.Peer.CloudChannel || peer.id.namespace == Namespaces.Peer.CloudGroup {
+            let targetMessageId = message?.id
+            let openChat: () -> Void = { [weak self] in
+                self?.superGramNavigateToNotificationChat(location: .peer(peer), messageId: targetMessageId)
+            }
+            // 1 is the "no thread" marker for channel messages; any other value is the thread root or the replied-to id.
+            var rootCandidate: Int64? = message?.threadId ?? threadId
+            if let value = rootCandidate, value <= 1 || value > Int64(Int32.max) {
+                rootCandidate = nil
+            }
+            if case let .channel(channel) = peer, case .group = channel.info, let rootCandidate, let targetMessageId, Int64(targetMessageId.id) != rootCandidate {
+                // Only a thread whose root is an auto-forwarded channel post is a comment thread; a plain reply stays in the group.
+                let rootId = MessageId(peerId: peer.id, namespace: Namespaces.Message.Cloud, id: Int32(rootCandidate))
+                self.superGramNotificationOpenDisposable.set((superGramNotificationMessage(context: self.context, id: rootId, timeout: superGramNotificationMessageTimeout)
+                |> deliverOnMainQueue).start(next: { [weak self] root in
+                    guard let self else {
+                        return
+                    }
+                    if let root, root.attributes.contains(where: { $0 is SourceReferenceMessageAttribute }) {
+                        self.superGramOpenDiscussionThread(rootId: rootId, messageId: targetMessageId, fallback: openChat)
+                    } else {
+                        openChat()
+                    }
+                }))
+            } else {
+                openChat()
+            }
+            return
+        }
+
+        // Private chats, secret chats, Saved Messages, Replies entries without a source: upstream behaviour.
+        self.openChatWithPeerId(peerId: peer.id, threadId: nil, messageId: messageId, storyId: nil)
+    }
+
+    private func superGramNavigateToNotificationChat(location: NavigateToChatControllerParams.Location, messageId: MessageId?, chatLocationContextHolder: Atomic<ChatLocationContextHolder?> = Atomic<ChatLocationContextHolder?>(value: nil)) {
+        let subject: ChatControllerSubject? = messageId.flatMap { .message(id: .id($0), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false) }
+        self.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: self.rootController, context: self.context, chatLocation: location, chatLocationContextHolder: chatLocationContextHolder, subject: subject))
+    }
+
+    private func superGramOpenPeerAtMessage(peerId: PeerId, messageId: MessageId, fallback: @escaping () -> Void) {
+        self.superGramNotificationOpenDisposable.set((self.context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+        |> deliverOnMainQueue).start(next: { [weak self] peer in
+            guard let self else {
+                return
+            }
+            guard let peer else {
+                fallback()
+                return
+            }
+            self.superGramNavigateToNotificationChat(location: .peer(peer), messageId: messageId)
+        }))
+    }
+
+    private func superGramOpenDiscussionThread(rootId: MessageId, messageId: MessageId?, fallback: @escaping () -> Void) {
+        let signal: Signal<ReplyThreadInfo?, NoError> = fetchAndPreloadReplyThreadInfo(context: self.context, subject: .groupMessage(rootId), atMessageId: messageId, preload: false)
+        |> map(Optional.init)
+        |> `catch` { _ -> Signal<ReplyThreadInfo?, NoError> in
+            return .single(nil)
+        }
+        |> take(1)
+        |> timeout(superGramNotificationThreadTimeout, queue: Queue.mainQueue(), alternate: .single(nil))
+
+        self.superGramNotificationOpenDisposable.set((signal
+        |> deliverOnMainQueue).start(next: { [weak self] result in
+            guard let self else {
+                return
+            }
+            guard let result, !result.message.isNotAvailable else {
+                fallback()
+                return
+            }
+            self.superGramNavigateToNotificationChat(location: .replyThread(result.message), messageId: messageId, chatLocationContextHolder: result.contextHolder)
+        }))
+    }
+
     func openUrl(_ url: URL, external: Bool = false) {
         if self.rootController.rootTabController != nil {
             let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
@@ -1008,4 +1477,29 @@ final class AuthorizedApplicationContext {
             self.lockedCoveringView.updateSnapshot(nil)
         }
     }
+}
+
+// SuperGram: notification-tap routing limits. A tap must not hang on a slow network nor open an empty chat; each wait
+// falls back to the next-best destination when it expires.
+private let superGramNotificationPeerTimeout: Double = 4.0
+private let superGramNotificationMessageTimeout: Double = 3.0
+private let superGramNotificationThreadTimeout: Double = 5.0
+
+// SuperGram: the message a notification refers to — local first, otherwise fetched from the cloud (a tap can cold-start
+// the app before the update that carries it is applied). Emits nil when it cannot be resolved in time.
+private func superGramNotificationMessage(context: AccountContext, id: MessageId, timeout timeoutValue: Double) -> Signal<Message?, NoError> {
+    return context.engine.messages.getMessagesLoadIfNecessary([id], strategy: .cloud(skipLocal: false))
+    |> `catch` { _ -> Signal<GetMessagesResult, NoError> in
+        return .single(.result([]))
+    }
+    |> mapToSignal { result -> Signal<Message?, NoError> in
+        switch result {
+        case .progress:
+            return .complete()
+        case let .result(messages):
+            return .single(messages.first(where: { $0.id == id }))
+        }
+    }
+    |> take(1)
+    |> timeout(timeoutValue, queue: Queue.mainQueue(), alternate: .single(nil))
 }

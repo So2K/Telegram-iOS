@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import AVFoundation
@@ -90,7 +93,8 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
     private var animationSize: CGSize?
     private var didSetUpAnimationNode = false
     private var isPlaying = false
-    
+    private var superGramStillStickerTapPlaybackTimestamp: Double?
+
     private let textNode: TextNodeWithEntities
     
     private var additionalAnimationNodes: [ChatMessageTransitionNode.DecorationItemNode] = []
@@ -115,6 +119,19 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
     public var emojiString: String?
     private let disposable = MetaDisposable()
     private let disposables = DisposableSet()
+
+    // MARK: Swiftgram
+    /// Sticker display scale (`SGSimpleSettings.shared.stickerSize` / 100). Swiftgram assigns this from
+    /// `ChatMessageItemImpl.configure`; SuperGram reads it here so that file stays untouched.
+    /// Clamped to 0.2 — the settings slider goes down to 0 %, and a zero-sized sticker breaks the layout math.
+    ///
+    /// Computed rather than stored: a stored initial value is captured once per node instance, so after the
+    /// slider moves the nodes already built keep the old scale while newly built ones use the new one, and the
+    /// same chat ends up with two sticker sizes. `asyncLayout` reads this once per pass and captures the value
+    /// for the matching apply, so a single layout can never mix two scales.
+    public var sizeCoefficient: Float {
+        return max(0.2, min(1.0, Float(SGSimpleSettings.shared.stickerSize) / 100.0))
+    }
 
     private var viaBotNode: TextNode?
     private let dateAndStatusNode: ChatMessageDateAndStatusNode
@@ -596,7 +613,7 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
         if let telegramFile = self.telegramFile {
             file = telegramFile
             if !item.context.sharedContext.energyUsageSettings.loopStickers {
-                playbackMode = .once
+                playbackMode = .still(.start)
             }
         } else if let emojiFile = self.emojiFile {
             file = emojiFile
@@ -635,10 +652,15 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
         if !item.controllerInteraction.canReadHistory {
             canPlayEffects = false
         }
-        
+
         if !canPlayEffects {
             self.removeAdditionalAnimations()
             self.removeEffectAnimations()
+        }
+        // SuperGram: still stickers (looping off) don't auto-start one-time effects, but an effect started by a tap
+        // must survive later visibility updates, so this is applied after the removal above
+        if self.telegramFile != nil && !item.context.sharedContext.energyUsageSettings.loopStickers {
+            canPlayEffects = false
         }
         
         if let animationNode = self.animationNode as? AnimatedStickerNode {
@@ -832,7 +854,10 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
     }
         
     override public func asyncLayout() -> (_ item: ChatMessageItem, _ params: ListViewItemLayoutParams, _ mergedTop: ChatMessageMerge, _ mergedBottom: ChatMessageMerge, _ dateHeaderAtBottom: ChatMessageHeaderSpec) -> (ListViewItemNodeLayout, (ListViewItemUpdateAnimation, ListViewItemApply, Bool) -> Void) {
-        var displaySize = CGSize(width: 180.0, height: 180.0)
+        // MARK: Swiftgram
+        let sizeCoefficient = CGFloat(self.sizeCoefficient)
+        let hideDateAndStatus = !SGSimpleSettings.shared.stickerTimestamp
+        var displaySize = CGSize(width: 180.0 * sizeCoefficient, height: 180.0 * sizeCoefficient)
         let telegramFile = self.telegramFile
         let emojiFile = self.emojiFile
         let telegramDice = self.telegramDice
@@ -869,7 +894,8 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
             var imageBottomPadding: CGFloat = 0.0
             var imageHorizontalOffset: CGFloat = 0.0
             if !(telegramFile?.videoThumbnails.isEmpty ?? true) {
-                displaySize = CGSize(width: 240.0, height: 240.0)
+                // MARK: Swiftgram
+                displaySize = CGSize(width: 240.0 * sizeCoefficient, height: 240.0 * sizeCoefficient)
                 imageVerticalInset = -20.0
                 imageHorizontalOffset = 12.0
             }
@@ -1021,7 +1047,16 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
             if let subject = item.associatedData.subject, case .messageOptions = subject {
                 needsShareButton = false
             }
-            
+
+            // SuperGram: hide only the plain share / repost button (the node also renders Comments / navigation).
+            // This must sit outside the `telegramDice` / `telegramFile` / `emojiFile` / `emojiString` chain below —
+            // this node draws stickers, dice, gifts and emoji, and the plain arrow has to go on all of them.
+            // `ChatMessageShareButton.update` is called without `disableComments:` here, so the default
+            // `commentsDisabled: false` is the matching value.
+            if !superGramShowsMessageShareButton && !superGramShareButtonActsAsNavigation(item: item) {
+                needsShareButton = false
+            }
+
             var isEmoji = false
             if let _ = telegramDice {
                 imageSize = displaySize
@@ -1722,8 +1757,12 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
                     let dateAndStatusFrame = CGRect(origin: CGPoint(x: max(displayLeftInset, updatedImageFrame.maxX - dateAndStatusSize.width - 4.0), y: updatedImageFrame.maxY - dateAndStatusSize.height - 4.0 + imageBottomPadding), size: dateAndStatusSize)
                     animation.animator.updateFrame(layer: strongSelf.dateAndStatusNode.layer, frame: dateAndStatusFrame, completion: nil)
                     dateAndStatusApply(animation)
+                    // MARK: Swiftgram
+                    // `stickerTimestamp` off hides the time/status pill drawn over the sticker.
                     if case .customChatContents = item.associatedData.subject {
                         strongSelf.dateAndStatusNode.isHidden = true
+                    } else {
+                        strongSelf.dateAndStatusNode.isHidden = hideDateAndStatus
                     }
 
                     if needsReplyBackground {
@@ -2587,6 +2626,30 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
                             return false
                         }
                     })
+
+                    // SuperGram: with looping off the first tap plays the still sticker once; a second tap shortly after
+                    // falls through to the upstream actions (open the sticker pack / premium effect tooltip)
+                    let stillStickerTapTimestamp = CACurrentMediaTime()
+                    let canPlayStillSticker: Bool
+                    if let previousTimestamp = self.superGramStillStickerTapPlaybackTimestamp, stillStickerTapTimestamp - previousTimestamp < 3.0 {
+                        canPlayStillSticker = false
+                    } else {
+                        canPlayStillSticker = true
+                    }
+                    if !item.context.sharedContext.energyUsageSettings.loopStickers, self.animationNode is AnimatedStickerNode, canPlayStillSticker {
+                        return .optionalAction({ [weak self] in
+                            guard let self, let animationNode = self.animationNode as? AnimatedStickerNode else {
+                                return
+                            }
+                            self.superGramStillStickerTapPlaybackTimestamp = CACurrentMediaTime()
+                            animationNode.seekTo(.start)
+                            animationNode.playOnce()
+                            if file.isPremiumSticker && !noPremium {
+                                self.playedPremiumStickerAnimation = false
+                                self.playPremiumStickerAnimation()
+                            }
+                        })
+                    }
                     
                     if file.isPremiumSticker && !noPremium {
                         return .optionalAction({
@@ -3261,8 +3324,16 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
     }
     
     override public func makeContentSnapshot() -> (UIImage, CGRect)? {
-        UIGraphicsBeginImageContextWithOptions(self.imageNode.view.bounds.size, false, 0.0)
-        let context = UIGraphicsGetCurrentContext()!
+        let size = self.imageNode.view.bounds.size
+        // SuperGram: a zero-sized node (or a failed context) used to trap on UIGraphicsGetCurrentContext().
+        guard size.width > 0.0, size.height > 0.0 else {
+            return nil
+        }
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        guard let context = UIGraphicsGetCurrentContext() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
         
         context.translateBy(x: -self.imageNode.frame.minX, y: -self.imageNode.frame.minY)
         self.contextSourceNode.contentNode.view.layer.render(in: context)

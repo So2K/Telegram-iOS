@@ -142,6 +142,10 @@ swift_library(
         "//submodules/TelegramUI/Components/ListSectionComponent",
         "//submodules/TelegramUI/Components/ListActionItemComponent",
         "//submodules/Utils/DeviceModel",
+        # SuperGram (W2-GHOST): passcode auto-lock "5 seconds" label
+        "//Swiftgram/SGStrings:SGStrings",
+        # SuperGram (W2-NET, SGP-10): session IP row in RecentSessionScreen
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
     ],
     visibility = [
         "//visibility:public",

@@ -170,6 +170,8 @@ final class ChatItemGalleryFooterContentNode: GalleryFooterContentNode, ASScroll
     private var currentMessageText: NSAttributedString?
     
     private var currentMessage: EngineRawMessage?
+    // SuperGram: protected (noforwards) media is shared only through the iOS share sheet, never the forward grid
+    private var currentMessageIsCopyProtected = false
     private var currentWebPageAndMedia: (TelegramMediaWebpage, EngineRawMedia)?
     private var mediaSubject: GalleryMediaSubject?
     private let messageContextDisposable = MetaDisposable()
@@ -945,8 +947,13 @@ final class ChatItemGalleryFooterContentNode: GalleryFooterContentNode, ASScroll
             canEdit = false
         }
         
-        if message.isCopyProtected() || peerIsCopyProtected || message.paidContent != nil {
+        let isSenderCopyProtected = message.isCopyProtected() || peerIsCopyProtected
+        self.currentMessageIsCopyProtected = isSenderCopyProtected
+        if (isSenderCopyProtected && !message.sgGalleryCanSaveContent(peerIsCopyProtected: peerIsCopyProtected)) || message.paidContent != nil {
             canShare = false
+            canEdit = false
+        } else if isSenderCopyProtected {
+            // SuperGram: save/share to iOS is allowed, edit-and-resend of protected media stays blocked
             canEdit = false
         }
         
@@ -1914,7 +1921,7 @@ final class ChatItemGalleryFooterContentNode: GalleryFooterContentNode, ASScroll
                             }
                         }
                         
-                        let shareController = strongSelf.context.sharedContext.makeShareController(context: strongSelf.context, params: ShareControllerParams(subject: subject, preferredAction: preferredAction, externalShare: hasExternalShare, forceTheme: forceTheme, actionCompleted: { [weak self] in
+                        let shareController = strongSelf.context.sharedContext.makeShareController(context: strongSelf.context, params: ShareControllerParams(subject: subject, preferredAction: preferredAction, externalShare: hasExternalShare, immediateExternalShare: strongSelf.currentMessageIsCopyProtected && hasExternalShare, forceTheme: forceTheme, actionCompleted: { [weak self] in
                             if let strongSelf = self, let actionCompletionText = actionCompletionText {
                                 let presentationData = strongSelf.context.sharedContext.currentPresentationData.with { $0 }
                                 strongSelf.controllerInteraction?.presentController(UndoOverlayController(presentationData: presentationData, content: .mediaSaved(text: actionCompletionText), elevatedLayout: true, animateInAsReplacement: false, action: { _ in return true }), nil)
@@ -2004,7 +2011,7 @@ final class ChatItemGalleryFooterContentNode: GalleryFooterContentNode, ASScroll
                         
                         let shareAction: ([EngineRawMessage]) -> Void = { messages in
                             if let strongSelf = self {
-                                let shareController = strongSelf.context.sharedContext.makeShareController(context: strongSelf.context, params: ShareControllerParams(subject: .messages(messages), preferredAction: preferredAction, forceTheme: forceTheme, actionCompleted: { [weak self] in
+                                let shareController = strongSelf.context.sharedContext.makeShareController(context: strongSelf.context, params: ShareControllerParams(subject: .messages(messages), preferredAction: preferredAction, immediateExternalShare: strongSelf.currentMessageIsCopyProtected, forceTheme: forceTheme, actionCompleted: { [weak self] in
                                     if let strongSelf = self {
                                         let presentationData = strongSelf.context.sharedContext.currentPresentationData.with { $0 }
                                         strongSelf.controllerInteraction?.presentController(UndoOverlayController(presentationData: presentationData, content: .mediaSaved(text: presentationData.strings.Gallery_ImageSaved), elevatedLayout: true, animateInAsReplacement: false, action: { _ in return true }), nil)
@@ -2249,13 +2256,13 @@ final class ChatItemGalleryFooterContentNode: GalleryFooterContentNode, ASScroll
     
     @objc func backwardButtonPressed() {
         self.interacting?(true)
-        self.seekBackward?(15.0)
+        self.seekBackward?(5.0)
         self.interacting?(false)
     }
     
     @objc func forwardButtonPressed() {
         self.interacting?(true)
-        self.seekForward?(15.0)
+        self.seekForward?(5.0)
         self.interacting?(false)
     }
     
@@ -2395,7 +2402,7 @@ private final class PlaybackButtonNode: HighlightTrackingButtonNode {
         self.backgroundIconNode.displayWithoutProcessing = true
         
         self.textNode = ImmediateTextNode()
-        self.textNode.attributedText = NSAttributedString(string: "15", font: Font.with(size: 11.0, design: .round, weight: .semibold, traits: []), textColor: .white)
+        self.textNode.attributedText = NSAttributedString(string: "5", font: Font.with(size: 11.0, design: .round, weight: .semibold, traits: []), textColor: .white)
         
         super.init(pointerStyle: nil)
         

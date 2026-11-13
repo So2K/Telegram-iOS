@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import Display
 import TelegramCore
@@ -299,6 +301,12 @@ private func handleInternetUrl(
                 if shouldOpenInApp {
                     let controller = BrowserScreen(context: context, subject: .webPage(url: parsedUrl.absoluteString))
                     navigationController?.pushViewController(controller)
+                } else if SGSimpleSettings.shared.sgOpenLinksInAppSafari && sgCanOpenUrlWithSafariController(parsedUrl) {
+                    // MARK: Swiftgram
+                    // SuperGram (SGM-F4): keep the link inside the app in an SFSafariViewController instead of
+                    // leaving for the external browser. Only reached when the link was already destined for an
+                    // external browser, so the in-app Telegram browser and the domain exceptions above still win.
+                    sgOpenUrlWithSafariController(parsedUrl: parsedUrl, originalUrl: originalUrl, context: context, presentationData: presentationData, navigationController: navigationController)
                 } else {
                     let openInOptions = availableOpenInOptions(context: context, item: .url(url: originalUrl))
                     var defaultWebBrowser = localSettings.defaultWebBrowser

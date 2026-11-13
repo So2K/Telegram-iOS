@@ -176,7 +176,15 @@ private final class MultipartUploadManager {
         if increaseParallelParts {
             self.parallelParts = 30
         } else {
-            self.parallelParts = 3
+            // SuperGram: more parallel upload parts in faster download speed modes ("sgDownloadSpeedMode")
+            switch MediaDownloadRuntimeSettings.speedMode {
+            case .standard:
+                self.parallelParts = 3
+            case .fast:
+                self.parallelParts = 6
+            case .maximum:
+                self.parallelParts = 10
+            }
         }
         
         self.forceNoBigParts = forceNoBigParts

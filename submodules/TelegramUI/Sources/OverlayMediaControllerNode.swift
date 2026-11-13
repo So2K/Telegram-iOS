@@ -5,6 +5,8 @@ import AsyncDisplayKit
 import SwiftSignalKit
 import AccountContext
 
+private let superGramAllowsDetachedInstantVideoOverlay = false
+
 private final class OverlayMediaControllerNodeView: UITracingLayerView {
     var hitTestImpl: ((CGPoint, UIEvent?) -> UIView?)?
     
@@ -43,7 +45,9 @@ final class OverlayMediaControllerNode: ASDisplayNode, ASGestureRecognizerDelega
     
     private var pinchingNode: OverlayMediaItemNode?
     private var pinchingNodeInitialSize: CGSize?
-    
+
+    private var superGramPendingInstantVideoDismissals = Set<ObjectIdentifier>()
+
     init(updatePossibleEmbeddingItem: @escaping (OverlayMediaControllerEmbeddingItem?) -> Void, embedPossibleEmbeddingItem: @escaping (OverlayMediaControllerEmbeddingItem) -> Bool) {
         self.updatePossibleEmbeddingItem = updatePossibleEmbeddingItem
         self.embedPossibleEmbeddingItem = embedPossibleEmbeddingItem
@@ -97,7 +101,9 @@ final class OverlayMediaControllerNode: ASDisplayNode, ASGestureRecognizerDelega
         
         for item in self.videoNodes {
             let nodeSize = item.currentSize
-            transition.updateFrame(node: item.node, frame: CGRect(origin: self.nodePosition(layout: layout, size: nodeSize, location: item.location, hidden: !item.node.customTransition && !item.node.hasAttachedContext, isMinimized: item.isMinimized, tempExtendedTopInset: item.node.tempExtendedTopInset), size: nodeSize))
+            // SuperGram: a round video waiting to be stopped after leaving its bubble stays off-screen
+            let isPendingDismissal = self.superGramPendingInstantVideoDismissals.contains(ObjectIdentifier(item.node))
+            transition.updateFrame(node: item.node, frame: CGRect(origin: self.nodePosition(layout: layout, size: nodeSize, location: item.location, hidden: (!item.node.customTransition && !item.node.hasAttachedContext) || isPendingDismissal, isMinimized: item.isMinimized, tempExtendedTopInset: item.node.tempExtendedTopInset), size: nodeSize))
             item.node.updateLayout(nodeSize)
         }
     }
@@ -267,9 +273,55 @@ final class OverlayMediaControllerNode: ASDisplayNode, ASGestureRecognizerDelega
                 node.layer.animatePosition(from: CGPoint(x: positionX - node.layer.position.x, y: 0.0), to: CGPoint(), duration: 0.3, timingFunction: kCAMediaTimingFunctionSpring, additive: true)
             }
         }
-        node.hasAttachedContextUpdated = { [weak self] _ in
-            if let strongSelf = self, let validLayout = strongSelf.validLayout, !customTransition {
-                strongSelf.containerLayoutUpdated(validLayout, transition: .animated(duration: 0.3, curve: .spring))
+        if !superGramAllowsDetachedInstantVideoOverlay, let instantVideoNode = node as? OverlayInstantVideoNode {
+            // SuperGram: a round video that was playing inside a visible chat bubble must not turn into a floating
+            // circle when the bubble goes away (scrolled off, chat closed): stop its playlist instead, which also
+            // removes the global "Video Message" header. Playback that starts without any visible bubble (shared
+            // media, search, auto-next to an off-screen message) keeps the regular floating circle.
+            // OverlayInstantVideoNode.init attaches before this callback exists, so the initial state is read here.
+            var wasEmbeddedInBubble = !instantVideoNode.hasAttachedContext
+            node.hasAttachedContextUpdated = { [weak self, weak instantVideoNode] hasAttachedContext in
+                guard let strongSelf = self, let instantVideoNode else {
+                    return
+                }
+                if !hasAttachedContext {
+                    wasEmbeddedInBubble = true
+                    strongSelf.superGramPendingInstantVideoDismissals.remove(ObjectIdentifier(instantVideoNode))
+                } else if wasEmbeddedInBubble {
+                    let nodeId = ObjectIdentifier(instantVideoNode)
+                    if !strongSelf.superGramPendingInstantVideoDismissals.contains(nodeId) {
+                        strongSelf.superGramPendingInstantVideoDismissals.insert(nodeId)
+                        // Called from inside the video content manager's subscriber loop, and the bubble may re-acquire
+                        // the content in the same run loop (re-layout), so decide on the next turn of the main queue.
+                        // `nodeId` is captured by value and dropped unconditionally: an ObjectIdentifier is derived
+                        // from the address, so leaving one behind when the node deallocates would make a later node
+                        // allocated at the same address look "pending dismissal" and hide it off-screen for good.
+                        Queue.mainQueue().justDispatch { [weak self, weak instantVideoNode] in
+                            guard let strongSelf = self else {
+                                return
+                            }
+                            guard strongSelf.superGramPendingInstantVideoDismissals.remove(nodeId) != nil else {
+                                return
+                            }
+                            guard let instantVideoNode else {
+                                return
+                            }
+                            if instantVideoNode.hasAttachedContext, instantVideoNode.supernode === strongSelf {
+                                instantVideoNode.dismiss()
+                            }
+                        }
+                    }
+                    return
+                }
+                if let validLayout = strongSelf.validLayout, !customTransition {
+                    strongSelf.containerLayoutUpdated(validLayout, transition: .animated(duration: 0.3, curve: .spring))
+                }
+            }
+        } else {
+            node.hasAttachedContextUpdated = { [weak self] _ in
+                if let strongSelf = self, let validLayout = strongSelf.validLayout, !customTransition {
+                    strongSelf.containerLayoutUpdated(validLayout, transition: .animated(duration: 0.3, curve: .spring))
+                }
             }
         }
         node.unminimize = { [weak self, weak node] in
@@ -287,6 +339,7 @@ final class OverlayMediaControllerNode: ASDisplayNode, ASGestureRecognizerDelega
     func removeNode(_ node: OverlayMediaItemNode, customTransition: Bool) {
         if node.supernode === self {
             node.hasAttachedContextUpdated = nil
+            self.superGramPendingInstantVideoDismissals.remove(ObjectIdentifier(node))
             node.setShouldAcquireContext(false)
             if let index = self.videoNodes.firstIndex(where: { $0.node === node }), let validLayout = self.validLayout {
                 if customTransition {

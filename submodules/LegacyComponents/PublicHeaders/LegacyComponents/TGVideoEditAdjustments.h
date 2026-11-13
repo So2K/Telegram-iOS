@@ -17,7 +17,10 @@ typedef enum
     TGMediaVideoConversionPresetProfile,
     TGMediaVideoConversionPresetProfileHigh,
     TGMediaVideoConversionPresetProfileVeryHigh,
-    TGMediaVideoConversionPresetPassthrough
+    TGMediaVideoConversionPresetPassthrough,
+    // MARK: Swiftgram
+    // SuperGram: appended at the end, raw values are persisted in adjustments dictionaries
+    TGMediaVideoConversionPresetVideoMessageHD
 } TGMediaVideoConversionPreset;
 
 @interface TGVideoEditAdjustments : NSObject <TGMediaEditAdjustments>
@@ -68,9 +71,25 @@ typedef enum
                                       sendAsGif:(bool)sendAsGif
                                          preset:(TGMediaVideoConversionPreset)preset;
 
+// MARK: Swiftgram
++ (instancetype)editAdjustmentsWithOriginalSize:(CGSize)originalSize
+                                       cropRect:(CGRect)cropRect
+                                cropOrientation:(UIImageOrientation)cropOrientation
+                                   cropRotation:(CGFloat)cropRotation
+                          cropLockedAspectRatio:(CGFloat)cropLockedAspectRatio
+                                   cropMirrored:(bool)cropMirrored
+                                 trimStartValue:(NSTimeInterval)trimStartValue
+                                   trimEndValue:(NSTimeInterval)trimEndValue
+                                     toolValues:(NSDictionary *)toolValues
+                                   paintingData:(TGPaintingData *)paintingData
+                                      sendAsGif:(bool)sendAsGif
+                                sendAsTelescope:(bool)sendAsTelescope
+                                         preset:(TGMediaVideoConversionPreset)preset;
+
 @end
 
 typedef TGVideoEditAdjustments TGMediaVideoEditAdjustments;
 
 extern const NSTimeInterval TGVideoEditMinimumTrimmableDuration;
 extern const NSTimeInterval TGVideoEditMaximumGifDuration;
+extern const NSTimeInterval TGVideoEditMaximumTelescopeDuration;

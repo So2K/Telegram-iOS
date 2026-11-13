@@ -390,6 +390,10 @@ public final class GlobalControlPanelsContext {
                     if dismissedSuggestions.contains(ServerProvidedSuggestion.todayBirthdays.id) {
                         todayBirthdayPeerIds = []
                     }
+                    // SuperGram: the client-side "gift Premium for a contact's birthday" banner is a promo
+                    if superGramHidePremiumUpsell {
+                        todayBirthdayPeerIds = []
+                    }
                     
                     if let _ = accountFreezeConfiguration.freezeUntilDate {
                         return .single(.accountFreeze)
@@ -414,9 +418,11 @@ public final class GlobalControlPanelsContext {
                         return .single(.setupPhoto(accountPeer))
                     } else if suggestions.contains(.gracePremium) {
                         return .single(.premiumGrace)
-                    } else if suggestions.contains(.xmasPremiumGift) {
+                    } else if !superGramHidePremiumUpsell && suggestions.contains(.xmasPremiumGift) {
+                        // MARK: Swiftgram (SGP-03; SuperGram falls through to lower-priority notices instead of returning nil)
                         return .single(.xmasPremiumGift)
-                    } else if suggestions.contains(.annualPremium) || suggestions.contains(.upgradePremium) || suggestions.contains(.restorePremium), let inAppPurchaseManager = context.inAppPurchaseManager {
+                    } else if !superGramHidePremiumUpsell && (suggestions.contains(.annualPremium) || suggestions.contains(.upgradePremium) || suggestions.contains(.restorePremium)), let inAppPurchaseManager = context.inAppPurchaseManager {
+                        // MARK: Swiftgram (SGP-03; also skips the StoreKit product request)
                         return inAppPurchaseManager.availableProducts
                         |> map { products -> ChatListNotice? in
                             if products.count > 1 {
@@ -471,7 +477,8 @@ public final class GlobalControlPanelsContext {
                         }
                     } else if suggestions.contains(.setupBirthday) && birthday == nil {
                         return .single(.setupBirthday)
-                    } else if case let .link(id, url, title, subtitle) = suggestions.first(where: { if case .link = $0 { return true } else { return false} }) {
+                    } else if !superGramHidePremiumUpsell, case let .link(id, url, title, subtitle) = suggestions.first(where: { if case .link = $0 { return true } else { return false} }) {
+                        // SuperGram: server-provided custom promo banners are hidden
                         return .single(.link(id: id, url: url, title: title, subtitle: subtitle))
                     } else {
                         return .single(nil)

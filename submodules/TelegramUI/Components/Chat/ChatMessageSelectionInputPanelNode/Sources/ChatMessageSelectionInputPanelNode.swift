@@ -15,6 +15,19 @@ import TopMessageReactions
 import GlassBackgroundComponent
 import ComponentFlow
 import ComponentDisplayAdapters
+import SGSimpleSettings
+import SGStrings
+
+// MARK: SuperGram
+/// Swiftgram selection-bar actions ("Save to Cloud", "Forward without sender names").
+///
+/// Implemented by the chat controller (TelegramUI `ChatControllerImpl`) that `ChatPanelInterfaceInteraction.chatController()`
+/// returns. The extra buttons are shown only when the hosting controller implements this protocol, so selection panels
+/// outside a chat (peer info shared media, recent actions) keep their stock buttons.
+public protocol ChatMessageSelectionInputPanelSuperGramActions: AnyObject {
+    func sgSaveSelectedMessagesToCloud()
+    func sgForwardSelectedMessagesHidingSenderNames()
+}
 
 private final class ChatMessageSelectionInputPanelNodeViewForOverlayContent: UIView, ChatInputPanelViewForOverlayContent {
     var reactionContextNode: ReactionContextNode?
@@ -122,7 +135,18 @@ private final class GlassButtonView: UIView {
             }
         }
     }
-    
+
+    // MARK: Swiftgram
+    var image: UIImage? {
+        didSet {
+            self.iconView.image = image?.withRenderingMode(.alwaysTemplate)
+            if let params = self.params {
+                self.updateImpl(params: params, transition: .immediate)
+            }
+        }
+    }
+    //
+
     override init(frame: CGRect) {
         self.backgroundView = GlassBackgroundView()
         
@@ -181,6 +205,10 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
     private let deleteButton: GlassButtonView
     private let reportButton: GlassButtonView
     private let forwardButton: GlassButtonView
+    // MARK: Swiftgram
+    private let cloudButton: GlassButtonView
+    private let forwardHideNamesButton: GlassButtonView
+    //
     private let shareButton: GlassButtonView
     private let tagButton: GlassButtonView
     private let tagEditButton: GlassButtonView
@@ -224,7 +252,20 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
         self.forwardButton.icon = "Chat/Input/Accessory Panels/MessageSelectionForward"
         self.forwardButton.isAccessibilityElement = true
         self.forwardButton.accessibilityLabel = strings.VoiceOver_MessageContextForward
-        
+
+        // MARK: Swiftgram
+        self.cloudButton = GlassButtonView()
+        self.cloudButton.icon = "SaveToCloud"
+        self.cloudButton.isAccessibilityElement = true
+        self.cloudButton.accessibilityLabel = i18n("ContextMenu.SaveToCloud", strings.baseLanguageCode)
+
+        self.forwardHideNamesButton = GlassButtonView()
+        // SuperGram: this tree's generateTintedImage has no customSize parameter; the image is template-tinted by the button anyway
+        self.forwardHideNamesButton.image = generateScaledImage(image: UIImage(bundleImageName: "Avatar/AnonymousSenderIcon"), size: CGSize(width: 28.0, height: 28.0), opaque: false)
+        self.forwardHideNamesButton.isAccessibilityElement = true
+        self.forwardHideNamesButton.accessibilityLabel = strings.Conversation_ForwardOptions_HideSendersNames
+        //
+
         self.shareButton = GlassButtonView()
         self.shareButton.icon = "Chat/Input/Accessory Panels/MessageSelectionAction"
         self.shareButton.isAccessibilityElement = true
@@ -247,6 +288,8 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
         self.view.addSubview(self.deleteButton)
         self.view.addSubview(self.reportButton)
         self.view.addSubview(self.forwardButton)
+        self.view.addSubview(self.cloudButton) // MARK: Swiftgram
+        self.view.addSubview(self.forwardHideNamesButton) // MARK: Swiftgram
         self.view.addSubview(self.shareButton)
         self.view.addSubview(self.tagButton)
         self.view.addSubview(self.tagEditButton)
@@ -255,10 +298,20 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
         
         self.forwardButton.isImplicitlyDisabled = true
         self.shareButton.isImplicitlyDisabled = true
-        
+        // MARK: Swiftgram
+        self.cloudButton.isImplicitlyDisabled = true
+        self.forwardHideNamesButton.isImplicitlyDisabled = true
+        self.cloudButton.isHidden = true
+        self.forwardHideNamesButton.isHidden = true
+        //
+
         self.deleteButton.button.addTarget(self, action: #selector(self.deleteButtonPressed), for: .touchUpInside)
         self.reportButton.button.addTarget(self, action: #selector(self.reportButtonPressed), for: .touchUpInside)
         self.forwardButton.button.addTarget(self, action: #selector(self.forwardButtonPressed), for: .touchUpInside)
+        // MARK: Swiftgram
+        self.cloudButton.button.addTarget(self, action: #selector(self.cloudButtonPressed), for: .touchUpInside)
+        self.forwardHideNamesButton.button.addTarget(self, action: #selector(self.forwardHideNamesButtonPressed), for: .touchUpInside)
+        //
         self.shareButton.button.addTarget(self, action: #selector(self.shareButtonPressed), for: .touchUpInside)
         self.tagButton.button.addTarget(self, action: #selector(self.tagButtonPressed), for: .touchUpInside)
         self.tagEditButton.button.addTarget(self, action: #selector(self.tagButtonPressed), for: .touchUpInside)
@@ -270,7 +323,11 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
     
     private func updateActions() {
         self.forwardButton.isEnabled = self.selectedMessages.count != 0
-        
+        // MARK: Swiftgram
+        self.cloudButton.isEnabled = self.forwardButton.isEnabled
+        self.forwardHideNamesButton.isEnabled = self.forwardButton.isEnabled
+        //
+
         if self.selectedMessages.isEmpty {
             self.actions = nil
             if let (width, leftInset, rightInset, bottomInset, additionalSideInsets, maxHeight, maxOverlayHeight, metrics, isSecondary, isMediaInputExpanded, deviceMetrics) = self.validLayout, let interfaceState = self.presentationInterfaceState {
@@ -315,15 +372,111 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
         }
     }
     
+    // MARK: Swiftgram
+    private var sgActionsHandler: ChatMessageSelectionInputPanelSuperGramActions? {
+        return self.interfaceInteraction?.chatController() as? ChatMessageSelectionInputPanelSuperGramActions
+    }
+
+    @objc private func cloudButtonPressed() {
+        if let _ = self.presentationInterfaceState?.renderedPeer?.peer as? TelegramSecretChat {
+            return
+        }
+        if let actions = self.actions, actions.isCopyProtected {
+            self.interfaceInteraction?.displayCopyProtectionTip(self.cloudButton, false)
+        } else if !self.cloudButton.isImplicitlyDisabled {
+            self.sgActionsHandler?.sgSaveSelectedMessagesToCloud()
+        }
+    }
+
+    @objc private func forwardHideNamesButtonPressed() {
+        if let _ = self.presentationInterfaceState?.renderedPeer?.peer as? TelegramSecretChat {
+            return
+        }
+        if let actions = self.actions, actions.isCopyProtected {
+            self.interfaceInteraction?.displayCopyProtectionTip(self.forwardHideNamesButton, false)
+        } else if !self.forwardHideNamesButton.isImplicitlyDisabled {
+            self.sgActionsHandler?.sgForwardSelectedMessagesHidingSenderNames()
+        }
+    }
+    //
+
     @objc private func shareButtonPressed() {
         if let _ = self.presentationInterfaceState?.renderedPeer?.peer as? TelegramSecretChat {
             return
         }
         if let actions = self.actions, actions.isCopyProtected {
-            self.interfaceInteraction?.displayCopyProtectionTip(self.shareButton, true)
+            // SuperGram: with sgAllowSaveProtectedContent the button opens the iOS share sheet (shareSelectedMessages uses
+            // immediateExternalShare, never the forward grid) unless the selection has secret-chat or secret (view-once / TTL) media
+            if self.sgAllowsExternalShareOfProtectedContent(actions: actions) && !self.shareButton.isImplicitlyDisabled {
+                self.sgShareProtectedSelectedMessages()
+            } else {
+                self.interfaceInteraction?.displayCopyProtectionTip(self.shareButton, true)
+            }
         } else if !self.shareButton.isImplicitlyDisabled {
             self.interfaceInteraction?.shareSelectedMessages()
         }
+    }
+
+    // MARK: SuperGram
+    private func sgAllowsExternalShareOfProtectedContent(actions: ChatAvailableMessageActions) -> Bool {
+        return actions.isCopyProtected && SGSimpleSettings.shared.sgAllowSaveProtectedContent
+    }
+
+    private func sgShareProtectedSelectedMessages() {
+        guard let context = self.context else {
+            return
+        }
+        let messageIds: Set<EngineMessage.Id>
+        if let selectionState = self.presentationInterfaceState?.interfaceState.selectionState, !selectionState.selectedIds.isEmpty {
+            messageIds = selectionState.selectedIds
+        } else {
+            messageIds = self.selectedMessages
+        }
+        if messageIds.isEmpty {
+            return
+        }
+        let _ = (context.engine.data.get(EngineDataMap(
+            messageIds.map(TelegramEngine.EngineData.Item.Messages.Message.init)
+        ))
+        |> deliverOnMainQueue).startStandalone(next: { [weak self, weak context] messageMap in
+            guard let self, let context, self.context === context, SGSimpleSettings.shared.sgAllowSaveProtectedContent, !self.shareButton.isImplicitlyDisabled else {
+                return
+            }
+            // Selection can change while the metadata request is queued. Recheck before the share callback reads it.
+            let currentMessageIds: Set<EngineMessage.Id>
+            if let selectionState = self.presentationInterfaceState?.interfaceState.selectionState, !selectionState.selectedIds.isEmpty {
+                currentMessageIds = selectionState.selectedIds
+            } else {
+                currentMessageIds = self.selectedMessages
+            }
+            guard currentMessageIds == messageIds else {
+                return
+            }
+            // The panel can lag behind the hosting controller during a layout update.
+            if let chatController = self.interfaceInteraction?.chatController() as? ChatController {
+                guard chatController.selectedMessageIds == messageIds else {
+                    return
+                }
+            }
+            guard messageMap.count == messageIds.count else {
+                return
+            }
+            var hasSecretContent = false
+            for messageId in messageIds {
+                guard let maybeMessage = messageMap[messageId], let message = maybeMessage, message.id == messageId else {
+                    return
+                }
+                if message.id.peerId.namespace == Namespaces.Peer.SecretChat || message._asMessage().containsSecretMedia {
+                    hasSecretContent = true
+                    break
+                }
+            }
+            if hasSecretContent {
+                self.interfaceInteraction?.displayCopyProtectionTip(self.shareButton, true)
+            } else {
+                self.interfaceInteraction?.shareSelectedMessages()
+            }
+        })
     }
     
     @objc private func tagButtonPressed() {
@@ -465,13 +618,19 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
             self.deleteButton.isEnabled = false
             self.reportButton.isEnabled = false
             self.forwardButton.isImplicitlyDisabled = !actions.options.contains(.forward)
-            
+            // MARK: Swiftgram
+            self.cloudButton.isImplicitlyDisabled = self.forwardButton.isImplicitlyDisabled
+            self.forwardHideNamesButton.isImplicitlyDisabled = self.forwardButton.isImplicitlyDisabled
+
             if self.peerMedia {
                 self.deleteButton.isEnabled = !actions.options.intersection([.deleteLocally, .deleteGlobally]).isEmpty
             } else {
                 self.deleteButton.isEnabled = !actions.disableDelete
             }
-            self.shareButton.isImplicitlyDisabled = actions.options.intersection(.forward).isEmpty || actions.options.intersection(.externalShare).isEmpty
+            // SuperGram: protected (noforwards) messages have no .forward option; with sgAllowSaveProtectedContent the
+            // external share (iOS share sheet) stays available, the press handler still refuses secret media
+            let sgShareProtected = self.sgAllowsExternalShareOfProtectedContent(actions: actions)
+            self.shareButton.isImplicitlyDisabled = (actions.options.intersection(.forward).isEmpty && !sgShareProtected) || actions.options.intersection(.externalShare).isEmpty
             self.reportButton.isEnabled = !actions.options.intersection([.report]).isEmpty
             
             if self.peerMedia {
@@ -504,7 +663,19 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
             self.tagEditButton.isHidden = true
             self.tagButton.isHidden = true
             self.tagEditButton.isHidden = true
+            // MARK: Swiftgram
+            self.cloudButton.isImplicitlyDisabled = self.forwardButton.isImplicitlyDisabled
+            self.forwardHideNamesButton.isImplicitlyDisabled = self.forwardButton.isImplicitlyDisabled
         }
+
+        // MARK: SuperGram
+        // Swiftgram selection-bar buttons, only inside a chat whose controller implements the actions (not in peer info media)
+        let sgHasActionsHandler = !self.peerMedia && self.sgActionsHandler != nil
+        // as in the Swiftgram context menu item, no "Save to Cloud" inside Saved Messages itself
+        let sgIsSavedMessages = interfaceState.chatLocation.peerId != nil && interfaceState.chatLocation.peerId == self.context?.account.peerId
+        self.cloudButton.isHidden = !(sgHasActionsHandler && !sgIsSavedMessages && SGSimpleSettings.shared.sgSelectionBarSaveToCloud)
+        self.forwardHideNamesButton.isHidden = !(sgHasActionsHandler && SGSimpleSettings.shared.sgSelectionBarForwardHideNames)
+        //
         
         if self.reportButton.isHidden || (self.peerMedia && self.deleteButton.isHidden && self.reportButton.isHidden) {
             if let peer = interfaceState.renderedPeer?.peer as? TelegramChannel, case .broadcast = peer.info {
@@ -526,7 +697,7 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
             tagButton = self.tagEditButton
         }
         
-        let buttons: [GlassButtonView]
+        var buttons: [GlassButtonView]
         if self.reportButton.isHidden {
             if let tagButton {
                 buttons = [
@@ -579,7 +750,15 @@ public final class ChatMessageSelectionInputPanelNode: ChatInputPanelNode {
         }
         
         let buttonSize = CGSize(width: 40.0, height: 40.0)
-        
+
+        // MARK: Swiftgram
+        // SuperGram: the Swiftgram buttons go right before Forward; unlike Swiftgram, Report and the tag-edit button keep their stock visibility
+        let sgButtons = [self.cloudButton, self.forwardHideNamesButton].filter { !$0.isHidden }
+        if !sgButtons.isEmpty {
+            buttons.insert(contentsOf: sgButtons, at: max(0, buttons.count - 1))
+        }
+        //
+
         let availableWidth = width - leftInset - rightInset
         let spacing: CGFloat = floor((availableWidth - buttonSize.width * CGFloat(buttons.count)) / CGFloat(buttons.count - 1))
         var offset: CGFloat = leftInset

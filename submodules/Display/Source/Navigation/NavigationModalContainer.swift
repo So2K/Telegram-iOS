@@ -186,7 +186,7 @@ final class NavigationModalContainer: ASDisplayNode, ASScrollViewDelegate, ASGes
                 self.isDismissed = true
                 self.horizontalDismissOffset = self.bounds.width
                 self.dismissProgress = 1.0
-                let transition: ContainedViewLayoutTransition = .animated(duration: 0.5, curve: .spring)
+                let transition: ContainedViewLayoutTransition = .animated(duration: superGramNavigationTransitionDuration, curve: .spring)
                 transition.updateFrame(node: self.scrollNode, frame: CGRect(origin: CGPoint(x: self.bounds.width, y: 0.0), size: self.scrollNode.bounds.size))
                 self.container.updateAdditionalKeyboardLeftEdgeOffset(self.bounds.width, transition: transition)
                 self.applyDismissProgress(transition: transition, completion: { [weak self] in
@@ -301,7 +301,7 @@ final class NavigationModalContainer: ASDisplayNode, ASScrollViewDelegate, ASGes
         } else {
             dismissProgress = 0.0
             targetOffset = self.bounds.height
-            transition = .animated(duration: 0.5, curve: .spring)
+            transition = .animated(duration: superGramNavigationTransitionDuration, curve: .spring)
         }
         self.ignoreScrolling = true
         let deltaY = targetOffset - scrollView.contentOffset.y

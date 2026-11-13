@@ -848,6 +848,9 @@ private extension MediaQualityPreset {
             qualityPreset = .animation
         case TGMediaVideoConversionPresetVideoMessage:
             qualityPreset = .videoMessage
+        // MARK: Swiftgram
+        case TGMediaVideoConversionPresetVideoMessageHD:
+            qualityPreset = .videoMessageHD
         default:
             qualityPreset = .compressedMedium
         }

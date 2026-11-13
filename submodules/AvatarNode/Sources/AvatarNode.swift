@@ -325,8 +325,12 @@ public final class AvatarNode: ASDisplayNode {
             tx: rect.minX,
             ty: rect.minY + rect.height
         )
-        let transformedPath = path.copy(using: &transform)!
-        context.addPath(transformedPath)
+        // SuperGram (KB-11): this is on the avatar drawing path, which runs for every cell of the chat list
+        // and every message in a chat, including during transitions where the rect can still be empty. A
+        // failed copy means there is nothing to add, not a reason to trap.
+        if let transformedPath = path.copy(using: &transform) {
+            context.addPath(transformedPath)
+        }
     }
     
     public static let gradientColors: [[UIColor]] = [

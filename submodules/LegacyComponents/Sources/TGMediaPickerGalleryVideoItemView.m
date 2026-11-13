@@ -117,6 +117,7 @@
     bool _downloaded;
     
     bool _sendAsGif;
+    bool _sendAsTelescope;
     bool _autoplayed;
     
     CMTime _chaseTime;
@@ -513,6 +514,9 @@
             
             id<TGMediaEditAdjustments> baseAdjustments = [strongSelf.item.editingContext adjustmentsForItem:strongSelf.item.editableMediaItem];
             strongSelf->_sendAsGif = baseAdjustments.sendAsGif;
+            strongSelf->_sendAsTelescope = baseAdjustments.sendAsTelescope;
+            // SuperGram: round videos are limited to 60 seconds, restrict the trim handles while the flag is set
+            strongSelf->_scrubberView.maximumLength = baseAdjustments.sendAsTelescope ? TGVideoEditMaximumTelescopeDuration : 0.0;
             [strongSelf _mutePlayer:baseAdjustments.sendAsGif];
             
             if (baseAdjustments.sendAsGif)
@@ -530,6 +534,8 @@
     else
     {
         _sendAsGif = false;
+        _sendAsTelescope = false;
+        _scrubberView.maximumLength = 0.0;
         [self _layoutPlayerView];
     }
     
@@ -1560,7 +1566,8 @@
     }
     
     bool sendAsGif = !adjustments.sendAsGif;
-    TGVideoEditAdjustments *updatedAdjustments = [TGVideoEditAdjustments editAdjustmentsWithOriginalSize:_videoDimensions cropRect:cropRect cropOrientation:adjustments.cropOrientation cropRotation:adjustments.cropRotation cropLockedAspectRatio:adjustments.cropLockedAspectRatio cropMirrored:adjustments.cropMirrored trimStartValue:trimStartValue trimEndValue:trimEndValue toolValues:adjustments.toolValues paintingData:adjustments.paintingData sendAsGif:sendAsGif preset:adjustments.preset];
+    
+    TGVideoEditAdjustments *updatedAdjustments = [TGVideoEditAdjustments editAdjustmentsWithOriginalSize:_videoDimensions cropRect:cropRect cropOrientation:adjustments.cropOrientation cropRotation:adjustments.cropRotation cropLockedAspectRatio:adjustments.cropLockedAspectRatio cropMirrored:adjustments.cropMirrored trimStartValue:trimStartValue trimEndValue:trimEndValue toolValues:adjustments.toolValues paintingData:adjustments.paintingData sendAsGif:sendAsGif sendAsTelescope:false preset:adjustments.preset];
     [self.item.editingContext setAdjustments:updatedAdjustments forItem:self.item.editableMediaItem];
     
     [_editableItemVariable set:[SSignal single:[self editableMediaItem]]];
@@ -1594,6 +1601,85 @@
     }
     
     [self _mutePlayer:sendAsGif];
+}
+
+// MARK: Swiftgram
+- (void)toggleSendAsTelescope:(bool)canSendAsTelescope dismissParent:(CompletionBlock)__unused dismissParent
+{
+    // SuperGram: no server gate and no TelescopyBot promo alert, the button is simply inert when sending is not allowed
+    if (!canSendAsTelescope)
+        return;
+
+    TGVideoEditAdjustments *adjustments = (TGVideoEditAdjustments *)[self.item.editingContext adjustmentsForItem:self.item.editableMediaItem];
+    CGRect cropRect = CGRectMake(0, 0, _videoDimensions.width, _videoDimensions.height);
+    NSTimeInterval trimStartValue = 0.0;
+    NSTimeInterval trimEndValue = _videoDuration;
+    if (adjustments != nil)
+    {
+        cropRect = adjustments.cropRect;
+
+        if (fabs(adjustments.trimEndValue - adjustments.trimStartValue) > DBL_EPSILON)
+        {
+            trimStartValue = adjustments.trimStartValue;
+            trimEndValue = adjustments.trimEndValue;
+        }
+    }
+
+    bool sendAsTelescope = !adjustments.sendAsTelescope;
+
+    // SuperGram: keep the selected range within the round video limit (it is enforced again at send time)
+    bool clampedTrim = false;
+    if (sendAsTelescope && trimEndValue - trimStartValue > TGVideoEditMaximumTelescopeDuration)
+    {
+        trimEndValue = trimStartValue + TGVideoEditMaximumTelescopeDuration;
+        clampedTrim = true;
+    }
+
+    TGVideoEditAdjustments *updatedAdjustments = [TGVideoEditAdjustments editAdjustmentsWithOriginalSize:_videoDimensions cropRect:cropRect cropOrientation:adjustments.cropOrientation cropRotation:adjustments.cropRotation cropLockedAspectRatio:adjustments.cropLockedAspectRatio cropMirrored:adjustments.cropMirrored trimStartValue:trimStartValue trimEndValue:trimEndValue toolValues:adjustments.toolValues paintingData:adjustments.paintingData sendAsGif:false sendAsTelescope:sendAsTelescope preset:adjustments.preset];
+    [self.item.editingContext setAdjustments:updatedAdjustments forItem:self.item.editableMediaItem];
+
+    [_editableItemVariable set:[SSignal single:[self editableMediaItem]]];
+
+    _scrubberView.maximumLength = sendAsTelescope ? TGVideoEditMaximumTelescopeDuration : 0.0;
+    if (clampedTrim && _scrubberView.allowsTrimming)
+    {
+        _scrubberView.trimStartValue = trimStartValue;
+        _scrubberView.trimEndValue = trimEndValue;
+        [_scrubberView setTrimApplied:true];
+
+        _coverScrubberView.trimStartValue = trimStartValue;
+        _coverScrubberView.trimEndValue = trimEndValue;
+        [_coverScrubberView _layoutTrimCurtainViews];
+    }
+
+    if (sendAsTelescope)
+    {
+        if (UIInterfaceOrientationIsPortrait([[LegacyComponentsGlobals provider] applicationStatusBarOrientation]))
+        {
+            UIView *parentView = [self.delegate itemViewDidRequestInterfaceView:self];
+
+            _tooltipContainerView = [[TGMenuContainerView alloc] initWithFrame:CGRectMake(0.0f, 0.0f, parentView.frame.size.width, parentView.frame.size.height)];
+            [parentView addSubview:_tooltipContainerView];
+
+            NSMutableArray *actions = [[NSMutableArray alloc] init];
+            bool isRussian = [legacyEffectiveLocalization().code hasPrefix:@"ru"];
+            NSString *text = isRussian ? @"Отправить как видеосообщение,\nне длиннее 60 секунд." : @"Send as a video message,\n60 seconds limit.";
+            [actions addObject:@{@"title":text}];
+            _tooltipContainerView.menuView.forceArrowOnTop = false;
+            _tooltipContainerView.menuView.multiline = true;
+            [_tooltipContainerView.menuView setButtonsAndActions:actions watcherHandle:nil];
+            _tooltipContainerView.menuView.buttonHighlightDisabled = true;
+            [_tooltipContainerView.menuView sizeToFit];
+
+            CGRect iconViewFrame = CGRectMake(12 * 4 + 5, self.frame.size.height - 192.0 - _safeAreaInset.bottom, 40, 40);
+            [_tooltipContainerView showMenuFromRect:iconViewFrame animated:false];
+        }
+
+        if (!self.isPlaying)
+            [self play];
+    }
+
+    [self _mutePlayer:false];
 }
 
 - (void)_mutePlayer:(bool)mute
@@ -1655,7 +1741,7 @@
         UIImageOrientation cropOrientation = (adjustments != nil) ? adjustments.cropOrientation : UIImageOrientationUp;
         CGFloat cropLockedAspectRatio = (adjustments != nil) ? adjustments.cropLockedAspectRatio : 0.0f;
         
-        TGVideoEditAdjustments *updatedAdjustments = [TGVideoEditAdjustments editAdjustmentsWithOriginalSize:_videoDimensions cropRect:cropRect cropOrientation:cropOrientation cropRotation:adjustments.cropRotation cropLockedAspectRatio:cropLockedAspectRatio cropMirrored:adjustments.cropMirrored trimStartValue:_scrubberView.trimStartValue trimEndValue:_scrubberView.trimEndValue toolValues:adjustments.toolValues paintingData:adjustments.paintingData sendAsGif:adjustments.sendAsGif preset:adjustments.preset];
+        TGVideoEditAdjustments *updatedAdjustments = [TGVideoEditAdjustments editAdjustmentsWithOriginalSize:_videoDimensions cropRect:cropRect cropOrientation:cropOrientation cropRotation:adjustments.cropRotation cropLockedAspectRatio:cropLockedAspectRatio cropMirrored:adjustments.cropMirrored trimStartValue:_scrubberView.trimStartValue trimEndValue:_scrubberView.trimEndValue toolValues:adjustments.toolValues paintingData:adjustments.paintingData sendAsGif:adjustments.sendAsGif sendAsTelescope:adjustments.sendAsTelescope preset:adjustments.preset];
         
         [self.item.editingContext setAdjustments:updatedAdjustments forItem:self.item.editableMediaItem];
     }

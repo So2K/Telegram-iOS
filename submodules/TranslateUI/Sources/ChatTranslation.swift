@@ -135,10 +135,40 @@ public func updateChatTranslationStateInteractively(engine: TelegramEngine, peer
 }
 
 
-@available(iOS 12.0, *)
-private let languageRecognizer = NLLanguageRecognizer()
+private func sgLanguageRecognitionSample(text: String, entities: [MessageTextEntity]) -> String {
+    let sample = NSMutableString(string: String(text.prefix(256)))
+    var ranges: [Range<Int>] = []
+    for entity in entities {
+        switch entity.type {
+        case .Pre, .Code, .Url, .Email, .Mention, .Hashtag, .BotCommand:
+            // Telegram's entity offsets are UTF-16, not Swift Character offsets. Clip to
+            // the sample and merge overlaps before deleting so every range remains valid.
+            let lower = entity.range.lowerBound
+            let upper = min(entity.range.upperBound, sample.length)
+            if lower >= 0, lower < upper {
+                ranges.append(lower ..< upper)
+            }
+        default:
+            break
+        }
+    }
+    ranges.sort { $0.lowerBound < $1.lowerBound }
+    var merged: [Range<Int>] = []
+    for range in ranges {
+        if let last = merged.last, range.lowerBound <= last.upperBound {
+            merged[merged.count - 1] = last.lowerBound ..< max(last.upperBound, range.upperBound)
+        } else {
+            merged.append(range)
+        }
+    }
+    for range in merged.reversed() {
+        sample.deleteCharacters(in: NSRange(location: range.lowerBound, length: range.count))
+    }
+    return sample as String
+}
 
-public func translateMessageIds(context: AccountContext, messageIds: [EngineMessage.Id], fromLang: String?, toLang: String) -> Signal<Never, NoError> {
+public func translateMessageIds(context: AccountContext, messageIds: [EngineMessage.Id], fromLang: String?, toLang: String, isCurrent: (() -> Bool)? = nil) -> Signal<Never, NoError> {
+    let accountId = context.account.id.int64
     return context.account.postbox.transaction { transaction -> Signal<Never, NoError> in
         var messageIdsToTranslate: [EngineMessage.Id] = []
         var messageIdsSet = Set<EngineMessage.Id>()
@@ -196,8 +226,23 @@ public func translateMessageIds(context: AccountContext, messageIds: [EngineMess
         default:
             break
         }
-        return context.engine.messages.translateMessages(messageIds: messageIdsToTranslate, fromLang: fromLang, toLang: toLang, enableLocalIfPossible: enableLocalIfPossible)
-        |> `catch` { _ -> Signal<Never, NoError> in
+        // SuperGram: the user can pick on-device Apple Translation (iOS 18+) instead of Telegram's server.
+        // A missing local model or source language is an error, never permission for a server fallback.
+        if sgRequestsOnDeviceChatTranslation() {
+            enableLocalIfPossible = true
+        }
+        let effectiveFromLang: String? = (fromLang?.isEmpty ?? true) ? nil : fromLang
+        let isOnDevice = enableLocalIfPossible
+        let peerIds = Set(messageIdsToTranslate.map(\.peerId))
+        return context.engine.messages.translateMessages(messageIds: messageIdsToTranslate, fromLang: effectiveFromLang, toLang: toLang, enableLocalIfPossible: enableLocalIfPossible)
+        |> deliverOnMainQueue
+        |> `catch` { error -> Signal<Never, NoError> in
+            // Caller state is main-owned. A retained old RPC must not publish into a new translation episode.
+            if let isCurrent, !isCurrent() {
+                return .complete()
+            }
+            // SuperGram: no silent failure and no third-party fallback (SGM-F18); the translate bar explains what happened.
+            sgReportChatTranslationFailure(accountId: accountId, peerIds: peerIds, toLang: toLang, error: error, onDevice: isOnDevice)
             return .complete()
         }
     } |> switchToLatest
@@ -277,34 +322,13 @@ public func chatTranslationState(context: AccountContext, peerId: EnginePeer.Id,
                                             count += 1
                                         }
                                     } else {
-                                        var text = String(message.text.prefix(256))
-                                        if var entities = message.textEntitiesAttribute?.entities.filter({ entity in
-                                            switch entity.type {
-                                            case .Pre, .Code, .Url, .Email, .Mention, .Hashtag, .BotCommand:
-                                                return true
-                                            default:
-                                                return false
-                                            }
-                                        }) {
-                                            entities = entities.sorted(by: { $0.range.lowerBound > $1.range.lowerBound })
-                                            var ranges: [Range<String.Index>] = []
-                                            for entity in entities {
-                                                if entity.range.lowerBound > text.count || entity.range.upperBound > text.count {
-                                                    continue
-                                                }
-                                                ranges.append(text.index(text.startIndex, offsetBy: entity.range.lowerBound) ..< text.index(text.startIndex, offsetBy: entity.range.upperBound))
-                                            }
-                                            for range in ranges {
-                                                if range.upperBound < text.endIndex {
-                                                    text.removeSubrange(range)
-                                                }
-                                            }
-                                        }
+                                        let text = sgLanguageRecognitionSample(text: message.text, entities: message.textEntitiesAttribute?.entities ?? [])
                                         
-                                        if message.text.count < 10 {
+                                        if text.count < 10 {
                                             continue
                                         }
                                         
+                                        let languageRecognizer = sgTranslationLanguageRecognizer()
                                         languageRecognizer.processString(text)
                                         let hypotheses = languageRecognizer.languageHypotheses(withMaximum: 4)
                                         languageRecognizer.reset()

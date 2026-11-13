@@ -99,7 +99,13 @@ extension ChatListSearchPaneKey {
     }
 }
 
-func defaultAvailableSearchPanes(isForum: Bool, hasDownloads: Bool, hasPublicPosts: Bool) -> [ChatListSearchPaneKey] {
+// MARK: Swiftgram
+// SuperGram (W1AUD-11): `hasGlobalPosts` is false for non-Premium accounts. Global post search is gated on the
+// server, and SuperGram removed the "Subscribe to Premium" upsell from the empty state, which left the tab listed
+// and tappable but completely inert — it read as broken rather than unavailable. Hiding the tab is honest; the
+// remaining non-Premium branch in ChatListSearchListPaneNode stays as a safety net for an account whose Premium
+// flag changes while the search UI is open.
+func defaultAvailableSearchPanes(isForum: Bool, hasDownloads: Bool, hasPublicPosts: Bool, hasGlobalPosts: Bool) -> [ChatListSearchPaneKey] {
     var result: [ChatListSearchPaneKey] = []
     if isForum {
         result.append(.topics)
@@ -111,7 +117,7 @@ func defaultAvailableSearchPanes(isForum: Bool, hasDownloads: Bool, hasPublicPos
     }
     result.append(.channels)
     result.append(.apps)
-    if !isForum {
+    if !isForum && hasGlobalPosts {
         result.append(.globalPosts)
     }
     result.append(contentsOf: [.media, .downloads, .links, .files, .music, .voice])
@@ -282,7 +288,7 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
                 return .left
             }
             return [.left, .right]
-        })
+        }, horizontalDirectionLockRatio: 1.8)
         panRecognizer.delegate = self.wrappedGestureRecognizerDelegate
         panRecognizer.delaysTouchesBegan = false
         panRecognizer.cancelsTouchesInView = true
@@ -339,11 +345,11 @@ final class ChatListSearchPaneContainerNode: ASDisplayNode, ASGestureRecognizerD
                 let translation = recognizer.translation(in: self.view)
                 let velocity = recognizer.velocity(in: self.view)
                 var directionIsToRight: Bool?
-                if abs(velocity.x) > 10.0 {
+                if abs(velocity.x) > 10.0 && abs(velocity.x) >= abs(velocity.y) * 1.5 {
                     directionIsToRight = velocity.x < 0.0
                 } else {
-                    if abs(translation.x) > size.width / 2.0 {
-                        directionIsToRight = translation.x > size.width / 2.0
+                    if abs(translation.x) > size.width / 2.0 && abs(translation.x) >= abs(translation.y) * 1.5 {
+                        directionIsToRight = translation.x < 0.0
                     }
                 }
                 

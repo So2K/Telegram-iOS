@@ -34,9 +34,10 @@ public func fetchedMediaResource(
     statsCategory: MediaResourceStatsCategory = .generic,
     reportResultStatus: Bool = false,
     preferBackgroundReferenceRevalidation: Bool = false,
-    continueInBackground: Bool = false
+    continueInBackground: Bool = false,
+    isInteractive: Bool = false
 ) -> Signal<FetchResourceSourceType, FetchResourceError> {
-    return fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: userContentType, reference: reference, ranges: range.flatMap({ [$0] }), statsCategory: statsCategory, reportResultStatus: reportResultStatus, preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation, continueInBackground: continueInBackground)
+    return fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: userContentType, reference: reference, ranges: range.flatMap({ [$0] }), statsCategory: statsCategory, reportResultStatus: reportResultStatus, preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation, continueInBackground: continueInBackground, isInteractive: isInteractive)
 }
 
 public extension MediaResourceStorageLocation {
@@ -79,7 +80,48 @@ public func fetchedMediaResource(
     statsCategory: MediaResourceStatsCategory = .generic,
     reportResultStatus: Bool = false,
     preferBackgroundReferenceRevalidation: Bool = false,
-    continueInBackground: Bool = false
+    continueInBackground: Bool = false,
+    isInteractive: Bool = false
+) -> Signal<FetchResourceSourceType, FetchResourceError> {
+    let signal = fetchedMediaResourceImpl(mediaBox: mediaBox, userLocation: userLocation, userContentType: userContentType, reference: reference, ranges: ranges, statsCategory: statsCategory, reportResultStatus: reportResultStatus, preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation, continueInBackground: continueInBackground, isInteractive: isInteractive)
+
+    // SuperGram: MediaBox keeps the parameters of the first requester of a resource, so a user-initiated
+    // request joining an existing background fetch is announced to the FetchV2 budget while it is alive.
+    // FetchManager marks user-initiated downloads with continueInBackground.
+    if isInteractive || continueInBackground {
+        let resourceId = reference.resource.id.stringRepresentation
+        return Signal { subscriber in
+            let registration = MediaFetchInteractiveRegistry.shared.add(resourceId: resourceId)
+            let disposable = signal.start(next: { value in
+                subscriber.putNext(value)
+            }, error: { error in
+                registration.dispose()
+                subscriber.putError(error)
+            }, completed: {
+                registration.dispose()
+                subscriber.putCompletion()
+            })
+            return ActionDisposable {
+                disposable.dispose()
+                registration.dispose()
+            }
+        }
+    } else {
+        return signal
+    }
+}
+
+private func fetchedMediaResourceImpl(
+    mediaBox: MediaBox,
+    userLocation: MediaResourceUserLocation,
+    userContentType: MediaResourceUserContentType,
+    reference: MediaResourceReference,
+    ranges: [(Range<Int64>, MediaBoxFetchPriority)]?,
+    statsCategory: MediaResourceStatsCategory,
+    reportResultStatus: Bool,
+    preferBackgroundReferenceRevalidation: Bool,
+    continueInBackground: Bool,
+    isInteractive: Bool
 ) -> Signal<FetchResourceSourceType, FetchResourceError> {
     var isRandomAccessAllowed = true
     switch reference {
@@ -108,7 +150,8 @@ public func fetchedMediaResource(
                 info: TelegramCloudMediaResourceFetchInfo(reference: reference, preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation, continueInBackground: continueInBackground),
                 location: location,
                 contentType: userContentType,
-                isRandomAccessAllowed: isRandomAccessAllowed
+                isRandomAccessAllowed: isRandomAccessAllowed,
+                isInteractive: isInteractive
             ))
         }
         return combineLatest(signals)
@@ -121,7 +164,8 @@ public func fetchedMediaResource(
             info: TelegramCloudMediaResourceFetchInfo(reference: reference, preferBackgroundReferenceRevalidation: preferBackgroundReferenceRevalidation, continueInBackground: continueInBackground),
             location: location,
             contentType: userContentType,
-            isRandomAccessAllowed: isRandomAccessAllowed
+            isRandomAccessAllowed: isRandomAccessAllowed,
+            isInteractive: isInteractive
         ), implNext: reportResultStatus)
     }
 }

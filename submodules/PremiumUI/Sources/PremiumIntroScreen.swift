@@ -1985,8 +1985,19 @@ private final class PremiumIntroScreenContentComponent: CombinedComponent {
             let buy = context.component.buy
             let updateIsFocused = context.component.updateIsFocused
             
+            // SuperGram (UPS-14): non-subscribers get no subscription price options. This renders the screen exactly
+            // the way it already renders for subscribers. Paid sign-up (.auth, unauthorized screen context) is a real
+            // purchase flow the user started and is left alone.
+            var superGramSuppressPurchase = false
+            if superGramHidePremiumUpsell, state.isPremium != true, context.component.screenContext.context != nil {
+                superGramSuppressPurchase = true
+                if case .auth = context.component.source {
+                    superGramSuppressPurchase = false
+                }
+            }
+
             let layoutOptions = {
-                if let products = state.products, products.count > 1, state.isPremium == false || (!context.component.justBought && state.canUpgrade) {
+                if !superGramSuppressPurchase, let products = state.products, products.count > 1, state.isPremium == false || (!context.component.justBought && state.canUpgrade) {
                     var optionsItems: [SectionGroupComponent.Item] = []
                     
                     let shortestProductPrice: (Int64, NSDecimalNumber)
@@ -3234,6 +3245,13 @@ private final class PremiumIntroScreenComponent: CombinedComponent {
                 return
             }
             
+            // SuperGram (UPS-14): never open the App Store purchase sheet for a Premium subscription from an
+            // authorized account. The gift-code branch above already returned, and paid sign-up runs on the
+            // unauthorized screen context (`screenContext.context == nil`), so both keep working.
+            if superGramHidePremiumUpsell, self.screenContext.context != nil, self.isPremium != true {
+                return
+            }
+
             guard let inAppPurchaseManager = self.screenContext.inAppPurchaseManager,
                   let premiumProduct = self.products?.first(where: { $0.id == self.selectedProductId }) else {
                 return
@@ -3669,7 +3687,20 @@ private final class PremiumIntroScreenComponent: CombinedComponent {
             let buttonInsets = ContainerViewLayout.concentricInsets(bottomInset: environment.safeInsets.bottom, innerDiameter: 52.0, sideInset: 30.0)
             let bottomPanelPadding: CGFloat = 12.0
             let bottomInset: CGFloat = environment.safeInsets.bottom > 0.0 ? environment.safeInsets.bottom + 5.0 : bottomPanelPadding
-            let bottomPanelHeight: CGFloat = state.isPremium == true && !state.canUpgrade ? bottomInset : bottomPanelPadding + 52.0 + bottomInset
+            // SuperGram (UPS-14): non-subscribers get no "Subscribe for …" button, so the bottom panel collapses the
+            // same way it does for subscribers. Applying an unused gift link and paid sign-up keep their button.
+            var superGramSuppressPurchase = false
+            if superGramHidePremiumUpsell, state.isPremium != true, let superGramAccountContext = context.component.screenContext.context {
+                superGramSuppressPurchase = true
+                if case .auth = context.component.source {
+                    superGramSuppressPurchase = false
+                }
+                if case let .gift(superGramFromId, _, _, superGramGiftCode) = context.component.source, let superGramGiftCode, superGramGiftCode.usedDate == nil, superGramFromId != superGramAccountContext.account.peerId {
+                    superGramSuppressPurchase = false
+                }
+            }
+
+            let bottomPanelHeight: CGFloat = (state.isPremium == true && !state.canUpgrade) || superGramSuppressPurchase ? bottomInset : bottomPanelPadding + 52.0 + bottomInset
                        
             let scrollContent = scrollContent.update(
                 component: ScrollComponent<EnvironmentType>(
@@ -3780,7 +3811,7 @@ private final class PremiumIntroScreenComponent: CombinedComponent {
             }
             
             var buttonIsHidden = true
-            if !state.justBought {
+            if !state.justBought && !superGramSuppressPurchase {
                 if isUnusedGift {
                     buttonIsHidden = false
                 } else if state.canUpgrade {

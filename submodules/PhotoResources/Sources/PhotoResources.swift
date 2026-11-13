@@ -34,6 +34,52 @@ public func largestRepresentationForPhoto(_ photo: TelegramMediaImage) -> Telegr
     return photo.representationForDisplayAtSize(PixelDimensions(width: 1280, height: 1280))
 }
 
+// SuperGram (MEM-09/PERF-DECODE-1): a complete chat photo used to be decoded at its stored resolution -
+// commonly 1280x1280, i.e. ~6.5 MB of pixels - and then scaled down while being drawn into a bubble-sized
+// context. The decoded copy is pure waste: nothing downstream ever reads it at that resolution, because the
+// only output is the DrawingContext, which is `drawingSize * scale` regardless. ImageIO can decode straight
+// to the size we are going to draw at, which removes both the large intermediate allocation and most of the
+// decode work.
+//
+// The orientation transform is deliberately left off: every caller applies the EXIF orientation itself when
+// it draws (`drawImage(context:image:orientation:in:)`), so letting ImageIO rotate too would double it.
+// `maxPixelSize` caps the longer side, and the longer side is the same before and after a rotation, so one
+// value is correct for either orientation. ImageIO never upscales, so a source smaller than the draw size
+// still comes back at its own resolution and nothing gets blurrier than before.
+private func superGramDownsampledImage(_ imageSource: CGImageSource, fittedSize: CGSize, scale: CGFloat?) -> CGImage? {
+    let effectiveScale: CGFloat
+    if let scale = scale, scale > 0.0 {
+        effectiveScale = scale
+    } else {
+        effectiveScale = UIScreenScale
+    }
+    let maxSide = max(fittedSize.width, fittedSize.height) * effectiveScale
+    guard maxSide.isFinite, maxSide >= 1.0 else {
+        return nil
+    }
+    // `Int(_: CGFloat)` traps when the value does not fit, and `imageSize` is layout-provided: a degenerate
+    // or sentinel size (a layout pass that has not measured yet, .greatestFiniteMagnitude as "unbounded")
+    // would crash the decode rather than just producing a silly request. The cap is far above any stored
+    // representation (the largest is 2560) and above the largest drawable CGImage, so it never costs detail.
+    let maxPixelSize = Int(ceil(min(maxSide, 16384.0)))
+
+    let options = NSMutableDictionary()
+    options[kCGImageSourceShouldCache as NSString] = false as NSNumber
+    options[kCGImageSourceCreateThumbnailFromImageAlways as NSString] = true as NSNumber
+    options[kCGImageSourceCreateThumbnailWithTransform as NSString] = false as NSNumber
+    options[kCGImageSourceThumbnailMaxPixelSize as NSString] = maxPixelSize as NSNumber
+    return CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary)
+}
+
+// Falls back to a full-resolution decode when the source cannot produce a thumbnail (some CMYK JPEGs and
+// exotic formats refuse), so behaviour is never worse than before.
+private func superGramDecodeFullSizeImage(_ imageSource: CGImageSource, fittedSize: CGSize, scale: CGFloat?, options: NSMutableDictionary) -> CGImage? {
+    if let image = superGramDownsampledImage(imageSource, fittedSize: fittedSize, scale: scale) {
+        return image
+    }
+    return CGImageSourceCreateImageAtIndex(imageSource, 0, options as CFDictionary)
+}
+
 private let progressiveRangeMap: [(Int, [Int])] = [
     (100, [0]),
     (400, [3]),
@@ -135,9 +181,9 @@ func chatMessagePhotoDatas(mediaBox: MediaBox, userLocation: MediaResourceUserLo
             var fetchDisposable: Disposable?
             if automaticFetch {
                 if autoFetchFullSize {
-                    fetchDisposable = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(progressiveRepresentation.resource), range: (0 ..< Int64(largestByteSize), .default), statsCategory: .image).start()
+                    fetchDisposable = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(progressiveRepresentation.resource), range: (0 ..< Int64(largestByteSize), .default), statsCategory: .image, isInteractive: true).start()
                 } else if useMiniThumbnailIfAvailable {
-                    fetchDisposable = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(progressiveRepresentation.resource), range: (0 ..< Int64(thumbnailByteSize), .default), statsCategory: .image).start()
+                    fetchDisposable = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(progressiveRepresentation.resource), range: (0 ..< Int64(thumbnailByteSize), .default), statsCategory: .image, isInteractive: true).start()
                 }
             }
             
@@ -167,9 +213,9 @@ func chatMessagePhotoDatas(mediaBox: MediaBox, userLocation: MediaResourceUserLo
                 if let _ = decodedThumbnailData {
                     fetchedThumbnail = .complete()
                 } else {
-                    fetchedThumbnail = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(smallestRepresentation.resource), statsCategory: .image)
+                    fetchedThumbnail = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(smallestRepresentation.resource), statsCategory: .image, isInteractive: true)
                 }
-                let fetchedFullSize = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(largestRepresentation.resource), statsCategory: .image)
+                let fetchedFullSize = fetchedMediaResource(mediaBox: mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? .image, reference: photoReference.resourceReference(largestRepresentation.resource), statsCategory: .image, isInteractive: true)
                 
                 let anyThumbnail: [Signal<(MediaResourceData, ChatMessagePhotoQuality), NoError>]
                 if tryAdditionalRepresentations {
@@ -288,7 +334,7 @@ public func chatMessageFileDatas(account: Account, userLocation: MediaResourceUs
             if !fetched, let _ = decodedThumbnailData {
                 fetchedThumbnail = .single(.local)
             } else if let thumbnailResource = thumbnailResource {
-                fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), statsCategory: statsCategoryForFileWithAttributes(fileReference.media.attributes))
+                fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), statsCategory: statsCategoryForFileWithAttributes(fileReference.media.attributes), isInteractive: true)
             } else {
                 fetchedThumbnail = .complete()
             }
@@ -351,7 +397,7 @@ private func chatMessageImageFileThumbnailDatas(account: Account, userLocation: 
         if let decodedThumbnailData = decodedThumbnailData {
             if autoFetchFullSizeThumbnail, let thumbnailRepresentation = thumbnailRepresentation, (thumbnailRepresentation.dimensions.width > 200 || thumbnailRepresentation.dimensions.height > 200) {
                 return Signal { subscriber in
-                    let fetchedDisposable = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video).start()
+                    let fetchedDisposable = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video, isInteractive: true).start()
                     let thumbnailDisposable = account.postbox.mediaBox.resourceData(thumbnailRepresentation.resource, attemptSynchronously: false).start(next: { next in
                         let data: Data? = next.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: [])
                         subscriber.putNext(Tuple(data ?? decodedThumbnailData, nil, false))
@@ -366,7 +412,7 @@ private func chatMessageImageFileThumbnailDatas(account: Account, userLocation: 
                 return .single(Tuple(decodedThumbnailData, nil, false))
             }
         } else if let thumbnailResource = thumbnailResource {
-            let fetchedThumbnail: Signal<FetchResourceSourceType, FetchResourceError> = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource))
+            let fetchedThumbnail: Signal<FetchResourceSourceType, FetchResourceError> = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), isInteractive: true)
             return Signal { subscriber in
                 let fetchedDisposable = fetchedThumbnail.start()
                 let thumbnailDisposable = account.postbox.mediaBox.resourceData(thumbnailResource, pathExtension: pathExtension).start(next: { next in
@@ -402,7 +448,7 @@ private func chatMessageImageFileThumbnailDatas(account: Account, userLocation: 
             if let _ = fileReference.media.immediateThumbnailData {
                 fetchedThumbnail = .complete()
             } else if let thumbnailResource = thumbnailResource {
-                fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource))
+                fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), isInteractive: true)
             } else {
                 fetchedThumbnail = .complete()
             }
@@ -640,7 +686,7 @@ private func chatMessageVideoDatas(postbox: Postbox, userLocation: MediaResource
                             return .never()
                         }
                         return Signal { subscriber in
-                            let fetchedFilePrefix = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: .video, reference: fileReference.withMedia(video).resourceReference(video.resource), range: (preloadData.1, .default), statsCategory: .image).start()
+                            let fetchedFilePrefix = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: .video, reference: fileReference.withMedia(video).resourceReference(video.resource), range: (preloadData.1, .default), statsCategory: .image, isInteractive: true).start()
                             let fetchedFrame = postbox.mediaBox.cachedResourceRepresentation(preloadData.0.media.resource, representation: CachedVideoPrefixFirstFrameRepresentation(prefixLength: Int32(preloadData.1.upperBound)), complete: true, fetch: true, attemptSynchronously: false).start(next: { resourceData in
                                 if resourceData.complete {
                                     if resourceData.complete {
@@ -727,7 +773,7 @@ private func chatMessageVideoDatas(postbox: Postbox, userLocation: MediaResource
             } else if let decodedThumbnailData = fileReference.media.immediateThumbnailData.flatMap(decodeTinyThumbnail) {
                 if autoFetchFullSizeThumbnail, let thumbnailRepresentation = thumbnailRepresentation, (thumbnailRepresentation.dimensions.width > 200 || thumbnailRepresentation.dimensions.height > 200) {
                     thumbnail = Signal { subscriber in
-                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video).start()
+                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video, isInteractive: true).start()
                         let thumbnailDisposable = postbox.mediaBox.resourceData(thumbnailRepresentation.resource, attemptSynchronously: synchronousLoad).start(next: { next in
                             let data: Data? = next.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: [])
                             if let data {
@@ -748,7 +794,7 @@ private func chatMessageVideoDatas(postbox: Postbox, userLocation: MediaResource
             } else if let thumbnailResource = thumbnailResource {
                 if autoFetchFullSizeThumbnail, let thumbnailRepresentation = thumbnailRepresentation, (thumbnailRepresentation.dimensions.width > 200 || thumbnailRepresentation.dimensions.height > 200) {
                     thumbnail = Signal { subscriber in
-                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video).start()
+                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailRepresentation.resource), statsCategory: .video, isInteractive: true).start()
                         let thumbnailDisposable = postbox.mediaBox.resourceData(thumbnailRepresentation.resource, attemptSynchronously: synchronousLoad).start(next: { next in
                             let data: Data? = next.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: [])
                             if let data {
@@ -765,7 +811,7 @@ private func chatMessageVideoDatas(postbox: Postbox, userLocation: MediaResource
                     }
                 } else {
                     thumbnail = Signal { subscriber in
-                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), statsCategory: .video).start()
+                        let fetchedDisposable = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: customUserContentType ?? MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), statsCategory: .video, isInteractive: true).start()
                         let thumbnailDisposable = postbox.mediaBox.resourceData(thumbnailResource, attemptSynchronously: synchronousLoad).start(next: { next in
                             subscriber.putNext(next.size == 0 ? nil : try? Data(contentsOf: URL(fileURLWithPath: next.path), options: []))
                         }, error: subscriber.putError, completed: subscriber.putCompletion)
@@ -895,14 +941,14 @@ public func chatMessagePhotoInternal(photoData: Signal<Tuple4<Data?, Data?, Chat
                 if fullSizeComplete {
                     let options = NSMutableDictionary()
                     options[kCGImageSourceShouldCache as NSString] = false as NSNumber
-                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = CGImageSourceCreateImageAtIndex(imageSource, 0, options as CFDictionary) {
+                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = superGramDecodeFullSizeImage(imageSource, fittedSize: fittedSize, scale: arguments.scale, options: options) {
                         imageOrientation = imageOrientationFromSource(imageSource)
                         fullSizeImage = image
                     }
                 } else {
                     let imageSource = CGImageSourceCreateIncremental(nil)
                     CGImageSourceUpdateData(imageSource, fullSizeData as CFData, fullSizeComplete)
-                    
+
                     let options = NSMutableDictionary()
                     options[kCGImageSourceShouldCache as NSString] = false as NSNumber
                     if let image = CGImageSourceCreateImageAtIndex(imageSource, 0, options as CFDictionary) {
@@ -911,12 +957,12 @@ public func chatMessagePhotoInternal(photoData: Signal<Tuple4<Data?, Data?, Chat
                     }
                 }
             }
-            
+
             var thumbnailImage: CGImage?
             if let thumbnailData = thumbnailData, let imageSource = CGImageSourceCreateWithData(thumbnailData as CFData, nil), let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
                 thumbnailImage = image
             }
-            
+
             if quality == .blurred && fullSizeImage != nil {
                 thumbnailImage = fullSizeImage
                 fullSizeImage = nil
@@ -1079,8 +1125,8 @@ private func chatMessagePhotoThumbnailDatas(account: Account, userLocation: Medi
                 let loadedData: Data? = try? Data(contentsOf: URL(fileURLWithPath: maybeData.path), options: [])
                 return .single(Tuple(nil, loadedData, true))
             } else {
-                let fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(smallestRepresentation.resource), statsCategory: .image)
-                
+                let fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(smallestRepresentation.resource), statsCategory: .image, isInteractive: true)
+
                 let thumbnail = Signal<(Data, Bool)?, NoError> { subscriber in
                     let fetchedDisposable = fetchedThumbnail.start()
                     let thumbnailDisposable = account.postbox.mediaBox.resourceData(smallestRepresentation.resource).start(next: { next in
@@ -1151,7 +1197,7 @@ public func chatMessagePhotoThumbnail(account: Account, userLocation: MediaResou
                 if fullSizeComplete {
                     let options = NSMutableDictionary()
                     options[kCGImageSourceShouldCache as NSString] = false as NSNumber
-                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = CGImageSourceCreateImageAtIndex(imageSource, 0, options as CFDictionary) {
+                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = superGramDecodeFullSizeImage(imageSource, fittedSize: fittedSize, scale: arguments.scale, options: options) {
                         imageOrientation = imageOrientationFromSource(imageSource)
                         fullSizeImage = image
                     }
@@ -1263,7 +1309,7 @@ public func chatMessageVideoThumbnail(account: Account, userLocation: MediaResou
                 if fullSizeComplete {
                     let options = NSMutableDictionary()
                     options[kCGImageSourceShouldCache as NSString] = false as NSNumber
-                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = CGImageSourceCreateImageAtIndex(imageSource, 0, options as CFDictionary) {
+                    if let imageSource = CGImageSourceCreateWithData(fullSizeData as CFData, nil), let image = superGramDecodeFullSizeImage(imageSource, fittedSize: fittedSize, scale: arguments.scale, options: options) {
                         imageOrientation = imageOrientationFromSource(imageSource)
                         fullSizeImage = image
                     }
@@ -1499,8 +1545,8 @@ private func avatarGalleryThumbnailDatas(postbox: Postbox, representations: [Ima
                 let loadedData: Data? = try? Data(contentsOf: URL(fileURLWithPath: maybeData.path), options: [])
                 return .single(Tuple(nil, loadedData, true))
             } else {
-                let fetchedThumbnail = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: representations[smallestIndex].reference, statsCategory: .image)
-                let fetchedFullSize = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: representations[largestIndex].reference, statsCategory: .image)
+                let fetchedThumbnail = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: representations[smallestIndex].reference, statsCategory: .image, isInteractive: true)
+                let fetchedFullSize = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: representations[largestIndex].reference, statsCategory: .image, isInteractive: true)
                 
                 let thumbnail = Signal<Data?, NoError> { subscriber in
                     let fetchedDisposable = fetchedThumbnail.start()
@@ -2015,9 +2061,13 @@ public func chatMessagePhotoStatus(context: AccountContext, messageId: MessageId
     }
 }
 
-public func standaloneChatMessagePhotoInteractiveFetched(account: Account, userLocation: MediaResourceUserLocation, photoReference: ImageMediaReference) -> Signal<FetchResourceSourceType, FetchResourceError> {
+// SuperGram: `isInteractive` selects the FetchV2 interactive part lane instead of the much smaller background
+// one. It defaults to `true` on these `…InteractiveFetched` entry points because every caller is a view that
+// is on screen and waiting for the bytes — instant-view images, web-page previews, action bubbles, gallery
+// items. A caller that is genuinely preloading for later passes `false`.
+public func standaloneChatMessagePhotoInteractiveFetched(account: Account, userLocation: MediaResourceUserLocation, photoReference: ImageMediaReference, isInteractive: Bool = true) -> Signal<FetchResourceSourceType, FetchResourceError> {
     if let largestRepresentation = largestRepresentationForPhoto(photoReference.media) {
-        return fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(largestRepresentation.resource), statsCategory: .image, reportResultStatus: true)
+        return fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(largestRepresentation.resource), statsCategory: .image, reportResultStatus: true, isInteractive: isInteractive)
         |> mapToSignal { type -> Signal<FetchResourceSourceType, FetchResourceError> in
             return .single(type)
         }
@@ -2026,14 +2076,14 @@ public func standaloneChatMessagePhotoInteractiveFetched(account: Account, userL
     }
 }
 
-public func chatMessagePhotoInteractiveFetched(context: AccountContext, userLocation: MediaResourceUserLocation, photoReference: ImageMediaReference, displayAtSize: Int?, storeToDownloadsPeerId: EnginePeer.Id?) -> Signal<Never, NoError> {
+public func chatMessagePhotoInteractiveFetched(context: AccountContext, userLocation: MediaResourceUserLocation, photoReference: ImageMediaReference, displayAtSize: Int?, storeToDownloadsPeerId: EnginePeer.Id?, isInteractive: Bool = true) -> Signal<Never, NoError> {
     if let largestRepresentation = largestRepresentationForPhoto(photoReference.media) {
         var fetchRange: (Range<Int64>, MediaBoxFetchPriority)?
         if let displayAtSize = displayAtSize, let range = representationFetchRangeForDisplayAtSize(representation: largestRepresentation, dimension: displayAtSize) {
             fetchRange = (range, .default)
         }
 
-        return fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(largestRepresentation.resource), range: fetchRange, statsCategory: .image, reportResultStatus: true)
+        return fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(largestRepresentation.resource), range: fetchRange, statsCategory: .image, reportResultStatus: true, isInteractive: isInteractive)
         |> mapToSignal { type -> Signal<FetchResourceSourceType, FetchResourceError> in
             if case .remote = type, let peerId = storeToDownloadsPeerId {
                 return storeDownloadedMedia(storeManager: context.downloadedMediaStoreManager, media: photoReference.abstract, peerId: peerId)
@@ -2059,8 +2109,8 @@ public func chatMessagePhotoCancelInteractiveFetch(account: Account, photoRefere
     }
 }
 
-public func chatMessageWebFileInteractiveFetched(account: Account, userLocation: MediaResourceUserLocation, image: TelegramMediaWebFile) -> Signal<FetchResourceSourceType, FetchResourceError> {
-    return fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: .standalone(resource: image.resource), statsCategory: .image)
+public func chatMessageWebFileInteractiveFetched(account: Account, userLocation: MediaResourceUserLocation, image: TelegramMediaWebFile, isInteractive: Bool = true) -> Signal<FetchResourceSourceType, FetchResourceError> {
+    return fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: .standalone(resource: image.resource), statsCategory: .image, isInteractive: isInteractive)
 }
 
 public func chatMessageWebFileCancelInteractiveFetch(account: Account, image: TelegramMediaWebFile) {
@@ -2089,7 +2139,7 @@ public func chatWebpageSnippetFileData(account: Account, userLocation: MediaReso
                 userContentType = .image
             }
             
-            disposable.add(fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: userContentType, reference: mediaReference.resourceReference(resource)).start())
+            disposable.add(fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: userContentType, reference: mediaReference.resourceReference(resource), isInteractive: true).start())
         }
         return disposable
     }
@@ -2110,7 +2160,7 @@ public func chatWebpageSnippetPhotoData(account: Account, userLocation: MediaRes
             }, completed: {
                 subscriber.putCompletion()
             }))
-            disposable.add(fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(closestRepresentation.resource)).start())
+            disposable.add(fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: .image, reference: photoReference.resourceReference(closestRepresentation.resource), isInteractive: true).start())
             return disposable
         }
     } else {
@@ -2289,8 +2339,8 @@ private func chatSecretMessageVideoData(account: Account, userLocation: MediaRes
     if let smallestRepresentation = smallestImageRepresentation(fileReference.media.previewRepresentations) {
         let thumbnailResource = smallestRepresentation.resource
         
-        let fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource))
-        
+        let fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: userLocation, userContentType: MediaResourceUserContentType(file: fileReference.media), reference: fileReference.resourceReference(thumbnailResource), isInteractive: true)
+
         let thumbnail = Signal<Data?, NoError> { subscriber in
             let fetchedDisposable = fetchedThumbnail.start()
             let thumbnailDisposable = account.postbox.mediaBox.resourceData(thumbnailResource, attemptSynchronously: synchronousLoad).start(next: { next in
@@ -2743,9 +2793,9 @@ private func avatarGalleryPhotoDatas(account: Account, fileReference: FileMediaR
                 if let _ = decodedThumbnailData {
                     fetchedThumbnail = .complete()
                 } else {
-                    fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: .other, userContentType: .avatar, reference: representations[smallestIndex].reference)
+                    fetchedThumbnail = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: .other, userContentType: .avatar, reference: representations[smallestIndex].reference, isInteractive: true)
                 }
-                let fetchedFullSize = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: .other, userContentType: .avatar, reference: representations[largestIndex].reference)
+                let fetchedFullSize = fetchedMediaResource(mediaBox: account.postbox.mediaBox, userLocation: .other, userContentType: .avatar, reference: representations[largestIndex].reference, isInteractive: true)
                 
                 let thumbnail = Signal<Data?, NoError> { subscriber in
                     if let decodedThumbnailData = decodedThumbnailData {
@@ -3129,7 +3179,7 @@ public func playerAlbumArt(engine: TelegramEngine, fileReference: FileMediaRefer
         }
 
         let thumbnailResource = smallestRepresentation.resource
-        let fetchedThumbnail = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: fileReference.resourceReference(thumbnailResource))
+        let fetchedThumbnail = fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: .other, userContentType: .image, reference: fileReference.resourceReference(thumbnailResource), isInteractive: true)
 
         return Signal<Data?, NoError> { subscriber in
             let fetchedDisposable = fetchedThumbnail.start()

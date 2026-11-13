@@ -38,8 +38,13 @@ private final class RequestData {
     let deserializeResponse: (Buffer) -> Any?
     let completed: (Any, NetworkResponseInfo) -> Void
     let error: (MTRpcError, Double) -> Void
-    
-    init(id: Int32, consumerId: Int64, resourceId: String?, target: MultiplexedRequestTarget, functionDescription: FunctionDescription, payload: Buffer, tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool, onFloodWaitError: ((String) -> Void)?, expectedResponseSize: Int32?, deserializeResponse: @escaping (Buffer) -> Any?, completed: @escaping (Any, NetworkResponseInfo) -> Void, error: @escaping (MTRpcError, Double) -> Void) {
+    // SuperGram: request lane (-1 background, 0 default, 1 elevated, 2 maximum); effectivePriority also includes pushPriority
+    let priority: Int
+    var effectivePriority: Int
+    var isStarted: Bool = false
+    var isCancelled: Bool = false
+
+    init(id: Int32, consumerId: Int64, resourceId: String?, target: MultiplexedRequestTarget, functionDescription: FunctionDescription, payload: Buffer, tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool, onFloodWaitError: ((String) -> Void)?, expectedResponseSize: Int32?, priority: Int, deserializeResponse: @escaping (Buffer) -> Any?, completed: @escaping (Any, NetworkResponseInfo) -> Void, error: @escaping (MTRpcError, Double) -> Void) {
         self.id = id
         self.consumerId = consumerId
         self.resourceId = resourceId
@@ -51,6 +56,8 @@ private final class RequestData {
         self.onFloodWaitError = onFloodWaitError
         self.expectedResponseSize = expectedResponseSize
         self.payload = payload
+        self.priority = priority
+        self.effectivePriority = priority
         self.deserializeResponse = deserializeResponse
         self.completed = completed
         self.error = error
@@ -95,6 +102,16 @@ struct NetworkResponseInfo {
 private final class MultiplexedRequestManagerContext {
     final class RequestManagerPriorityContext {
         var resourceCounters: [String: Bag<Int>] = [:]
+        // SuperGram: max pushed priority per resource, maintained on push/pop instead of per comparison
+        var resourceMaxPriorities: [String: Int] = [:]
+
+        func updateMaxPriority(resourceId: String) {
+            if let counters = self.resourceCounters[resourceId], let maxPriority = counters.copyItems().max() {
+                self.resourceMaxPriorities[resourceId] = maxPriority
+            } else {
+                self.resourceMaxPriorities.removeValue(forKey: resourceId)
+            }
+        }
     }
     
     private let queue: Queue
@@ -137,41 +154,62 @@ private final class MultiplexedRequestManagerContext {
         }
         
         let index = counters.add(priority)
-        
+        self.priorityContext.updateMaxPriority(resourceId: resourceId)
+        self.updateQueuedRequestPriorities(resourceId: resourceId)
+
         self.updateState()
-        
+
         return ActionDisposable { [weak self, weak counters] in
             queue.async {
                 guard let `self` = self else {
                     return
                 }
-                
+
                 if let current = self.priorityContext.resourceCounters[resourceId], current === counters {
                     current.remove(index)
                     if current.isEmpty {
                         self.priorityContext.resourceCounters.removeValue(forKey: resourceId)
                     }
+                    self.priorityContext.updateMaxPriority(resourceId: resourceId)
+                    self.updateQueuedRequestPriorities(resourceId: resourceId)
                     self.updateState()
                 }
             }
         }
     }
+
+    private func effectivePriority(resourceId: String?, priority: Int) -> Int {
+        if !self.priorityContext.resourceMaxPriorities.isEmpty, let resourceId, let pushedPriority = self.priorityContext.resourceMaxPriorities[resourceId], pushedPriority > priority {
+            return pushedPriority
+        }
+        return priority
+    }
+
+    private func updateQueuedRequestPriorities(resourceId: String) {
+        for request in self.queuedRequests {
+            if request.resourceId == resourceId {
+                request.effectivePriority = self.effectivePriority(resourceId: resourceId, priority: request.priority)
+            }
+        }
+    }
     
-    func request(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, (Buffer) -> Any?), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?, completed: @escaping (Any, NetworkResponseInfo) -> Void, error: @escaping (MTRpcError, Double) -> Void) -> Disposable {
+    func request(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, (Buffer) -> Any?), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?, priority: Int = 0, completed: @escaping (Any, NetworkResponseInfo) -> Void, error: @escaping (MTRpcError, Double) -> Void) -> Disposable {
         let targetKey = MultiplexedRequestTargetKey(target: target, continueInBackground: continueInBackground)
-        
+
         let requestId = self.nextId
         self.nextId += 1
-        self.queuedRequests.append(RequestData(id: requestId, consumerId: consumerId, resourceId: resourceId, target: target, functionDescription: data.0, payload: data.1, tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, deserializeResponse: { buffer in
+        let requestData = RequestData(id: requestId, consumerId: consumerId, resourceId: resourceId, target: target, functionDescription: data.0, payload: data.1, tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, priority: priority, deserializeResponse: { buffer in
             return data.2(buffer)
         }, completed: { result, info in
             completed(result, info)
         }, error: { e, timestamp in
             error(e, timestamp)
-        }))
-        
+        })
+        requestData.effectivePriority = self.effectivePriority(resourceId: resourceId, priority: priority)
+        self.queuedRequests.append(requestData)
+
         self.updateState()
-        
+
         let queue = self.queue
         return ActionDisposable { [weak self] in
             queue.async {
@@ -180,6 +218,7 @@ private final class MultiplexedRequestManagerContext {
                 }
                 for i in 0 ..< strongSelf.queuedRequests.count {
                     if strongSelf.queuedRequests[i].id == requestId {
+                        strongSelf.queuedRequests[i].isCancelled = true
                         strongSelf.queuedRequests.remove(at: i)
                         break
                     }
@@ -203,55 +242,111 @@ private final class MultiplexedRequestManagerContext {
     }
     
     private func updateState() {
-        let maxRequestsPerWorker = 3
-        let maxWorkersPerTarget = 4
-        
-        for request in self.queuedRequests.sorted(by: { lhs, rhs in
-            let lhsPriority = lhs.resourceId.flatMap { id in
-                if let counters = self.priorityContext.resourceCounters[id] {
-                    return counters.copyItems().max() ?? 0
-                } else {
-                    return 0
-                }
-            } ?? 0
-            let rhsPriority = rhs.resourceId.flatMap { id in
-                if let counters = self.priorityContext.resourceCounters[id] {
-                    return counters.copyItems().max() ?? 0
-                } else {
-                    return 0
-                }
-            } ?? 0
-            
-            if lhsPriority != rhsPriority {
-                return lhsPriority > rhsPriority
+        // SuperGram: faster download speed modes use more parallel requests per connection and more
+        // connections per datacenter (fewer round-trip bottlenecks on high-latency links)
+        let maxRequestsPerWorker: Int
+        let maxWorkersPerTarget: Int
+        switch MediaDownloadRuntimeSettings.speedMode {
+        case .standard:
+            maxRequestsPerWorker = 3
+            maxWorkersPerTarget = 4
+        case .fast:
+            maxRequestsPerWorker = 4
+            maxWorkersPerTarget = 4
+        case .maximum:
+            maxRequestsPerWorker = 5
+            maxWorkersPerTarget = 6
+        }
+        // SuperGram: request slots of every target that background-lane requests may not occupy,
+        // so playback and user-initiated parts never wait behind a full target of preload parts
+        let reservedNonBackgroundRequestsPerTarget = maxRequestsPerWorker
+
+        if self.queuedRequests.isEmpty {
+            self.checkEmptyContexts()
+            return
+        }
+
+        // SuperGram: priority lanes instead of sorting the whole queue on every event. Requests are kept in FIFO
+        // (id) order; walk the queue once per distinct priority, highest first, skipping saturated targets.
+        var priorityLevels: [Int] = []
+        for request in self.queuedRequests {
+            if !priorityLevels.contains(request.effectivePriority) {
+                priorityLevels.append(request.effectivePriority)
             }
-            
-            return lhs.id < rhs.id
-        }) {
-            let targetKey = MultiplexedRequestTargetKey(target: request.target, continueInBackground: request.continueInBackground)
-            
-            if self.targetContexts[targetKey] == nil {
-                self.targetContexts[targetKey] = []
-            }
-            var selectedContext: RequestTargetContext?
-            for targetContext in self.targetContexts[targetKey]! {
-                if targetContext.requests.count < maxRequestsPerWorker {
-                    selectedContext = targetContext
-                    break
+        }
+        if priorityLevels.count > 1 {
+            priorityLevels.sort(by: >)
+        }
+
+        var saturatedTargets = Set<MultiplexedRequestTargetKey>()
+        // SuperGram: targets for which no worker could ever be created — see the takeWorker failure below.
+        var unroutableTargets = Set<MultiplexedRequestTargetKey>()
+        var startedRequestCount = 0
+
+        for priorityLevel in priorityLevels {
+            for request in self.queuedRequests {
+                if request.effectivePriority != priorityLevel || request.isStarted || request.isCancelled {
+                    continue
                 }
-            }
-            if selectedContext == nil && self.targetContexts[targetKey]!.count < maxWorkersPerTarget {
-                if let worker = self.takeWorker(request.target, request.tag, request.continueInBackground) {
-                    let contextId = self.nextId
-                    self.nextId += 1
-                    let targetContext = RequestTargetContext(id: contextId, worker: worker)
-                    self.targetContexts[targetKey]!.append(targetContext)
-                    selectedContext = targetContext
-                } else {
-                    Logger.shared.log("MultiplexedRequestManager", "couldn't take worker")
+
+                let targetKey = MultiplexedRequestTargetKey(target: request.target, continueInBackground: request.continueInBackground)
+                if !saturatedTargets.isEmpty && saturatedTargets.contains(targetKey) {
+                    continue
                 }
-            }
-            if let selectedContext = selectedContext {
+
+                if self.targetContexts[targetKey] == nil {
+                    self.targetContexts[targetKey] = []
+                }
+
+                if priorityLevel < 0 {
+                    var executingCount = 0
+                    for targetContext in self.targetContexts[targetKey]! {
+                        executingCount += targetContext.requests.count
+                    }
+                    if executingCount >= maxRequestsPerWorker * maxWorkersPerTarget - reservedNonBackgroundRequestsPerTarget {
+                        // Levels are visited in descending order, so every remaining request for this target is background too
+                        saturatedTargets.insert(targetKey)
+                        continue
+                    }
+                }
+
+                var selectedContext: RequestTargetContext?
+                for targetContext in self.targetContexts[targetKey]! {
+                    if targetContext.requests.count < maxRequestsPerWorker {
+                        selectedContext = targetContext
+                        break
+                    }
+                }
+                if selectedContext == nil && self.targetContexts[targetKey]!.count < maxWorkersPerTarget {
+                    if let worker = self.takeWorker(request.target, request.tag, request.continueInBackground) {
+                        let contextId = self.nextId
+                        self.nextId += 1
+                        let targetContext = RequestTargetContext(id: contextId, worker: worker)
+                        self.targetContexts[targetKey]!.append(targetContext)
+                        selectedContext = targetContext
+                    } else {
+                        Logger.shared.log("MultiplexedRequestManager", "couldn't take worker for \(request.target)")
+                        // SuperGram: takeWorker only returns nil for a target that can never be routed
+                        // (datacenterId == 0 — a malformed resource) or for a Network that is being torn down.
+                        // Leaving the request in queuedRequests meant it sat there for the rest of the session:
+                        // no response, no error, and the FetchV2 part that issued it held its budget slot the
+                        // whole time, so the media item spun forever. Fail it instead — the fetch then reports
+                        // an error, MediaBox resets cleanly and FetchManager retries with backoff.
+                        // Only when there is no worker at all for this target: if some already exist they are
+                        // merely full, and the request will be served on a later pass.
+                        if self.targetContexts[targetKey]!.isEmpty {
+                            unroutableTargets.insert(targetKey)
+                        }
+                    }
+                }
+                guard let selectedContext = selectedContext else {
+                    saturatedTargets.insert(targetKey)
+                    continue
+                }
+
+                request.isStarted = true
+                startedRequestCount += 1
+
                 let disposable = MetaDisposable()
                 let requestId = request.id
                 selectedContext.requests.append(ExecutingRequestData(requestId: requestId, disposable: disposable))
@@ -289,14 +384,38 @@ private final class MultiplexedRequestManagerContext {
                         strongSelf.updateState()
                     }
                 }))
-                
-                if let requestIndex = self.queuedRequests.firstIndex(where: { $0 === request }) {
-                    self.queuedRequests.remove(at: requestIndex)
-                }
-                continue
             }
         }
-        
+
+        if startedRequestCount != 0 {
+            self.queuedRequests.removeAll(where: { $0.isStarted })
+        }
+
+        if !unroutableTargets.isEmpty {
+            var failedRequests: [RequestData] = []
+            for request in self.queuedRequests {
+                if request.isStarted || request.isCancelled {
+                    continue
+                }
+                if unroutableTargets.contains(MultiplexedRequestTargetKey(target: request.target, continueInBackground: request.continueInBackground)) {
+                    failedRequests.append(request)
+                }
+            }
+            if !failedRequests.isEmpty {
+                let failedIds = Set(failedRequests.map({ $0.id }))
+                self.queuedRequests.removeAll(where: { failedIds.contains($0.id) })
+
+                let timestamp = CFAbsoluteTimeGetCurrent()
+                // Dispatched rather than called inline: the error handlers run consumer code that may call
+                // straight back into updateState(), and this is the middle of updateState().
+                self.queue.justDispatch {
+                    for request in failedRequests {
+                        request.error(MTRpcError(errorCode: 500, errorDescription: "NETWORK_NO_WORKER"), timestamp)
+                    }
+                }
+            }
+        }
+
         self.checkEmptyContexts()
     }
     
@@ -356,13 +475,13 @@ final class MultiplexedRequestManager {
         return disposable
     }
     
-    func request<T>(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?) -> Signal<T, MTRpcError> {
+    func request<T>(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?, priority: Int = 0) -> Signal<T, MTRpcError> {
         return Signal { subscriber in
             let disposable = MetaDisposable()
             self.context.with { context in
                 disposable.set(context.request(to: target, consumerId: consumerId, resourceId: resourceId, data: (data.0, data.1, { buffer in
                     return data.2.parse(buffer)
-                }), tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, completed: { result, _ in
+                }), tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, priority: priority, completed: { result, _ in
                     if let result = result as? T {
                         subscriber.putNext(result)
                         subscriber.putCompletion()
@@ -377,13 +496,13 @@ final class MultiplexedRequestManager {
         }
     }
     
-    func requestWithAdditionalInfo<T>(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?) -> Signal<(T, NetworkResponseInfo), (MTRpcError, Double)> {
+    func requestWithAdditionalInfo<T>(to target: MultiplexedRequestTarget, consumerId: Int64, resourceId: String?, data: (FunctionDescription, Buffer, DeserializeFunctionResponse<T>), tag: MediaResourceFetchTag?, continueInBackground: Bool, automaticFloodWait: Bool = true, onFloodWaitError: ((String) -> Void)? = nil, expectedResponseSize: Int32?, priority: Int = 0) -> Signal<(T, NetworkResponseInfo), (MTRpcError, Double)> {
         return Signal { subscriber in
             let disposable = MetaDisposable()
             self.context.with { context in
                 disposable.set(context.request(to: target, consumerId: consumerId, resourceId: resourceId, data: (data.0, data.1, { buffer in
                     return data.2.parse(buffer)
-                }), tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, completed: { result, info in
+                }), tag: tag, continueInBackground: continueInBackground, automaticFloodWait: automaticFloodWait, onFloodWaitError: onFloodWaitError, expectedResponseSize: expectedResponseSize, priority: priority, completed: { result, info in
                     if let result = result as? T {
                         subscriber.putNext((result, info))
                         subscriber.putCompletion()

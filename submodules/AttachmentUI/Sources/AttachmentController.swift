@@ -761,10 +761,11 @@ public class AttachmentController: ViewController, MinimizableController {
                         return
                     }
 
-                    guard let caption = await mediaPickerContext.caption.get() else {
-                        return
-                    }
-                    if caption.length == 0 {
+                    let captionText = await (mediaPickerContext.caption
+                    |> map { caption -> String in
+                        return caption?.string ?? ""
+                    }).get()
+                    if captionText.isEmpty {
                         return
                     }
 
@@ -789,7 +790,7 @@ public class AttachmentController: ViewController, MinimizableController {
                             },
                             sendContextActions: nil
                         ),
-                        inputText: TextWithEntities(text: caption.string, entities: []),
+                        inputText: TextWithEntities(text: captionText, entities: []),
                         copyResult: nil,
                         translateChat: nil
                     )
@@ -1117,7 +1118,7 @@ public class AttachmentController: ViewController, MinimizableController {
                     let startPosition = targetPosition.offsetBy(dx: 0.0, dy: layout.size.height)
 
                     self.position = startPosition
-                    let transition = ContainedViewLayoutTransition.animated(duration: 0.4, curve: .spring)
+                    let transition = ContainedViewLayoutTransition.animated(duration: 0.32, curve: .spring)
                     transition.animateView(allowUserInteraction: true, {
                         self.position = targetPosition
                     }, completion: {  _ in
@@ -1553,7 +1554,12 @@ public class AttachmentController: ViewController, MinimizableController {
         self.style = style
         self.chatLocation = chatLocation
         self.isScheduledMessages = isScheduledMessages
-        self.buttons = buttons
+        // SuperGram: no unsolicited "Gift" tab in the attachment menu (UPS-02); kept when the menu is opened for a gift explicitly
+        if superGramHidePremiumUpsell && initialButton != .gift {
+            self.buttons = buttons.filter { $0 != .gift }
+        } else {
+            self.buttons = buttons
+        }
         self.initialButton = initialButton
         self.fromMenu = fromMenu
         self.hasTextInput = hasTextInput

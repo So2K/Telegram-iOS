@@ -3,6 +3,42 @@ import Postbox
 import SwiftSignalKit
 import TelegramApi
 
+// SuperGram: compile-time kill switch for every sponsored/promo data path (public so UI modules can skip ad contexts).
+public let telegramSponsoredContentEnabled = false
+
+// SuperGram: runtime switch for channel read-time analytics (`messages.reportReadMetrics`).
+// Key "sgDisableReadMetrics" (default true) is read without SGSimpleSettings, cached and refreshed on UserDefaults changes.
+public enum SuperGramReadMetricsSettings {
+    private final class Storage {
+        let isDisabled: Atomic<Bool>
+        private var observer: NSObjectProtocol?
+
+        init() {
+            let isDisabled = Atomic<Bool>(value: Storage.readIsDisabled())
+            self.isDisabled = isDisabled
+            self.observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil, using: { _ in
+                let _ = isDisabled.swap(Storage.readIsDisabled())
+            })
+        }
+
+        deinit {
+            if let observer = self.observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        static func readIsDisabled() -> Bool {
+            return UserDefaults.standard.object(forKey: "sgDisableReadMetrics") as? Bool ?? true
+        }
+    }
+
+    private static let storage = Storage()
+
+    public static var isReportingDisabled: Bool {
+        return self.storage.isDisabled.with { $0 }
+    }
+}
+
 private class AdMessagesHistoryContextImpl {
     final class CachedMessage: Equatable, Codable {
         enum CodingKeys: String, CodingKey {
@@ -451,7 +487,11 @@ private class AdMessagesHistoryContextImpl {
 
         self.stateValue = State(interPostInterval: nil, messages: [])
 
-        if messageId == nil {
+        if !telegramSponsoredContentEnabled {
+            // SuperGram: didSet does not run in init and activate() assigns an equal value, so feed the
+            // promise explicitly; otherwise `state` never emits and take(1)/combineLatest consumers hang.
+            self.state.set(.single(State(interPostInterval: nil, startDelay: nil, betweenDelay: nil, messages: [])))
+        } else if messageId == nil {
             self.state.set(CachedState.getCached(postbox: account.postbox, peerId: peerId)
             |> mapToSignal { cachedState -> Signal<State, NoError> in
                 if let cachedState = cachedState, cachedState.timestamp >= Int32(Date().timeIntervalSince1970) - 5 * 60 {
@@ -481,6 +521,11 @@ private class AdMessagesHistoryContextImpl {
             return
         }
         self.isActivated = true
+
+        guard telegramSponsoredContentEnabled else {
+            // SuperGram: the empty state was already emitted from init.
+            return
+        }
         
         let peerId = self.peerId
         let accountPeerId = self.account.peerId
@@ -590,6 +635,9 @@ private class AdMessagesHistoryContextImpl {
     }
 
     func markAsSeen(opaqueId: Data) {
+        guard telegramSponsoredContentEnabled else {
+            return
+        }
         let signal: Signal<Never, NoError> = self.account.network.request(Api.functions.messages.viewSponsoredMessage(randomId: Buffer(data: opaqueId)))
         |> `catch` { _ -> Signal<Api.Bool, NoError> in
             return .single(.boolFalse)
@@ -686,6 +734,9 @@ public class AdMessagesHistoryContext {
 
 
 func _internal_markAdAction(account: Account, opaqueId: Data, media: Bool, fullscreen: Bool) {
+    guard telegramSponsoredContentEnabled else {
+        return
+    }
     var flags: Int32 = 0
     if media {
         flags |= (1 << 0)
@@ -702,6 +753,9 @@ func _internal_markAdAction(account: Account, opaqueId: Data, media: Bool, fulls
 }
 
 func _internal_markAdAsSeen(account: Account, opaqueId: Data) {
+    guard telegramSponsoredContentEnabled else {
+        return
+    }
     let signal = account.network.request(Api.functions.messages.viewSponsoredMessage(randomId: Buffer(data: opaqueId)))
     |> `catch` { _ -> Signal<Api.Bool, NoError> in
         return .single(.boolFalse)

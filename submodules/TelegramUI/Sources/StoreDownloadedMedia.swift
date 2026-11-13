@@ -77,7 +77,14 @@ private final class DownloadedMediaStoreContext {
                 guard let peer = peer else {
                     return false
                 }
-                
+
+                // SuperGram: with sgAllowSaveProtectedContent on, auto-save follows the user's settings in protected (noforwards) chats.
+                // Secret chats and self-destructing / view-once media are never stored (see also storeDownloadedMedia).
+                if case let .message(message, _) = media, message.isSecret == true {
+                    return false
+                }
+                let allowSaveProtectedContent = SuperGramContentProtection.allowSaveProtectedContent
+
                 let configuration: MediaAutoSaveConfiguration
                 if let exception = storeSettings.exceptions.first(where: { $0.id == peerId }) {
                     configuration = exception.configuration
@@ -85,7 +92,7 @@ private final class DownloadedMediaStoreContext {
                     let peerTypeValue: MediaAutoSaveSettings.PeerType
                     switch peer {
                     case .user:
-                        if let cachedUserData = cachedData as? CachedUserData, cachedUserData.flags.contains(.copyProtectionEnabled) || cachedUserData.flags.contains(.myCopyProtectionEnabled) {
+                        if !allowSaveProtectedContent, let cachedUserData = cachedData as? CachedUserData, cachedUserData.flags.contains(.copyProtectionEnabled) || cachedUserData.flags.contains(.myCopyProtectionEnabled) {
                             return false
                         }
                         peerTypeValue = .users
@@ -94,7 +101,7 @@ private final class DownloadedMediaStoreContext {
                     case .legacyGroup:
                         peerTypeValue = .groups
                     case let .channel(channel):
-                        if channel.flags.contains(.copyProtectionEnabled) {
+                        if !allowSaveProtectedContent && channel.flags.contains(.copyProtectionEnabled) {
                             return false
                         }
                         

@@ -718,6 +718,11 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
         }
     }
     let topVisibleMessageRange = Promise<ChatTopVisibleMessageRange?>(nil)
+
+    // SuperGram: synchronous read of the visible range for the chat history ("History" button) when leaving a chat
+    var superGramCurrentTopVisibleMessageRange: ChatTopVisibleMessageRange? {
+        return self.topVisibleMessageRangeValue
+    }
     
     var isSelectionGestureEnabled = true
 
@@ -762,6 +767,8 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
     private let clientId: Atomic<Int32>
     
     private var translationLang: (fromLang: String?, toLang: String)?
+    private var translationRequestGeneration: Int = 0
+    private var translationRequestIntent: (fromLang: String, toLang: String)?
     
     private var allowDustEffect: Bool = true
     private var dustEffectLayer: DustEffectLayer?
@@ -816,7 +823,9 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
         self.selectedMessages = selectedMessages
         self.messageTransitionNode = messageTransitionNode
         self.mode = mode
-        
+
+        // MARK: Swiftgram
+        if SuperGramChatHistorySettings.disableSnapDeletionEffect { self.allowDustEffect = false }
         if let data = context.currentAppConfiguration.with({ $0 }).data {
             if let _ = data["ios_killswitch_disable_unread_alignment"] {
                 self.enableUnreadAlignment = false
@@ -974,9 +983,20 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
             context?.account.viewTracker.refreshStoriesForMessageIds(messageIds: Set(messageIds.map(\.messageId)))
         }
         self.translationProcessingManager.process = { [weak self, weak context] messageIds in
-            if let context, let translationLang = self?.translationLang {
-                let _ = translateMessageIds(context: context, messageIds: Array(messageIds.map(\.messageId)), fromLang: translationLang.fromLang, toLang: translationLang.toLang).startStandalone()
+            guard let self, let context, let translationLang = self.translationLang,
+                  self.translationRequestIntent?.fromLang == translationLang.fromLang,
+                  self.translationRequestIntent?.toLang == translationLang.toLang else {
+                return
             }
+            let generation = self.translationRequestGeneration
+            let _ = translateMessageIds(context: context, messageIds: Array(messageIds.map(\.messageId)), fromLang: translationLang.fromLang, toLang: translationLang.toLang, isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.translationRequestGeneration == generation
+                    && self.translationRequestIntent?.fromLang == translationLang.fromLang
+                    && self.translationRequestIntent?.toLang == translationLang.toLang
+                    && self.translationLang?.fromLang == translationLang.fromLang
+                    && self.translationLang?.toLang == translationLang.toLang
+            }).startStandalone()
         }
         self.factCheckProcessingManager.process = { [weak context] messageIds in
             if let context {
@@ -998,7 +1018,8 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
             guard let strongSelf = self else {
                 return
             }
-            if strongSelf.canReadHistoryValue && !strongSelf.suspendReadingReactions && !strongSelf.context.sharedContext.immediateExperimentalUISettings.skipReadHistory {
+            // SuperGram: "sgSkipReadReceipts" extends the debug skipReadHistory switch to release builds (never in secret chats).
+            if strongSelf.canReadHistoryValue && !strongSelf.suspendReadingReactions && !strongSelf.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: strongSelf.chatLocation.peerId) {
                 strongSelf.context.account.viewTracker.updateMarkReactionsAndVotesSeenForMessageIds(messageIds: Set(messageIds.map(\.messageId)))
             } else {
                 strongSelf.messageIdsWithReactionsScheduledForMarkAsSeen.formUnion(messageIds.map(\.messageId))
@@ -1357,6 +1378,22 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
     private let previousView = Atomic<(ChatHistoryView, Int, Set<MessageId>?, Int)?>(value: nil)
     private let previousHistoryAppearsCleared = Atomic<Bool?>(value: nil)
     
+    // Main-queue raw intent changes revoke old failures even while history is loading or filling a hole.
+    private func updateTranslationRequestIntent(state: ChatTranslationState?, baseLanguageCode: String) {
+        var intent: (fromLang: String, toLang: String)?
+        if let state, state.isEnabled {
+            var languageCode = state.toLang ?? baseLanguageCode
+            if languageCode.hasSuffix("-raw") {
+                languageCode = String(languageCode.dropLast(4))
+            }
+            intent = (normalizeTranslationLanguage(state.fromLang), normalizeTranslationLanguage(languageCode))
+        }
+        if self.translationRequestIntent?.fromLang != intent?.fromLang || self.translationRequestIntent?.toLang != intent?.toLang {
+            self.translationRequestGeneration += 1
+            self.translationRequestIntent = intent
+        }
+    }
+
     private func beginChatHistoryTransitions(resetScrolling: Bool, switchedToAnotherSource: Bool) {
         self.historyDisposable.set(nil)
         self._isReady.set(false)
@@ -1851,7 +1888,8 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
         )
         |> map { setting, peer -> Bool in
             let isPremium = peer?.isPremium ?? false
-            return setting && isPremium
+            // SuperGram: sgStoryHDWithoutPremium lets story preloads in chat honour the HD preference without Premium
+            return setting && (isPremium || (UserDefaults.standard.object(forKey: "sgStoryHDWithoutPremium") as? Bool ?? true))
         }
         |> distinctUntilChanged
         
@@ -1914,7 +1952,11 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
             contentSettings |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_contentSettings")
         ) |> debug_measureTimeToFirstEvent(label: "chatHistoryNode_firstChatHistoryTransition")).startStrict(next: { [weak self] update, chatPresentationData, selectedMessages, updatingMedia, networkType, preferredStoryHighQuality, animatedEmojiStickers, additionalAnimatedEmojiStickers, customChannelDiscussionReadState, customThreadOutgoingReadState, availableReactions, availableMessageEffects, savedMessageTags, defaultReaction, accountPeer, accountCountry, suggestAudioTranscription, promises, topicAuthorId, translationState, maxReadStoryId, recommendedChannels, audioTranscriptionTrial, chatThemes, deviceContactsNumbers, contentSettings in
             let (historyAppearsCleared, pendingUnpinnedAllMessages, pendingRemovedMessages, currentlyPlayingMessageIdAndType, scrollToMessageId, chatHasBots, allAdMessages) = promises
-            
+
+            if let self, case .default = source {
+                self.updateTranslationRequestIntent(state: translationState, baseLanguageCode: chatPresentationData.strings.baseLanguageCode)
+            }
+
             if measure_isFirstTime {
                 measure_isFirstTime = false
                 #if DEBUG
@@ -2142,7 +2184,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
                 )
                 
                 var translateToLanguage: (fromLang: String, toLang: String)?
-                if let translationState, (isPremium || autoTranslate)  && translationState.isEnabled {
+                if let translationState, (isPremium || autoTranslate || sgCanTranslateChatsWithoutPremium()) && translationState.isEnabled { // MARK: Swiftgram
                     var languageCode = translationState.toLang ?? chatPresentationData.strings.baseLanguageCode
                     let rawSuffix = "-raw"
                     if languageCode.hasSuffix(rawSuffix) {
@@ -2518,7 +2560,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
             if apply {
                 switch strongSelf.chatLocation {
                 case .peer, .replyThread:
-                    if !strongSelf.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !strongSelf.context.account.isSupportUser {
+                    if !strongSelf.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: strongSelf.chatLocation.peerId) && !strongSelf.context.account.isSupportUser {
                         strongSelf.context.applyMaxReadIndex(for: strongSelf.chatLocation, contextHolder: strongSelf.chatLocationContextHolder, messageIndex: messageIndex)
                     }
                 case .customChatContents:
@@ -2593,7 +2635,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
     }
     
     private func attemptReadingReactions() {
-        if self.canReadHistoryValue && !self.suspendReadingReactions && !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !self.messageIdsWithReactionsScheduledForMarkAsSeen.isEmpty {
+        if self.canReadHistoryValue && !self.suspendReadingReactions && !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: self.chatLocation.peerId) && !self.messageIdsWithReactionsScheduledForMarkAsSeen.isEmpty {
             let messageIds = self.messageIdsWithReactionsScheduledForMarkAsSeen
             
             let _ = self.displayUnseenReactionAnimations(messageIds: Array(messageIds))
@@ -3268,7 +3310,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
             if !messageIdsWithUnseenReactions.isEmpty {
                 self.unseenReactionsProcessingManager.add(messageIdsWithUnseenReactions.map { MessageAndThreadId(messageId: $0, threadId: nil) })
                 
-                if self.canReadHistoryValue && !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory {
+                if self.canReadHistoryValue && !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: self.chatLocation.peerId) {
                     let _ = self.displayUnseenReactionAnimations(messageIds: messageIdsWithUnseenReactions)
                 }
             }
@@ -3488,6 +3530,18 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
     }
     
     private func updateMessageReadTracker() {
+        // SuperGram: channel read-time analytics are not collected or sent while "sgDisableReadMetrics" is on (default).
+        if SuperGramReadMetricsSettings.isReportingDisabled {
+            if self.messageReadMetricsTracker != nil {
+                self.messageReadMetricsTrackerPendingMetricTimer?.invalidate()
+                self.messageReadMetricsTrackerPendingMetricTimer = nil
+                self.messageReadMetricsTrackerDisposable?.dispose()
+                self.messageReadMetricsTrackerDisposable = nil
+                self.messageReadMetricsTracker = nil
+                self.messageReadMetricsTrackerPendingMetrics.removeAll()
+            }
+            return
+        }
         guard let historyView = self.historyView?.originalView else {
             return
         }
@@ -3514,6 +3568,9 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
                 guard let self else {
                     return
                 }
+                if SuperGramReadMetricsSettings.isReportingDisabled {
+                    return
+                }
                 self.messageReadMetricsTrackerPendingMetrics.append(metric)
                 
                 if self.messageReadMetricsTrackerPendingMetricTimer == nil {
@@ -3526,8 +3583,8 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
                         }
                         let metrics = self.messageReadMetricsTrackerPendingMetrics
                         self.messageReadMetricsTrackerPendingMetrics.removeAll()
-                        
-                        if !metrics.isEmpty {
+
+                        if !metrics.isEmpty && !SuperGramReadMetricsSettings.isReportingDisabled {
                             let _ = self.context.engine.messages.reportPeerReadMetrics(peerId: channelPeer.id, metrics: metrics).startStandalone()
                         }
                     })
@@ -4646,7 +4703,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
                     self.interactiveReadActionDisposable = nil
                 }
             } else if self.interactiveReadActionDisposable == nil {
-                if !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !self.context.account.isSupportUser {
+                if !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: self.chatLocation.peerId) && !self.context.account.isSupportUser {
                     if case let .peer(peerId) = self.chatLocation {
                         self.interactiveReadActionDisposable = self.context.engine.messages.installInteractiveReadMessagesAction(peerId: peerId, threadId: nil)
                     } else if case let .replyThread(replyThread) = self.chatLocation, (replyThread.isForumPost || replyThread.isMonoforumPost) {
@@ -4664,7 +4721,7 @@ public final class ChatHistoryListNodeImpl: ListViewImpl, ChatHistoryNode, ChatH
                 }
             } else if self.interactiveReadReactionsDisposable == nil {
                 if case let .peer(peerId) = self.chatLocation {
-                    if !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory {
+                    if !self.context.sharedContext.immediateExperimentalUISettings.skipReadHistory && !SuperGramGhostSettings.shouldSkipReadReceipts(peerId: self.chatLocation.peerId) {
                         let visibleMessageRange = self.visibleMessageRange
                         self.interactiveReadReactionsDisposable = context.engine.messages.installInteractiveReadReactionsAction(peerId: peerId, getVisibleRange: {
                             return visibleMessageRange.with { $0 }

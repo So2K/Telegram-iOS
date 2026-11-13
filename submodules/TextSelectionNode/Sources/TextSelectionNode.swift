@@ -292,6 +292,10 @@ public final class TextSelectionNode: ASDisplayNode {
     }
     
     private weak var contextMenu: ContextMenuController?
+    /// SuperGram: whether the copy/quote bubble menu of the current selection is on screen.
+    public var isMenuDisplayed: Bool {
+        return self.contextMenu != nil
+    }
     
     public init(theme: TextSelectionTheme, strings: PresentationStrings, textNodeOrView: TextNodeOrView, updateIsActive: @escaping (Bool) -> Void, present: @escaping (ViewController, Any?) -> Void, rootView: @escaping () -> UIView?, externalKnobSurface: UIView? = nil, performAction: @escaping (NSAttributedString, TextSelectionAction) -> Void) {
         self.theme = theme
@@ -711,6 +715,20 @@ public final class TextSelectionNode: ASDisplayNode {
         }
         if !self.rightKnob.alpha.isZero, self.rightKnob.frame.insetBy(dx: -14.0, dy: -14.0).contains(point) {
             return (.right, self.rightKnob.frame.offsetBy(dx: 0.0, dy: -self.rightKnob.frame.width / 2.0).center)
+        }
+        // SuperGram: a finger is much larger than a 12 pt knob; within 28 pt of a knob's grab point take the nearest
+        // knob instead of starting a brand new selection (which made dragging feel imprecise).
+        let leftGrab = self.leftKnob.frame.offsetBy(dx: 0.0, dy: self.leftKnob.frame.width / 2.0).center
+        let rightGrab = self.rightKnob.frame.offsetBy(dx: 0.0, dy: -self.rightKnob.frame.width / 2.0).center
+        let leftDistance = self.leftKnob.alpha.isZero ? CGFloat.greatestFiniteMagnitude : hypot(point.x - leftGrab.x, point.y - leftGrab.y)
+        let rightDistance = self.rightKnob.alpha.isZero ? CGFloat.greatestFiniteMagnitude : hypot(point.x - rightGrab.x, point.y - rightGrab.y)
+        let grabRadius: CGFloat = 28.0
+        if min(leftDistance, rightDistance) <= grabRadius {
+            if leftDistance <= rightDistance {
+                return (.left, leftGrab)
+            } else {
+                return (.right, rightGrab)
+            }
         }
         return nil
     }

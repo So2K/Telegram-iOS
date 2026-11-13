@@ -13,6 +13,10 @@ import ReactionSelectionNode
 import ChatControllerInteraction
 import ChatSendAudioMessageContextPreview
 import BrowserUI
+// MARK: Swiftgram
+import TextFormat
+import TranslateUI
+import UndoUI
 
 extension ChatSendMessageEffect {
     convenience init(_ effect: ChatSendMessageActionSheetController.SendParameters.Effect) {
@@ -83,7 +87,73 @@ func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, no
         guard let selfController, let peer = peerViewMainPeer(peerView) else {
             return
         }
-        
+
+        // MARK: Swiftgram
+        // SuperGram: behind "Translate Before Sending" (sgOutgoingTranslation, default off), never in secret chats.
+        // The text is translated by Telegram's messages.translateText (no third-party service). Target language:
+        // the one chosen for this chat, otherwise the chat language detected by the translate bar.
+        var sgTranslationContext: (outgoingMessageTranslateToLang: String?, translate: (() -> Void)?, changeTranslationLanguage: (() -> ())?) = (outgoingMessageTranslateToLang: nil, translate: nil, changeTranslationLanguage: nil)
+        if sgOutgoingTranslationEnabled() && peer.id.namespace != Namespaces.Peer.SecretChat {
+            var predictedChatLanguage = selfController.presentationInterfaceState.translationState?.fromLang
+            if let value = predictedChatLanguage, value.isEmpty {
+                predictedChatLanguage = nil
+            }
+            let outgoingMessageTranslateToLang = sgOutgoingTranslationLanguage(context: selfController.context, peerId: peer.id) ?? predictedChatLanguage
+
+            sgTranslationContext = (outgoingMessageTranslateToLang: outgoingMessageTranslateToLang, translate: { [weak selfController] in
+                guard let selfController else { return }
+                let originalInputText = NSAttributedString(attributedString: selfController.presentationInterfaceState.interfaceState.effectiveInputState.inputText)
+                let originalEditMessageId = selfController.presentationInterfaceState.interfaceState.editMessage?.messageId
+                let originalChatLocation = selfController.chatLocation
+                let originalExpandedInputText = NSAttributedString(attributedString: expandedInputStateAttributedString(originalInputText))
+                let textToTranslate = originalExpandedInputText.string
+                let textEntities = generateChatInputTextEntities(originalExpandedInputText)
+                if let outgoingMessageTranslateToLang = outgoingMessageTranslateToLang {
+                    let _ = (selfController.context.engine.messages.translate(text: textToTranslate, toLang: outgoingMessageTranslateToLang, entities: textEntities) |> deliverOnMainQueue).start(next: { [weak selfController] translatedTextAndEntities in
+                        guard let selfController, let translatedTextAndEntities,
+                            sgOutgoingTranslationEnabled(),
+                            selfController.chatLocation == originalChatLocation,
+                            selfController.presentationInterfaceState.interfaceState.editMessage?.messageId == originalEditMessageId,
+                            selfController.presentationInterfaceState.interfaceState.effectiveInputState.inputText.isEqual(to: originalInputText),
+                            expandedInputStateAttributedString(selfController.presentationInterfaceState.interfaceState.effectiveInputState.inputText).isEqual(to: originalExpandedInputText) else { return }
+                        let newInputText = chatInputStateStringWithAppliedEntities(translatedTextAndEntities.0, entities: translatedTextAndEntities.1)
+                        let newTextInputState = ChatTextInputState(inputText: newInputText, selectionRange: 0 ..< newInputText.length)
+                        selfController.updateChatPresentationInterfaceState(interactive: true, { state in
+                            return state.updatedInterfaceState { interfaceState in
+                                return interfaceState.withUpdatedEffectiveInputState(newTextInputState)
+                            }
+                        })
+                    }, error: { [weak selfController] error in
+                        // SuperGram: tell the user instead of silently keeping the original text
+                        guard let selfController,
+                            sgOutgoingTranslationEnabled(),
+                            selfController.chatLocation == originalChatLocation,
+                            selfController.presentationInterfaceState.interfaceState.editMessage?.messageId == originalEditMessageId,
+                            selfController.presentationInterfaceState.interfaceState.effectiveInputState.inputText.isEqual(to: originalInputText),
+                            expandedInputStateAttributedString(selfController.presentationInterfaceState.interfaceState.effectiveInputState.inputText).isEqual(to: originalExpandedInputText) else { return }
+                        let presentationData = selfController.presentationData
+                        selfController.present(UndoOverlayController(presentationData: presentationData, content: .info(title: nil, text: sgOutgoingTranslationFailureText(error: error, strings: presentationData.strings), timeout: nil, customUndoText: nil), elevatedLayout: false, animateInAsReplacement: false, action: { _ in
+                            return false
+                        }), in: .current)
+                    })
+                }
+            }, changeTranslationLanguage: { [weak selfController] in
+                guard let selfController else {
+                    return
+                }
+                let controller = sgOutgoingTranslationLanguageSelectionController(context: selfController.context, selectedLanguage: outgoingMessageTranslateToLang, completion: { [weak selfController] toLang in
+                    guard let selfController, let peerId = selfController.chatLocation.peerId else {
+                        return
+                    }
+                    sgSetOutgoingTranslationLanguage(context: selfController.context, peerId: peerId, language: toLang)
+                    Queue.mainQueue().after(0.35) {
+                        chatMessageDisplaySendMessageOptions(selfController: selfController, node: node, gesture: gesture)
+                    }
+                })
+                selfController.push(controller)
+            })
+        }
+
         if let editMessage = selfController.presentationInterfaceState.interfaceState.editMessage {
             if editMessages.isEmpty {
                 return
@@ -122,6 +192,7 @@ func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, no
             }
             
             let controller = makeChatSendMessageActionSheetController(
+                sgTranslationContext: sgTranslationContext,
                 initialData: initialData,
                 context: selfController.context,
                 updatedPresentationData: selfController.updatedPresentationData,
@@ -221,6 +292,7 @@ func chatMessageDisplaySendMessageOptions(selfController: ChatControllerImpl, no
             }
 
             let controller = makeChatSendMessageActionSheetController(
+                sgTranslationContext: sgTranslationContext,
                 initialData: initialData,
                 context: selfController.context,
                 updatedPresentationData: selfController.updatedPresentationData,

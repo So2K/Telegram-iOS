@@ -35,6 +35,7 @@ import RangeSet
 import GiftItemComponent
 import MediaResources
 import UIKitRuntimeUtils
+import SGSimpleSettings
 
 private struct FetchControls {
     let fetch: (Bool) -> Void
@@ -421,6 +422,26 @@ private class ExtendedMediaOverlayNode: ASDisplayNode {
     }
 }
 
+// SuperGram (MEM-02): statuses that differ only by generationTimestamp (or by a position that matches the
+// extrapolated playback position) don't need a full status/badge rebuild
+private func superGramPlayerStatusesAreEquivalent(_ lhs: MediaPlayerStatus?, _ rhs: MediaPlayerStatus?) -> Bool {
+    guard let lhs, let rhs else {
+        return lhs == nil && rhs == nil
+    }
+    if lhs.status != rhs.status || lhs.seekId != rhs.seekId || lhs.baseRate != rhs.baseRate || lhs.soundEnabled != rhs.soundEnabled {
+        return false
+    }
+    if abs(lhs.duration - rhs.duration) > 0.01 {
+        return false
+    }
+    if case .playing = lhs.status {
+        let predictedTimestamp = rhs.timestamp + (lhs.generationTimestamp - rhs.generationTimestamp) * rhs.baseRate
+        return abs(predictedTimestamp - lhs.timestamp) < 0.15
+    } else {
+        return abs(lhs.timestamp - rhs.timestamp) < 0.01
+    }
+}
+
 private func selectStoryMedia(item: Stories.Item, preferredHighQuality: Bool) -> Media? {
     if !preferredHighQuality, let alternativeMediaValue = item.alternativeMediaList.first {
         return alternativeMediaValue
@@ -477,14 +498,37 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
     private var actualFetchStatus: MediaResourceStatus?
     private let fetchDisposable = MetaDisposable()
     private let coverFetchDisposable = MetaDisposable()
-    
+
+    // SuperGram (FIX-MEDIA-UI / STUCK-UI-LAYER): stalled-download watchdog, see superGramNoteFetchStatus
+    private var superGramStallWatchdogTimer: SwiftSignalKit.Timer?
+    private var superGramStallMediaKey: String?
+    private var superGramStallProgress: Float?
+    private var superGramStallTimestamp: Double = 0.0
+    private var superGramStallRetryCount: Int = 0
+    // VER-UI-SELFHEAL: self-heal attempts for the current media that the budget renewal does not forgive.
+    private var superGramStallTotalRetryCount: Int = 0
+    private var superGramStallLastRetryTimestamp: Double = 0.0
+    private var superGramStallFetchIsActive: Bool = true
+    // VER-UI-SELFHEAL: set once the reported progress has actually advanced for the current media, i.e. bytes
+    // reached the disk while this node was watching. Proof that the transfer works, which buys it a much longer
+    // stall window — see `superGramEffectiveStallTimeout`.
+    private var superGramStallHasSeenProgress: Bool = false
+    private var superGramStallRestartIsPending: Bool = false
+    // Bumped whenever a pending self-heal restart must be abandoned (the user cancelled the download themselves).
+    private var superGramStallRestartGeneration: Int = 0
+    // Takes "escalate to a user-initiated fetch if this path supports it"; the paths that cannot (an HLS
+    // preload, a `.prefetch` video preload, a web file) ignore it.
+    private var superGramRestartFetch: ((Bool) -> Void)?
+
     private let videoNodeReadyDisposable = MetaDisposable()
     private let playerStatusDisposable = MetaDisposable()
     
     private var playerUpdateTimer: SwiftSignalKit.Timer?
     private var playerStatus: MediaPlayerStatus? {
         didSet {
-            if self.playerStatus != oldValue {
+            // SuperGram: players re-emit status on every tick with a new generationTimestamp; the label is refreshed
+            // by the 0.5 s timer, so only real state changes need a full updateStatus
+            if !superGramPlayerStatusesAreEquivalent(self.playerStatus, oldValue) {
                 if let playerStatus = playerStatus, case .playing = playerStatus.status {
                     self.ensureHasTimer()
                 } else {
@@ -505,26 +549,424 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
     }
     
     private var internallyVisible = true
+    private var superGramEnvironmentListenerIndex: Int?
+    private var superGramInlineVideoPlaybackKind: SuperGramInlineVideoPlaybackBudget.Kind = .video
     private func updateVisibility() {
         let isPreview = self.themeAndStrings?.3 ?? false
         let visibility = self.visibility && self.internallyVisible && !isPreview
-        
-        if let videoNode = self.videoNode {
-            if visibility {
-                if !videoNode.canAttachContent {
-                    videoNode.canAttachContent = true
-                    if videoNode.hasAttachedContext {
-                        videoNode.play()
-                    }
+        // SuperGram: the app being in background only detaches inline players and animations. visibilityPromise also
+        // gates the visible auto-downloads, which must not be cancelled and restarted on every app switch.
+        let isApplicationActive = SuperGramInlineMediaEnvironment.shared.isApplicationActive
+
+        self.updateInlineVideoAttachment(isVisible: visibility && isApplicationActive)
+        self.animatedStickerNode?.visibility = visibility && isApplicationActive
+        self.visibilityPromise.set(visibility)
+        self.superGramUpdateStallWatchdog()
+    }
+
+    private func superGramEnsureEnvironmentListener() {
+        if self.superGramEnvironmentListenerIndex != nil {
+            return
+        }
+        self.superGramEnvironmentListenerIndex = SuperGramInlineMediaEnvironment.shared.addListener({ [weak self] event in
+            guard let self else {
+                return
+            }
+            switch event {
+            case .applicationActivityChanged:
+                self.updateVisibility()
+            case .inlineAutoplayVideosChanged:
+                if self.media is TelegramMediaFile || self.media is TelegramMediaInvoice || self.media is TelegramMediaPaidContent {
+                    self.requestInlineUpdate?()
                 }
-            } else {
-                videoNode.canAttachContent = false
+            case let .energyUsageSettingsChanged(sharedContextId):
+                if let context = self.context, ObjectIdentifier(context.sharedContext) == sharedContextId,
+                   let file = self.superGramEffectiveFetchMedia() as? TelegramMediaFile, file.isAnimated,
+                   self.automaticPlayback != context.sharedContext.energyUsageSettings.autoplayGif {
+                    self.requestInlineUpdate?()
+                }
+            }
+        })
+    }
+
+    private func updateInlineVideoAttachment(isVisible: Bool) {
+        guard let videoNode = self.videoNode else {
+            SuperGramInlineVideoPlaybackBudget.shared.releasePlayback(node: self)
+            return
+        }
+        self.superGramEnsureEnvironmentListener()
+        if isVisible {
+            // SuperGram (MEM-07): only a few inline players may be attached at once, nearest to the screen center wins
+            let isGranted = SuperGramInlineVideoPlaybackBudget.shared.requestPlayback(node: self, kind: self.superGramInlineVideoPlaybackKind)
+            self.superGramApplyInlineVideoPlaybackGrant(isGranted)
+        } else {
+            SuperGramInlineVideoPlaybackBudget.shared.releasePlayback(node: self)
+            videoNode.canAttachContent = false
+        }
+    }
+
+    func superGramApplyInlineVideoPlaybackGrant(_ isGranted: Bool) {
+        guard let videoNode = self.videoNode else {
+            return
+        }
+        if isGranted {
+            if !videoNode.canAttachContent {
+                videoNode.canAttachContent = true
+                if videoNode.hasAttachedContext {
+                    videoNode.play()
+                }
+            }
+        } else {
+            videoNode.canAttachContent = false
+        }
+    }
+
+    func superGramInlinePlaybackDistanceToWindowCenter() -> CGFloat? {
+        guard self.isNodeLoaded, let window = self.view.window else {
+            return nil
+        }
+        let frame = self.view.convert(self.bounds, to: window)
+        let center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+        return hypot(frame.midX - center.x, frame.midY - center.y)
+    }
+
+    // MARK: - SuperGram (FIX-MEDIA-UI / STUCK-UI-LAYER): stalled-download watchdog
+    //
+    // A download can stop making progress while its resource status never leaves `.Fetching`: a slot in the global
+    // fetch budget that is never served, a part request that neither completes nor fails, a coalesced progress
+    // update that is never followed by another one, or a `FetchManager` entry that exists but is never activated
+    // (`FetchManagerStatusContext.combinedStatus` reports `.Fetching(isActive: false)` for a queued, preempted or
+    // backed-off entry, and the bubble draws that exactly like a running download — a cancel cross that never
+    // fills). The bubble then shows a spinner that spins forever.
+    //
+    // While a visible node reports `.Fetching` and the reported progress does not move for `superGramStallTimeout`,
+    // the node self-heals, escalating on each attempt (`SuperGramMediaFetchSelfHeal.step`):
+    //
+    //   1. re-issue this node's own fetch registration;
+    //   2. cancel the whole `FetchManager` entry, then start a fresh fetch;
+    //   3. additionally ask `MediaBox` to drop the resource's cached fetch state, then start a fresh fetch.
+    //
+    // Step 1 alone is not enough, and step 2 is not an optimisation: while any other holder keeps a reference to
+    // the same entry (`PrefetchManagerImpl`, `InChatPrefetchManager`, the downloads list, another node showing the
+    // same message), dropping this node's registration leaves the entry in place with unchanged combined ranges,
+    // and `FetchManagerCategoryContext.withEntry` only calls `startFetch` when those ranges change — so step 1 is
+    // then literally a no-op. See `SuperGramMediaFetchSelfHeal` for the full argument. When the status says the
+    // fetch is not even active, step 1 is skipped outright.
+    //
+    // This applies only to `.Fetching`: a download the user cancelled lands on `.Remote`/`.Paused` and is never
+    // restarted behind their back. Uploads (`isSending`/`.Unsent`) are excluded. The budget is
+    // `superGramStallMaxRetries` attempts, renewed after `superGramStallBudgetRenewalInterval` so that a node
+    // which exhausted it (while the user was scrolled away, or in Low Power Mode) can heal itself later instead of
+    // staying broken for the rest of the session.
+    //
+    // VER-UI-SELFHEAL: how long "no movement" has to last before any of this runs depends on what we know about
+    // the transfer, because a self-heal is never free. Even step 1 costs real bytes: `fetchDisposable.set(nil)`
+    // drops this node's reference, and when it is the last one (the common case for a bubble nobody is
+    // prefetching) `FetchManagerCategoryContext.withEntry` sees `priorityKey == nil`, removes the entry and
+    // disposes the running fetch — every part in flight is thrown away, and the entry's retry backoff and
+    // zero-progress abandonment bookkeeping start over.
+    //
+    //   * Nothing has ever arrived (`superGramStallTimeout`). This is the failure this watchdog exists for — a
+    //     poisoned MediaBox context, an entry that is never served, a part request that never completes. There
+    //     is nothing in flight to lose, so act quickly.
+    //   * Bytes have arrived while we were watching (`superGramStallProgressedTimeout`). The pipe demonstrably
+    //     works; the gaps are part boundaries. Download parts are up to 512 KB, so on a weak link a legitimate
+    //     gap of tens of seconds is normal and restarting would discard the part in flight — repeatedly, which
+    //     is how a slow-but-working download is turned into one that never finishes. Wait far longer.
+    //   * `.Fetching(isActive: false)` (`superGramStallInactiveTimeout`). FetchManager knows about this entry and
+    //     has deliberately not activated it: queued behind the budget, preempted under download pressure, or in
+    //     retry backoff (which maxes out at 60 s). Cancelling and re-adding cannot free a slot, and it erases the
+    //     backoff and the zero-progress counter that eventually marks the entry abandoned — which is what turns
+    //     the spinner into the "tap to retry" arrow. Give that machinery time to finish first.
+    private static let superGramStallTimeout: Double = 20.0
+    private static let superGramStallProgressedTimeout: Double = 90.0
+    private static let superGramStallInactiveTimeout: Double = 75.0
+    private static let superGramStallCheckInterval: Double = 5.0
+    private static let superGramStallMaxRetries: Int = 3
+    private static let superGramStallBudgetRenewalInterval: Double = 90.0
+    // VER-UI-SELFHEAL: the renewal above resets the escalation level, so on its own the budget bounds nothing —
+    // a media that stays `.Fetching` keeps cycling cancelAndRestart → hardReset for as long as the bubble is on
+    // screen. Stopping instead is not "giving up": `FetchManagerCategoryContext` gives an entry that fails
+    // repeatedly without ever transferring a byte its own retry backoff and, after
+    // `maxZeroProgressFailures` attempts, marks it abandoned — which is what reports `.Remote` and turns the
+    // spinner into the "tap to retry" arrow. Every cancelAndRestart/hardReset destroys the entry and starts that
+    // bookkeeping over, so a watchdog that never stops is precisely what prevents the user from ever being told.
+    // An explicit retry (tap on `.Remote`/`.Paused`) and a re-bind clear this.
+    private static let superGramStallMaxTotalRetries: Int = 6
+
+    private func superGramCurrentMediaKey() -> String? {
+        guard let message = self.message else {
+            return nil
+        }
+        if let mediaId = self.media?.id {
+            return "\(message.stableId)|\(mediaId.namespace):\(mediaId.id)"
+        } else {
+            return "\(message.stableId)"
+        }
+    }
+
+    // The media whose fetch this node registers, with the invoice / paid-content / story wrappers resolved the
+    // same way the `FetchControls` construction resolves them.
+    private func superGramEffectiveFetchMedia() -> Media? {
+        var media = self.media
+        if let invoice = media as? TelegramMediaInvoice, let extendedMedia = invoice.extendedMedia, case let .full(fullMedia) = extendedMedia {
+            media = fullMedia
+        } else if let paidContent = media as? TelegramMediaPaidContent {
+            let selectedMediaIndex = self.mediaIndex ?? 0
+            if selectedMediaIndex < paidContent.extendedMedia.count, case let .full(fullMedia) = paidContent.extendedMedia[selectedMediaIndex] {
+                media = fullMedia
             }
         }
-        self.animatedStickerNode?.visibility = visibility
-        self.visibilityPromise.set(visibility)
+        if let storyMedia = media as? TelegramMediaStory, let storyItem = self.message?.associatedStories[storyMedia.storyId]?.get(Stories.StoredItem.self) {
+            if case let .item(item) = storyItem, let mediaValue = selectStoryMedia(item: item, preferredHighQuality: self.preferredStoryHighQuality) {
+                media = mediaValue
+            }
+        }
+        return media
     }
-    
+
+    // The resource the visible representation of this node is downloading, i.e. the one whose stalled fetch the
+    // watchdog has to reset. Mirrors the resource each `FetchControls.fetch` branch registers.
+    private func superGramPrimaryFetchResource() -> MediaResource? {
+        let media = self.superGramEffectiveFetchMedia()
+
+        if let image = media as? TelegramMediaImage {
+            return largestRepresentationForPhoto(image)?.resource
+        } else if let file = media as? TelegramMediaFile {
+            return file.resource
+        } else if let webFile = media as? TelegramMediaWebFile {
+            return webFile.resource
+        } else {
+            return nil
+        }
+    }
+
+    // VER-UI-SELFHEAL: whether the escalated steps (`cancelAndRestart` / `hardReset`) may be used at all.
+    //
+    // They both act on `self.media`'s own resource — `FetchControls.cancel` cancels its `FetchManager` entry and
+    // `requestHardReset` resets its `MediaBox` fetch state. For an HLS video that resource is *not* what this
+    // bubble is showing: `updatedStatusSignal` reports the state of the minimized-quality playlist and of the
+    // 10 s preload range, while `cancel` targets the original file — very possibly a full download the user
+    // started from the download button or the Downloads list, or one another node is driving. Note also that the
+    // HLS status maps a `.Paused` playlist onto `.Fetching(isActive: true, progress: 0.0)`, a value that by
+    // construction never moves, so the watchdog is guaranteed to reach its timeout in that state.
+    //
+    // Restarting the preload (`superGramRestartFetch`, i.e. the `.reissue` step) is targeted and safe; cancelling
+    // an unrelated entry is not. So cap the escalation at `.reissue` here.
+    private func superGramStallCanCancelFetchEntry() -> Bool {
+        if let file = self.superGramEffectiveFetchMedia() as? TelegramMediaFile, NativeVideoContent.isHLSVideo(file: file) {
+            return false
+        }
+        return true
+    }
+
+    // See the constants above: the stall window depends on what we know about the transfer.
+    private func superGramEffectiveStallTimeout() -> Double {
+        if !self.superGramStallFetchIsActive {
+            return ChatMessageInteractiveMediaNode.superGramStallInactiveTimeout
+        } else if self.superGramStallHasSeenProgress {
+            return ChatMessageInteractiveMediaNode.superGramStallProgressedTimeout
+        } else {
+            return ChatMessageInteractiveMediaNode.superGramStallTimeout
+        }
+    }
+
+    // Escalating to a user-initiated fetch makes the entry non-preemptible and keeps it eligible under
+    // `.critical` download pressure — which is exactly right for media the user has been staring at for 40 s.
+    // Only images qualify: for a file, `userInitiated` would also add a row to the Downloads list
+    // (`filterDownloadStatsEntry`), which the user never asked for.
+    private func superGramStallShouldEscalateToUserInitiated() -> Bool {
+        return self.superGramPrimaryFetchResourceIsImage()
+    }
+
+    private func superGramPrimaryFetchResourceIsImage() -> Bool {
+        var media = self.media
+        if let invoice = media as? TelegramMediaInvoice, let extendedMedia = invoice.extendedMedia, case let .full(fullMedia) = extendedMedia {
+            media = fullMedia
+        }
+        return media is TelegramMediaImage
+    }
+
+    private func superGramNoteFetchStatus(_ status: MediaResourceStatus) {
+        let mediaKey = self.superGramCurrentMediaKey()
+        if self.superGramStallMediaKey != mediaKey {
+            self.superGramStallMediaKey = mediaKey
+            self.superGramStallRetryCount = 0
+            self.superGramStallTotalRetryCount = 0
+            self.superGramStallLastRetryTimestamp = 0.0
+            self.superGramStallProgress = nil
+            self.superGramStallFetchIsActive = true
+            self.superGramStallHasSeenProgress = false
+            self.superGramStallTimestamp = CACurrentMediaTime()
+        }
+
+        switch status {
+        case let .Fetching(isActive, progress):
+            self.superGramStallFetchIsActive = isActive
+            if self.superGramStallProgress != progress {
+                if self.superGramStallProgress != nil {
+                    // VER-UI-SELFHEAL: bytes landed on disk while we were watching. Two consequences: the
+                    // transfer is alive, so from now on it gets the long stall window; and whatever escalation
+                    // level we had reached is stale, so drop back to the cheapest step. `…LastRetryTimestamp` is
+                    // deliberately *not* cleared — it is what keeps two self-heal attempts apart in time.
+                    self.superGramStallHasSeenProgress = true
+                    self.superGramStallRetryCount = 0
+                }
+                self.superGramStallProgress = progress
+                self.superGramStallTimestamp = CACurrentMediaTime()
+            }
+        case .Paused, .Remote:
+            // Not restarted by the watchdog: this is either a user cancel or a deliberate pause.
+            // `superGramStallHasSeenProgress` is deliberately *not* cleared here: it records that this media's
+            // transfer has delivered bytes while this node watched, which stays true across the brief `.Remote`
+            // a restart passes through. Clearing it would hand the fast window back to exactly the
+            // slow-but-working download the long window exists to protect.
+            self.superGramStallProgress = nil
+            self.superGramStallFetchIsActive = true
+            self.superGramStallTimestamp = CACurrentMediaTime()
+        case .Local:
+            self.superGramStallProgress = nil
+            self.superGramStallFetchIsActive = true
+            self.superGramStallHasSeenProgress = false
+            self.superGramStallTimestamp = CACurrentMediaTime()
+            self.superGramStallRetryCount = 0
+            self.superGramStallTotalRetryCount = 0
+            self.superGramStallLastRetryTimestamp = 0.0
+            // The captured restart closure keeps a whole fetch signal graph alive; a complete resource does not need it.
+            self.superGramRestartFetch = nil
+        }
+
+        self.superGramUpdateStallWatchdog()
+    }
+
+    // Everything except the retry budget: the budget is checked (and renewed) in `superGramCheckStall`, so that a
+    // node which used its attempts up keeps ticking and can try again once the renewal interval has passed.
+    private func superGramShouldRunStallWatchdog() -> Bool {
+        guard let fetchStatus = self.fetchStatus, case .Fetching = fetchStatus else {
+            return false
+        }
+        guard let message = self.message, !message.flags.isSending, !message.flags.contains(.Unsent) else {
+            return false
+        }
+        guard self.attributes?.updatingMedia == nil else {
+            return false
+        }
+        guard self.visibility, self.internallyVisible else {
+            return false
+        }
+        guard self.superGramStallTotalRetryCount < ChatMessageInteractiveMediaNode.superGramStallMaxTotalRetries else {
+            return false
+        }
+        return true
+    }
+
+    private func superGramUpdateStallWatchdog() {
+        if self.superGramShouldRunStallWatchdog() {
+            if self.superGramStallWatchdogTimer == nil {
+                let timer = SwiftSignalKit.Timer(timeout: ChatMessageInteractiveMediaNode.superGramStallCheckInterval, repeat: true, completion: { [weak self] in
+                    self?.superGramCheckStall()
+                }, queue: Queue.mainQueue())
+                self.superGramStallWatchdogTimer = timer
+                timer.start()
+            }
+        } else if let timer = self.superGramStallWatchdogTimer {
+            timer.invalidate()
+            self.superGramStallWatchdogTimer = nil
+        }
+    }
+
+    private func superGramCheckStall() {
+        guard self.superGramShouldRunStallWatchdog() else {
+            self.superGramUpdateStallWatchdog()
+            return
+        }
+        if self.superGramStallRestartIsPending {
+            return
+        }
+        let timestamp = CACurrentMediaTime()
+        if timestamp - self.superGramStallTimestamp < self.superGramEffectiveStallTimeout() {
+            return
+        }
+        if self.superGramStallRetryCount >= ChatMessageInteractiveMediaNode.superGramStallMaxRetries {
+            if timestamp - self.superGramStallLastRetryTimestamp < ChatMessageInteractiveMediaNode.superGramStallBudgetRenewalInterval {
+                return
+            }
+            // A renewed budget resumes at `cancelAndRestart`: a plain re-issue has already been shown not to help
+            // for this media, so spending another 20 s window on it is pointless.
+            self.superGramStallRetryCount = 1
+        }
+
+        var step = SuperGramMediaFetchSelfHeal.step(forAttempt: self.superGramStallRetryCount, isFetchActive: self.superGramStallFetchIsActive)
+        if !self.superGramStallCanCancelFetchEntry() {
+            // The escalated steps would act on a resource this node is not the one fetching. See
+            // `superGramStallCanCancelFetchEntry`.
+            step = .reissue
+        }
+        self.superGramStallRetryCount += 1
+        self.superGramStallTotalRetryCount += 1
+        self.superGramStallTimestamp = timestamp
+        self.superGramStallLastRetryTimestamp = timestamp
+        self.superGramStallRestartIsPending = true
+
+        // Captured by value so that a node re-bound to a different message while the restart is pending cannot
+        // have the previous media's fetch written over the current one's, and so that a user cancel in the
+        // meantime abandons the restart instead of reviving the download behind their back.
+        let mediaKey = self.superGramCurrentMediaKey()
+        let generation = self.superGramStallRestartGeneration
+        let isEscalatedStep: Bool
+        if case .reissue = step {
+            isEscalatedStep = false
+        } else {
+            isEscalatedStep = true
+        }
+
+        let performRestart: () -> Void = { [weak self] in
+            guard let self else {
+                return
+            }
+            guard self.superGramStallRestartGeneration == generation else {
+                return
+            }
+            self.superGramStallRestartIsPending = false
+            guard self.superGramCurrentMediaKey() == mediaKey else {
+                return
+            }
+            if let fetchStatus = self.fetchStatus, case .Local = fetchStatus {
+                return
+            }
+            let userInitiated = isEscalatedStep && self.superGramStallShouldEscalateToUserInitiated()
+            if let restart = self.superGramRestartFetch {
+                restart(userInitiated)
+            } else if let fetch = self.fetchControls.with({ return $0?.fetch }) {
+                fetch(userInitiated)
+            }
+            self.superGramUpdateStallWatchdog()
+        }
+
+        switch step {
+        case .reissue:
+            self.fetchDisposable.set(nil)
+            // Deferred on purpose: dropping this node's registration and re-adding it inside a single main-queue
+            // turn is indistinguishable from doing nothing at all.
+            Queue.mainQueue().after(0.2, performRestart)
+        case .cancelAndRestart, .hardReset:
+            if let cancel = self.fetchControls.with({ return $0?.cancel }) {
+                cancel()
+            }
+            if case .hardReset = step, let mediaBox = self.context?.account.postbox.mediaBox, let resource = self.superGramPrimaryFetchResource() {
+                SuperGramMediaFetchSelfHeal.requestHardReset(mediaBox: mediaBox, resourceId: resource.id)
+            }
+            self.fetchDisposable.set(nil)
+            // Restarted in the same turn. `FetchManagerImpl.queue` *is* the main queue and `Queue.async` runs
+            // inline when it is already current, so the entry is provably gone by the time `cancel()` returns;
+            // MediaBox's own cancel is enqueued on its serial data queue ahead of the new fetch's range request,
+            // so ordering holds. Deferring here would instead show a "download" arrow for a fraction of a second.
+            performRestart()
+        }
+
+        self.superGramUpdateStallWatchdog()
+    }
+
     public var activateLocalContent: (InteractiveMediaNodeActivateContent) -> Void = { _ in }
     public var activatePinch: ((PinchSourceContainerNode) -> Void)?
     public var updateMessageReaction: ((Message, ChatControllerInteractionReaction, Bool, ContextExtractedContentContainingView?) -> Void)?
@@ -640,12 +1082,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
     }
     
     deinit {
+        let superGramEnvironmentListenerIndex = self.superGramEnvironmentListenerIndex
+        Queue.mainQueue().justDispatch {
+            if let superGramEnvironmentListenerIndex {
+                SuperGramInlineMediaEnvironment.shared.removeListener(superGramEnvironmentListenerIndex)
+            }
+            SuperGramInlineVideoPlaybackBudget.shared.nodeDeallocated()
+        }
         self.statusDisposable.dispose()
         self.videoNodeReadyDisposable.dispose()
         self.playerStatusDisposable.dispose()
         self.fetchDisposable.dispose()
         self.coverFetchDisposable.dispose()
         self.secretTimer?.invalidate()
+        self.superGramStallWatchdogTimer?.invalidate()
         self.hlsInlinePlaybackRangeDisposable?.dispose()
     }
     
@@ -663,11 +1113,12 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
     
     override public func didLoad() {
         super.didLoad()
-        
+
+        self.superGramEnsureEnvironmentListener()
         self.imageNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.imageTap(_:))))
     }
     
-    private func progressPressed(canActivate: Bool) {
+    private func progressPressed(canActivate: Bool, isStatusNodeTap: Bool = false) {
         if let _ = self.attributes?.updatingMedia {
             if let message = self.message {
                 self.context?.account.pendingUpdateMessageManager.cancel(messageId: message.id)
@@ -678,10 +1129,21 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                 activateContent = true
             } else if let message = self.message, !message.flags.isSending && (self.automaticPlayback ?? false) {
                 activateContent = true
+            } else if !isStatusNodeTap, case .Fetching = fetchStatus, let message = self.message, !message.flags.isSending, !message.containsSecretMedia, let file = self.media as? TelegramMediaFile, file.isVideo, !file.isAnimated, !file.isVideoSticker, isMediaStreamable(message: EngineMessage(message), media: file) {
+                // SuperGram (STREAM-2): tapping a downloading video opens it for streaming instead of cancelling the
+                // download; the progress ring itself still cancels.
+                // FIX-MEDIA-UI: only for media that can actually be streamed. Without the isMediaStreamable check a tap
+                // on a plain (non-streamable) downloading video opened the gallery in streaming mode, where it could
+                // buffer indefinitely, and made the cancel gesture unreachable.
+                activateContent = true
             }
             if canActivate, activateContent {
                 switch fetchStatus {
-                    case .Remote, .Fetching:
+                    case .Remote, .Fetching, .Paused:
+                        // SuperGram (GOAL-STREAMING): `.Paused` was missing here while the status node above draws
+                        // a play button for a paused streamable video exactly as it does for `.Remote` — so tapping
+                        // a half-downloaded video whose download the user had paused did literally nothing (the
+                        // `return` below swallowed the tap). Stream it, like every other non-local state.
                         self.activateLocalContent(.stream)
                     default:
                         break
@@ -724,7 +1186,30 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                     if let cancel = self.fetchControls.with({ return $0?.cancel }) {
                         cancel()
                     }
+                    // SuperGram (FIX-MEDIA-UI): a download the user just cancelled must never be revived by the
+                    // stalled-download watchdog — including by a self-heal restart that is already scheduled.
+                    self.superGramStallTimestamp = CACurrentMediaTime()
+                    self.superGramRestartFetch = nil
+                    self.superGramStallRestartIsPending = false
+                    self.superGramStallRestartGeneration += 1
+                    self.superGramUpdateStallWatchdog()
                 case .Remote, .Paused:
+                    // SuperGram (FIX-MEDIA-UI): an explicit retry is a fresh attempt, and it is what the watchdog
+                    // should re-issue from now on. It also gives the watchdog its attempts back
+                    // (VER-UI-SELFHEAL): the user asked for this media again, so a run of earlier failures is no
+                    // longer a reason to stay out of the way.
+                    self.superGramStallRetryCount = 0
+                    self.superGramStallTotalRetryCount = 0
+                    self.superGramStallLastRetryTimestamp = 0.0
+                    self.superGramStallTimestamp = CACurrentMediaTime()
+                    self.superGramRestartFetch = { [weak self] _ in
+                        guard let self else {
+                            return
+                        }
+                        if let fetch = self.fetchControls.with({ return $0?.fetch }) {
+                            fetch(true)
+                        }
+                    }
                     if let fetch = self.fetchControls.with({ return $0?.fetch }) {
                         fetch(true)
                     }
@@ -791,7 +1276,8 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                             self.activateLocalContent(.default)
                         }
                     } else {
-                        self.progressPressed(canActivate: true)
+                        let isStatusNodeTap = self.statusNode?.frame.contains(point) ?? false
+                        self.progressPressed(canActivate: true, isStatusNodeTap: isStatusNodeTap)
                     }
                 }
             }
@@ -871,6 +1357,7 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
         let hasCurrentAnimatedStickerNode = currentAnimatedStickerNode != nil
         let currentAutomaticDownload = self.automaticDownload
         let currentAutomaticPlayback = self.automaticPlayback
+        let currentVideoSoundEnabled = self.playerStatus?.soundEnabled ?? false
         
         let hlsInlinePlaybackRange = self.hlsInlinePlaybackRange
         let appliedHlsInlinePlaybackRange = self.appliedHlsInlinePlaybackRange
@@ -949,6 +1436,9 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
             var isSticker = false
             var maxDimensions = layoutConstants.image.maxDimensions
             var maxHeight = layoutConstants.image.maxDimensions.height
+            // MARK: Swiftgram
+            // SuperGram (W2-CHATUI-HISTORY, wideChannelPosts): the stock max dimensions of a widened single image, used to clamp its height.
+            var imageOriginalMaxDimensions: CGSize?
             var isStory = false
             var isGift = false
             
@@ -971,6 +1461,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                 }
             } else if let image = media as? TelegramMediaImage, let dimensions = largestImageRepresentation(image.representations)?.dimensions {
                 unboundSize = CGSize(width: max(10.0, floor(dimensions.cgSize.width * 0.5)), height: max(10.0, floor(dimensions.cgSize.height * 0.5)))
+                // MARK: Swiftgram
+                // SuperGram (W2-CHATUI-HISTORY): wideChannelPosts widens single images in broadcast channels.
+                if let channel = message.peers[message.id.peerId] as? TelegramChannel, case .broadcast = channel.info, SGSimpleSettings.shared.wideChannelPosts {
+                    imageOriginalMaxDimensions = maxDimensions
+                    switch sizeCalculation {
+                    case let .constrained(constrainedSize):
+                        maxDimensions.width = constrainedSize.width
+                    case .unconstrained:
+                        maxDimensions.width = unboundSize.width
+                    }
+                    if message.text.isEmpty {
+                        maxDimensions.width = max(layoutConstants.image.maxDimensions.width, unboundSize.aspectFitted(CGSize(width: maxDimensions.width, height: layoutConstants.image.minDimensions.height)).width)
+                    }
+                }
             } else if let file = media as? TelegramMediaFile, var dimensions = file.dimensions {
                 if let thumbnail = file.previewRepresentations.first {
                     let dimensionsVertical = dimensions.width < dimensions.height
@@ -1158,7 +1662,21 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                         automaticPlayback = false
                     }
                 }
-                
+                // A GIF's thermal refresh can relayout an entire album. Preserve its neighbour's explicit
+                // playback with sound (including paused/buffering) when the automatic energy policy is off.
+                if !automaticPlayback, currentVideoNode != nil, currentVideoSoundEnabled,
+                   let file = media as? TelegramMediaFile, file.isVideo && !file.isAnimated && !file.isInstantVideo && !file.isVideoSticker,
+                   currentMessage?.id == message.id,
+                   currentMedia?.isSemanticallyEqual(to: media) == true {
+                    automaticPlayback = true
+                }
+                // SuperGram: inline video/GIF autoplay in the chat feed is the sgInlineAutoplayVideos setting (default on).
+                // Live photos keep playing once; round videos use their own node and are not affected.
+                let isLivePhoto = (media as? TelegramMediaImage)?.video != nil
+                if automaticPlayback && !isLivePhoto && !SuperGramInlineMediaEnvironment.shared.inlineAutoplayVideos {
+                    automaticPlayback = false
+                }
+
                 isInlinePlayableVideo = isInlinePlayableVideo && automaticPlayback
                 
                 switch sizeCalculation {
@@ -1198,6 +1716,10 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                 }
                                 
                                 boundingSize = CGSize(width: boundingWidth, height: filledSize.height).cropped(CGSize(width: CGFloat.greatestFiniteMagnitude, height: maxHeight))
+                                // MARK: Swiftgram
+                                if let imageOriginalMaxDimensions = imageOriginalMaxDimensions {
+                                    boundingSize.height = min(boundingSize.height, nativeSize.aspectFitted(imageOriginalMaxDimensions).height)
+                                }
                                 boundingSize.height = max(boundingSize.height, layoutConstants.image.minDimensions.height)
                                 boundingSize.width = max(boundingSize.width, layoutConstants.image.minDimensions.width)
                                 switch contentMode {
@@ -1265,7 +1787,24 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                     var onlyFullSizeVideoThumbnail: Bool?
                     
                     var loadHLSRangeVideoFile: TelegramMediaFile?
-                    
+                    // SuperGram: the bubble plays an HLS video's original file directly when that original is already
+                    // fully on disk, instead of pulling HLS renditions over the network for a file that is already
+                    // downloaded. Only a *complete* original qualifies here: a partial one would need the
+                    // minimized-quality byte range, which does not describe the original file.
+                    //
+                    // GOAL-STREAMING: the gallery (`galleryItemForEntry`) uses the same switch but a looser test
+                    // (`.completeOrHalfPresent`), so bubble and gallery *can* disagree for a half-downloaded original.
+                    // That is safe in both directions, and deliberately so:
+                    //  * neither branch can select a source nobody fetches — `useDownloadedOriginalInsteadOfHLS`
+                    //    requires the original to be complete, and the gallery's `NativeVideoContent` is built with
+                    //    `fetchAutomatically: true`, so it fetches whatever it decided to play;
+                    //  * a disagreement no longer hands one side the other's player: `HLSVideoContent` namespaces its
+                    //    holder id through `HLSVideoContentId`, so an HLS bubble and a native gallery item get
+                    //    separate content nodes.
+                    // Keep both properties in mind before loosening this test to match the gallery's: the bubble
+                    // playing the full-size original inline is exactly the traffic the HLS renditions exist to avoid.
+                    var useDownloadedOriginalInsteadOfHLS = false
+
                     var emptyColor: UIColor
                     var patternArguments: PatternWallpaperArguments?
                     if isSticker {
@@ -1412,14 +1951,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                         
                                         var passFile = true
                                         if NativeVideoContent.isHLSVideo(file: file), let minimizedQualityFile = HLSVideoContent.minimizedHLSQuality(file: .message(message: MessageReference(message), media: file), codecConfiguration: HLSCodecConfiguration(context: context)) {
-                                            if !useInlineHLS {
-                                                file = minimizedQualityFile.file.media
-                                            }
-                                            if hlsInlinePlaybackRange == nil {
-                                                passFile = false
+                                            if useInlineHLS && SuperGramMediaStreamingSettings.preferDownloadedOriginal && superGramPrefersDownloadedOriginal(mediaBox: context.account.postbox.mediaBox, resource: file.resource, size: file.size, requirement: .complete) {
+                                                // The whole original is on disk: play it, and do not wait for (or fetch) the HLS preload range.
+                                                useDownloadedOriginalInsteadOfHLS = true
+                                                loadHLSRangeVideoFile = nil
+                                            } else {
+                                                if !useInlineHLS {
+                                                    file = minimizedQualityFile.file.media
+                                                }
+                                                if hlsInlinePlaybackRange == nil {
+                                                    passFile = false
+                                                }
                                             }
                                         }
-                                        
+
                                         if passFile {
                                             updateVideoFile = file
                                             if hasCurrentVideoNode {
@@ -1596,14 +2141,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                 
                                 var passFile = true
                                 if NativeVideoContent.isHLSVideo(file: file), let minimizedQualityFile = HLSVideoContent.minimizedHLSQuality(file: .message(message: MessageReference(message), media: file), codecConfiguration: HLSCodecConfiguration(context: context)) {
-                                    if !useInlineHLS {
-                                        file = minimizedQualityFile.file.media
-                                    }
-                                    if hlsInlinePlaybackRange == nil {
-                                        passFile = false
+                                    if useInlineHLS && SuperGramMediaStreamingSettings.preferDownloadedOriginal && superGramPrefersDownloadedOriginal(mediaBox: context.account.postbox.mediaBox, resource: file.resource, size: file.size, requirement: .complete) {
+                                        // The whole original is on disk: play it, and do not wait for (or fetch) the HLS preload range.
+                                        useDownloadedOriginalInsteadOfHLS = true
+                                        loadHLSRangeVideoFile = nil
+                                    } else {
+                                        if !useInlineHLS {
+                                            file = minimizedQualityFile.file.media
+                                        }
+                                        if hlsInlinePlaybackRange == nil {
+                                            passFile = false
+                                        }
                                     }
                                 }
-                                
+
                                 if passFile {
                                     updateVideoFile = file
                                     if hasCurrentVideoNode {
@@ -1716,7 +2267,9 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                     if !reloadMedia {
                         updateImageSignal = nil
                     } else {
+                        #if DEBUG
                         print("reload media")
+                        #endif
                     }
                     
                     var isExtendedMedia = false
@@ -1978,18 +2531,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                     videoNode.canAttachContent = false
                                     videoNode.removeFromSupernode()
                                     strongSelf.videoNode = nil
+                                    SuperGramInlineVideoPlaybackBudget.shared.releasePlayback(node: strongSelf)
                                 }
-                                
+
                                 if currentReplaceVideoNode, let updatedVideoFile = updateVideoFile {
                                     let decoration = ChatBubbleVideoDecoration(corners: videoCorners, nativeSize: nativeSize, contentMode: contentMode.bubbleVideoDecorationContentMode, backgroundColor: arguments.emptyColor ?? .black)
                                     strongSelf.videoNodeDecoration = decoration
                                     let mediaManager = context.sharedContext.mediaManager
-                                    
+
                                     let streamVideo = isMediaStreamable(message: EngineMessage(message), media: updatedVideoFile)
                                     let loopVideo = updatedVideoFile.isAnimated
-                                    
+                                    strongSelf.superGramInlineVideoPlaybackKind = (loopVideo || media is TelegramMediaImage) ? .animation : .video
+
                                     let videoContent: UniversalVideoContent
-                                    if useInlineHLS && NativeVideoContent.isHLSVideo(file: updatedVideoFile) {
+                                    if useInlineHLS && !useDownloadedOriginalInsteadOfHLS && NativeVideoContent.isHLSVideo(file: updatedVideoFile) {
                                         videoContent = HLSVideoContent(
                                             id: .message(message.stableId, updatedVideoFile.fileId),
                                             userLocation: .peer(message.id.peerId),
@@ -2006,7 +2561,9 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                             id: .message(message.stableId, updatedVideoFile.fileId),
                                             userLocation: .peer(message.id.peerId),
                                             fileReference: .message(message: MessageReference(message), media: updatedVideoFile),
-                                            limitedFileRange: hlsInlinePlaybackRange,
+                                            // The HLS preload range describes the minimized-quality file, so it must not be
+                                            // applied when we deliberately switched to the (complete, local) original.
+                                            limitedFileRange: useDownloadedOriginalInsteadOfHLS ? nil : hlsInlinePlaybackRange,
                                             streamVideo: streamVideo ? .conservative : .none,
                                             loopVideo: loopVideo,
                                             enableSound: false,
@@ -2015,7 +2572,7 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                             autoFetchFullSizeThumbnail: true,
                                             continuePlayingWithoutSoundOnLostAudioSession: isInlinePlayableVideo,
                                             placeholderColor: emptyColor,
-                                            captureProtected: associatedData.isCopyProtectionEnabled || message.isCopyProtected() || isExtendedMedia,
+                                            captureProtected: message.sgCaptureProtected(isCopyProtected: associatedData.isCopyProtectionEnabled || message.isCopyProtected()) || isExtendedMedia,
                                             storeAfterDownload: { [weak context] in
                                                 guard let context, let peerId else {
                                                     return
@@ -2135,12 +2692,24 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                         animatedStickerNode.setup(source: AnimatedStickerResourceSource(account: context.account, resource: updatedAnimatedStickerFile.resource, isVideo: updatedAnimatedStickerFile.isVideo), width: Int(fittedDimensions.width), height: Int(fittedDimensions.height), mode: .direct(cachePathPrefix: nil))
                                     }
                                     strongSelf.pinchContainerNode.contentNode.insertSubnode(animatedStickerNode, aboveSubnode: strongSelf.imageNode)
-                                    animatedStickerNode.visibility = strongSelf.visibility
+                                    animatedStickerNode.visibility = strongSelf.visibility && SuperGramInlineMediaEnvironment.shared.isApplicationActive
                                 }
                             }
                             
-                            if message.attributes.contains(where: { $0 is MediaSpoilerMessageAttribute }), strongSelf.extendedMediaOverlayNode == nil {
-                                strongSelf.internallyVisible = false
+                            if message.attributes.contains(where: { $0 is MediaSpoilerMessageAttribute }) {
+                                if strongSelf.extendedMediaOverlayNode == nil {
+                                    strongSelf.internallyVisible = false
+                                }
+                            } else if !strongSelf.internallyVisible {
+                                // SuperGram (STUCK-UI-LAYER): `internallyVisible` is the spoiler gate, and the only
+                                // writer of `false` is the branch above. It was never restored when the node was
+                                // recycled, so a media node that had once been bound to a spoilered message stayed
+                                // "internally invisible" for every later message it was reused for. That kept
+                                // `visibilityPromise` at `false` — which is what gates the video / HLS / prefetch
+                                // fetches — and also kept the stalled-download watchdog switched off, i.e. media in
+                                // that node could sit on a spinner forever with nothing able to restart it.
+                                strongSelf.internallyVisible = true
+                                strongSelf.updateVisibility()
                             }
                                                         
                             if let videoNode = strongSelf.videoNode {
@@ -2163,16 +2732,11 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                     transition.animator.updateFrame(layer: videoNode.layer, frame: CGRect(origin: CGPoint(), size: imageFrame.size), completion: nil)
                                 }
                                 
-                                if strongSelf.visibility && strongSelf.internallyVisible && !presentationData.isPreview {
-                                    if !videoNode.canAttachContent {
-                                        videoNode.canAttachContent = true
-                                        if videoNode.hasAttachedContext {
-                                            videoNode.play()
-                                        }
-                                    }
-                                } else {
-                                    videoNode.canAttachContent = false
-                                }
+                                // SuperGram (MEM-03): re-layouts while the app is in background (message/poll updates under
+                                // the keep-alive) must not re-attach and play inline video; attachment also goes through the budget
+                                strongSelf.updateInlineVideoAttachment(isVisible: strongSelf.visibility && strongSelf.internallyVisible && !presentationData.isPreview && SuperGramInlineMediaEnvironment.shared.isApplicationActive)
+                            } else {
+                                SuperGramInlineVideoPlaybackBudget.shared.releasePlayback(node: strongSelf)
                             }
                             
                             if displayInlineScrubber, videoTimestamp != nil, let file = media as? TelegramMediaFile, let duration = file.duration, duration > 1.0 {
@@ -2317,7 +2881,8 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                             }
                             
                             if let updateImageSignal = updateImageSignal {
-                                strongSelf.imageNode.captureProtected = associatedData.isCopyProtectionEnabled || message.isCopyProtected() || isExtendedMedia
+                                // SuperGram: copy protection honours sgAllowScreenCaptureProtected; secret media and extended (paid) media stay protected.
+                                strongSelf.imageNode.captureProtected = message.sgCaptureProtected(isCopyProtected: associatedData.isCopyProtectionEnabled || message.isCopyProtected()) || isExtendedMedia
                                 strongSelf.imageNode.setSignal(updateImageSignal(synchronousLoads, false), attemptSynchronously: synchronousLoads)
 
                                 var imageDimensions: CGSize?
@@ -2356,6 +2921,7 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                         if let strongSelf = strongSelf {
                                             strongSelf.fetchStatus = status
                                             strongSelf.actualFetchStatus = actualFetchStatus
+                                            strongSelf.superGramNoteFetchStatus(status)
                                             strongSelf.updateStatus(animated: synchronousLoads)
                                         }
                                     }
@@ -2405,7 +2971,20 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                             
                             if let updatedFetchControls = updatedFetchControls {
                                 let _ = strongSelf.fetchControls.swap(updatedFetchControls)
-                                
+                                // SuperGram (FIX-MEDIA-UI): the media behind this node changed, so a restart closure
+                                // captured for the previous one must not survive.
+                                strongSelf.superGramRestartFetch = nil
+                                strongSelf.superGramStallRetryCount = 0
+                                strongSelf.superGramStallTotalRetryCount = 0
+                                strongSelf.superGramStallLastRetryTimestamp = 0.0
+                                strongSelf.superGramStallProgress = nil
+                                strongSelf.superGramStallFetchIsActive = true
+                                strongSelf.superGramStallHasSeenProgress = false
+                                strongSelf.superGramStallMediaKey = nil
+                                strongSelf.superGramStallRestartIsPending = false
+                                strongSelf.superGramStallRestartGeneration += 1
+                                strongSelf.superGramStallTimestamp = CACurrentMediaTime()
+
                                 var media = media
                                 var extendedMedia: TelegramExtendedMedia?
                                 if let invoice = media as? TelegramMediaInvoice, let selectedMedia = invoice.extendedMedia {
@@ -2450,11 +3029,32 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                             return .complete()
                                         }
                                     }
+                                    // SuperGram (FIX-MEDIA-UI): how the stalled-download watchdog re-issues this fetch
+                                    strongSelf.superGramRestartFetch = { [weak strongSelf] _ in
+                                        strongSelf?.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
+                                    }
                                     strongSelf.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
                                 } else if case .full = automaticDownload {
                                     if let _ = media as? TelegramMediaImage {
+                                        strongSelf.superGramRestartFetch = { [weak strongSelf] userInitiated in
+                                            guard let strongSelf else {
+                                                return
+                                            }
+                                            if let fetch = strongSelf.fetchControls.with({ return $0?.fetch }) {
+                                                // SuperGram (STUCK-UI-LAYER): an escalated self-heal re-issues the
+                                                // auto-download as user-initiated, so the entry stops being
+                                                // preemptible and stays eligible under critical download pressure.
+                                                fetch(userInitiated)
+                                            }
+                                        }
                                         updatedFetchControls.fetch(false)
                                     } else if let image = media as? TelegramMediaWebFile {
+                                        strongSelf.superGramRestartFetch = { [weak strongSelf] _ in
+                                            guard let strongSelf else {
+                                                return
+                                            }
+                                            strongSelf.fetchDisposable.set(chatMessageWebFileInteractiveFetched(account: context.account, userLocation: .peer(message.id.peerId), image: image).startStrict())
+                                        }
                                         strongSelf.fetchDisposable.set(chatMessageWebFileInteractiveFetched(account: context.account, userLocation: .peer(message.id.peerId), image: image).startStrict())
                                     } else if let file = media as? TelegramMediaFile {
                                         let fetchSignal = messageMediaFileInteractiveFetched(context: context, message: message, file: file, userInitiated: false, storeToDownloadsPeerId: peerId)
@@ -2468,6 +3068,9 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                             } else {
                                                 return .complete()
                                             }
+                                        }
+                                        strongSelf.superGramRestartFetch = { [weak strongSelf] _ in
+                                            strongSelf?.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
                                         }
                                         strongSelf.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
                                     }
@@ -2484,10 +3087,13 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
                                                 return .complete()
                                             }
                                         }
+                                        strongSelf.superGramRestartFetch = { [weak strongSelf] _ in
+                                            strongSelf?.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
+                                        }
                                         strongSelf.fetchDisposable.set(visibilityAwareFetchSignal.startStrict())
                                     }
                                 }
-                                
+
                                 if let file = media as? TelegramMediaFile, let image = file.videoCover, let representation = largestRepresentationForPhoto(image) {
                                     strongSelf.coverFetchDisposable.set(messageMediaImageInteractiveFetched(context: context, message: message, image: image, resource: representation.resource, range: representationFetchRangeForDisplayAtSize(representation: representation, dimension: nil), userInitiated: false, storeToDownloadsPeerId: nil).startStrict())
                                 }
@@ -2551,6 +3157,10 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
     }
     
     private func updateStatus(animated: Bool) {
+        // SuperGram (FIX-MEDIA-UI): single funnel for "the presented state changed", so the stalled-download
+        // watchdog also picks up changes that do not come from the status signal (message sent, node re-bound).
+        self.superGramUpdateStallWatchdog()
+
         guard let (theme, strings, decimalSeparator, isPreview) = self.themeAndStrings, let sizeCalculation = self.sizeCalculation, let message = self.message, let attributes = self.attributes, var automaticPlayback = self.automaticPlayback, let wideLayout = self.wideLayout else {
             return
         }
@@ -3593,7 +4203,11 @@ public final class ChatMessageInteractiveMediaNode: ASDisplayNode, GalleryItemTr
         }
         
         if let videoNode = self.videoNode, let context = self.context, (self.automaticPlayback ?? false) && !isAnimated {
-            return ({ timecode in
+            return ({ [weak self] timecode in
+                // SuperGram: the player the user starts with sound must own an inline playback slot
+                if let self {
+                    SuperGramInlineVideoPlaybackBudget.shared.pinPlayback(node: self)
+                }
                 if let timecode = timecode {
                     context.sharedContext.mediaManager.playlistControl(.playback(.pause), type: nil)
                     videoNode.playOnceWithSound(playAndRecord: false, seek: .timecode(timecode), actionAtEnd: actionAtEnd)

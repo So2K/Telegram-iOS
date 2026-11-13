@@ -34,7 +34,8 @@ class ShareRootController: UIViewController {
             
             let languagesCategory = "ios"
             
-            let appGroupName = "group.\(baseAppBundleId)"
+            // SuperGram: the provisioned app group; must match telegramAppGroupIdentifier (TelegramUI/AppDelegate.swift).
+            let appGroupName = "group.ffcd1c12e1a9728e.1"
             let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
             
             guard let appGroupUrl = maybeAppGroupUrl else {

@@ -318,7 +318,8 @@ final class PeerInfoRecommendedPeersPaneNode: ASDisplayNode, PeerInfoPaneNode {
         guard let (_, isPremium) = self.currentState, let currentParams = self.currentParams else {
             return
         }
-        if !isPremium {
+        // SuperGram: the list keeps the free subset, without the "Show more with Premium" panel (UPS-11)
+        if !isPremium && !superGramHidePremiumUpsell {
             var transition = transition
             let size = currentParams.size
             let sideInset = currentParams.sideInset

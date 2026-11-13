@@ -188,7 +188,8 @@ final class PasscodeEntryButtonNode: HighlightTrackingButtonNode {
         if self.currentImage !== image {
             let currentContents = self.backgroundNode.layer.contents
             self.backgroundNode.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents as? CGImage, let image = image, let imageContents = image.cgImage {
+            if let currentContents = currentContents, CFGetTypeID(currentContents as CFTypeRef) == CGImage.typeID, let image = image, let imageContents = image.cgImage {
+                let currentContents = currentContents as! CGImage
                 self.backgroundNode.image = image
                 self.backgroundNode.layer.animate(from: currentContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.45 : 0.05)
             } else {

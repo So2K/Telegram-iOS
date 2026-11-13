@@ -1445,6 +1445,8 @@ private final class ItemSelectionRecognizer: UIGestureRecognizer {
     }
 }
 
+private let contextMenuPanelCornerRadius: CGFloat = 18.0
+
 private final class LensTransitionContainerEffectViewImpl: UIView, LensTransitionContainerEffectView {
     let glassView: UIVisualEffectView
     let contentView: UIView?
@@ -1469,6 +1471,8 @@ private final class LensTransitionContainerEffectViewImpl: UIView, LensTransitio
     
     func update(theme: PresentationTheme) {
         self.theme = theme
+        self.glassView.contentView.backgroundColor = theme.contextMenu.backgroundColor.withAlphaComponent(1.0)
+#if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             let glassEffectValue: UIGlassEffect
             if theme.overallDarkAppearance {
@@ -1480,15 +1484,21 @@ private final class LensTransitionContainerEffectViewImpl: UIView, LensTransitio
             }
             self.glassView.effect = glassEffectValue
         }
+#endif
     }
     
     func updateSize(size: CGSize, cornerRadius: CGFloat, transition: ComponentTransition) {
         transition.animateView {
             self.glassView.bounds.size = size
             self.glassView.center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+            self.glassView.layer.cornerRadius = cornerRadius
+            self.glassView.layer.cornerCurve = .continuous
+            self.glassView.clipsToBounds = true
+#if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 self.glassView.cornerConfiguration = .corners(radius: UICornerRadius(floatLiteral: cornerRadius))
             }
+#endif
         }
     }
     
@@ -1582,6 +1592,17 @@ private final class LensTransitionContainerEffectViewImpl: UIView, LensTransitio
     }
     
     func updateCornerRadius(duration: Double, keyframes: [CGFloat]) {
+        if let cornerRadius = keyframes.last {
+            self.glassView.clipsToBounds = true
+            if duration == 0.0 {
+                self.glassView.layer.cornerRadius = cornerRadius
+            } else {
+                UIView.animate(withDuration: duration) {
+                    self.glassView.layer.cornerRadius = cornerRadius
+                }
+            }
+        }
+#if compiler(>=6.2)
         guard #available(iOS 26.0, *) else {
             return
         }
@@ -1620,6 +1641,9 @@ private final class LensTransitionContainerEffectViewImpl: UIView, LensTransitio
             },
             completion: nil
         )
+#else
+        return
+#endif
     }
     
     func setTransitionFraction(value: CGFloat, duration: Double) {
@@ -1705,7 +1729,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
                     self.requestPop?()
                 } else {
                     self.transitionFraction = 0.0
-                    self.requestUpdate?(.animated(duration: 0.45, curve: .spring))
+                    self.requestUpdate?(.animated(duration: 0.32, curve: .spring))
                 }
             default:
                 break
@@ -1725,7 +1749,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
             let sourceEffectView = LensTransitionContainerEffectViewImpl(contentView: extractableContainer.extractableContentView)
             sourceEffectView.update(theme: presentationData.theme)
             
-            self.contentContainer.animateIn(fromRect: fromRect, toRect: CGRect(origin: CGPoint(), size: currentSize), fromCornerRadius: normalCornerRadius, toCornerRadius: 30.0, isDark: presentationData.theme.overallDarkAppearance, sourceEffectView: sourceEffectView)
+            self.contentContainer.animateIn(fromRect: fromRect, toRect: CGRect(origin: CGPoint(), size: currentSize), fromCornerRadius: normalCornerRadius, toCornerRadius: contextMenuPanelCornerRadius, isDark: presentationData.theme.overallDarkAppearance, sourceEffectView: sourceEffectView)
         }
         
         func animateOut(toExtractableContainer extractableContainer: ContextExtractableContainer, toRect: CGRect, presentationData: PresentationData, transition: ComponentTransition) {
@@ -1738,7 +1762,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
             let sourceEffectView = LensTransitionContainerEffectViewImpl(contentView: extractableContainer.extractableContentView)
             sourceEffectView.update(theme: presentationData.theme)
 
-            self.contentContainer.animateOut(fromRect: CGRect(origin: CGPoint(), size: currentSize), toRect: toRect, fromCornerRadius: 30.0, toCornerRadius: normalCornerRadius, isDark: presentationData.theme.overallDarkAppearance, sourceEffectView: sourceEffectView)
+            self.contentContainer.animateOut(fromRect: CGRect(origin: CGPoint(), size: currentSize), toRect: toRect, fromCornerRadius: contextMenuPanelCornerRadius, toCornerRadius: normalCornerRadius, isDark: presentationData.theme.overallDarkAppearance, sourceEffectView: sourceEffectView)
         }
         
         func didAnimateOut(toExtractableContainer extractableContainer: ContextExtractableContainer) {
@@ -1761,7 +1785,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
             }
             transition.setPosition(view: self.contentContainer, position: CGRect(origin: CGPoint(), size: size).center)
             transition.setBounds(view: self.contentContainer, bounds: CGRect(origin: CGPoint(), size: size))
-            self.contentContainer.update(size: size, cornerRadius: min(30.0, size.height * 0.5), isDark: presentationData.theme.overallDarkAppearance, transition: transition)
+            self.contentContainer.update(size: size, cornerRadius: min(contextMenuPanelCornerRadius, size.height * 0.5), isDark: presentationData.theme.overallDarkAppearance, transition: transition)
             
             //let backgroundContainerFrame = CGRect(origin: CGPoint(), size: size).insetBy(dx: -self.backgroundContainerInset, dy: -self.backgroundContainerInset)
             
@@ -2167,7 +2191,7 @@ public final class ContextControllerActionsStackNodeImpl: ASDisplayNode, Context
         
         self.navigationContainer.isNavigationEnabled = self.itemContainers.count > 1
         
-        let transition: ContainedViewLayoutTransition = .animated(duration: 0.45, curve: .spring)
+        let transition: ContainedViewLayoutTransition = .animated(duration: 0.32, curve: .spring)
         self.requestUpdate(transition)
     }
     

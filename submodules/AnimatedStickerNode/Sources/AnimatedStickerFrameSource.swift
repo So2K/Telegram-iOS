@@ -190,10 +190,19 @@ public final class AnimatedStickerCachedFrameSource: AnimatedStickerFrameSource 
             memcpy(&frameLength, bytes.advanced(by: self.offset), 4)
             let frameLengthValue = Int(frameLength)
 
+            // SuperGram: HEAD 9fe18208 added this guard to keep a zero/negative length out of
+            // compression_decode_buffer, but it returned without advancing `self.offset`, so a corrupt cache froze the
+            // source forever - every later takeFrame() re-read the same header and returned nil. Keep the guard and
+            // restore forward progress: skip the bad header once the file is known to be complete (the pre-HEAD
+            // behaviour, which eventually runs past `dataLength` and rewinds to the first frame), and keep waiting for
+            // more data while the file is still being written.
             if frameLengthValue <= 0 {
+                if self.dataComplete {
+                    self.offset += 4
+                }
                 return
             }
-            
+
             if self.offset + 4 + frameLengthValue > dataLength {
                 return
             }

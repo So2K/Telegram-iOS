@@ -154,8 +154,13 @@ final class FFMpegAudioFrameDecoder: MediaTrackFrameDecoder {
         
         let pts = CMTime(value: frame.pts, timescale: self.timescale)
         
-        guard let blockBuffer, CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: blockBuffer, formatDescription: self.formatDescription, sampleCount: Int(data.count / 2), presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer) == noErr, let sampleBuffer else {
+        guard let blockBuffer else {
             free(bytes)
+            return nil
+        }
+        // SuperGram: blockBuffer owns `bytes` from here on (blockAllocator: nil = default allocator);
+        // freeing it on a failure below would be a double free when blockBuffer is released.
+        guard CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: blockBuffer, formatDescription: self.formatDescription, sampleCount: Int(data.count / 2), presentationTimeStamp: pts, packetDescriptions: nil, sampleBufferOut: &sampleBuffer) == noErr, let sampleBuffer else {
             return nil
         }
         

@@ -5,6 +5,17 @@ import SwiftSignalKit
 import AVFoundation
 import UIKitRuntimeUtils
 
+// SuperGram (PERF-DECODE-1/MEM-09): image transforms used to be delivered on the global concurrent queue,
+// which imposes no limit of its own. A fling through a media-heavy chat starts one transform per item, and
+// each one decodes a full-size image and allocates a DrawingContext of several megabytes, so the process
+// both explodes in threads and peaks at a multiple of the memory it actually needs - the top jetsam trigger
+// while downloads are running. A small fixed pool bounds both: at most three transforms are in flight, the
+// rest queue up. Their thread priority is below the main thread's, so scrolling stays smooth while they run.
+//
+// Transforms only ever compute (decode, draw, blur); nothing in one blocks on another, so a fixed pool
+// cannot deadlock here. The synchronous path (`attemptSynchronously`) does not go through the pool.
+private let transformImageThreadPool = ThreadPool(threadCount: 3, threadPriority: 0.4)
+
 public struct TransformImageNodeContentAnimations: OptionSet {
     public var rawValue: Int32
     
@@ -80,9 +91,9 @@ open class TransformImageNode: ASDisplayNode {
             resultData = data
         } else {
             resultData = data
-            |> deliverOn(Queue.concurrentDefaultQueue())
+            |> deliverOn(transformImageThreadPool)
         }
-        
+
         let result = resultData
         |> mapToThrottled { transform, arguments -> Signal<((TransformImageArguments) -> DrawingContext?, TransformImageArguments, UIImage?)?, NoError> in
             return deferred {
@@ -246,7 +257,8 @@ open class TransformImageNode: ASDisplayNode {
     
     private func applyOverlayColor(animated: Bool) {
         if let overlayColor = self.overlayColor {
-            if let contents = self.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID, let image = contents as? CGImage {
+            if let contents = self.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID {
+                let image = contents as! CGImage
                 if let overlayNode = self.overlayNode, let imageView = overlayNode.view as? UIImageView {
                     imageView.image = UIImage(cgImage: image).withRenderingMode(.alwaysTemplate)
                     overlayNode.tintColor = overlayColor
@@ -329,7 +341,7 @@ open class TransformImageView: UIView {
             resultData = data
         } else {
             resultData = data
-            |> deliverOn(Queue.concurrentDefaultQueue())
+            |> deliverOn(transformImageThreadPool)
         }
 
         let result = resultData

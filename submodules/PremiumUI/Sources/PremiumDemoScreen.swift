@@ -1264,7 +1264,10 @@ private final class DemoSheetContent: CombinedComponent {
             
             let buttonText: String
             var buttonAnimationName: String?
-            if state.isPremium == true {
+            // SuperGram (UPS-14): a feature demo stays informational for non-subscribers. The button becomes "OK" and
+            // only closes the sheet; it no longer bridges to the Premium sales screen (`component.action()`).
+            let superGramSuppressUpsell = superGramHidePremiumUpsell && state.isPremium != true
+            if state.isPremium == true || superGramSuppressUpsell {
                 buttonText = strings.Common_OK
             } else {
                 switch component.source {
@@ -1357,7 +1360,7 @@ private final class DemoSheetContent: CombinedComponent {
                         color: premiumGradientColors[0],
                         foreground: .white,
                         pressedColor: premiumGradientColors[0],
-                        isShimmering: state.isPremium != true,
+                        isShimmering: state.isPremium != true && !superGramSuppressUpsell,
                         gradient: ButtonComponent.Background.Gradient(
                             colors: premiumGradientColors,
                             animation: .horizontalShift(duration: 4.5)
@@ -1372,7 +1375,7 @@ private final class DemoSheetContent: CombinedComponent {
                             return
                         }
                         component.dismiss()
-                        if let state = state, state.isPremium == false {
+                        if !superGramSuppressUpsell, let state = state, state.isPremium == false {
                             component.action()
                         }
                     }

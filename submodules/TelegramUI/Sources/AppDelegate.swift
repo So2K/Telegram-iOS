@@ -46,6 +46,7 @@ import NavigationBarImpl
 import ContextUI
 import ContextControllerImpl
 import ProxyServerPreviewScreen
+import FetchManagerImpl
 
 #if canImport(AppCenter)
 import AppCenter
@@ -53,6 +54,28 @@ import AppCenterCrashes
 #endif
 
 private let handleVoipNotifications = false
+
+// The installed distribution profile uses the production APNS environment.
+let telegramPushNotificationEnvironmentIsSandbox = false
+// SuperGram: the single provisioned app group of this build. The same literal is used by
+// DebugController, WidgetItems, NotificationService, Share and SGAppGroupIdentifier; keep them in sync.
+let telegramAppGroupIdentifier = "group.ffcd1c12e1a9728e.1"
+
+// This custom bundle has no Telegram APNS provider, so it keeps the primary
+// MTProto connection alive and emits local notifications while it is running.
+let telegramLocalNotificationFallbackEnabled = true
+// userInfo key set on every notification produced by that fallback (see AuthorizedApplicationContext).
+let telegramLocalNotificationFallbackKey = "sgLocalNotificationFallback"
+
+// SuperGram: diagnostics switches of the SuperGram settings screen (SGSimpleSettings keys in UserDefaults.standard).
+// File logging and MTProto network logging are off by default for every build type.
+private func superGramFileLoggingEnabled() -> Bool {
+    return UserDefaults.standard.object(forKey: "sgFileLogging") as? Bool ?? false
+}
+
+private func superGramNetworkLoggingEnabled() -> Bool {
+    return UserDefaults.standard.object(forKey: "sgNetworkLogging") as? Bool ?? false
+}
 
 private var testIsLaunched = false
 
@@ -223,11 +246,15 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     private var buildConfig: BuildConfig?
     let episodeId = arc4random()
+
+    private var superGramLoggingDefaultsObserver: NSObjectProtocol?
     
     private let isInForegroundPromise = ValuePromise<Bool>(false, ignoreRepeated: true)
     private var isInForegroundValue = false
     private let isActivePromise = ValuePromise<Bool>(false, ignoreRepeated: true)
     private var isActiveValue = false
+    // SuperGram: identifier of the registered BGAppRefreshTask (see didFinishLaunching).
+    private var superGramAppRefreshTaskId: String?
     let hasActiveAudioSession = Promise<Bool>(false)
     
     private let sharedContextPromise = Promise<SharedApplicationContext>()
@@ -286,8 +313,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             return existingSession
         }
         
-        let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
+        let appGroupName = telegramAppGroupIdentifier
 
         let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
         configuration.sharedContainerIdentifier = appGroupName
@@ -397,6 +423,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let (window, hostView) = nativeWindowHostView()
         let statusBarHost = ApplicationStatusBarHost(scene: window.windowScene)
         self.mainWindow = Window1(hostView: hostView, statusBarHost: statusBarHost)
+        // SuperGram: touch journal for frozen-UI reports (see SuperGramTouchJournalRecognizer).
+        hostView.containerView.addGestureRecognizer(SuperGramTouchJournalRecognizer())
         if let traitCollection = window.rootViewController?.traitCollection {
             if #available(iOS 13.0, *) {
                 switch traitCollection.userInterfaceStyle {
@@ -425,30 +453,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
                     var result: [(String, NotificationManagedNotificationRequestId)] = []
                     for notification in notifications {
-                        if let requestId = NotificationManagedNotificationRequestId(string: notification.request.identifier) {
+                        if let requestId = NotificationManagedNotificationRequestId(string: notification.request.identifier, userInfo: notification.request.content.userInfo) {
                             result.append((notification.request.identifier, requestId))
-                        } else {
-                            let payload = notification.request.content.userInfo
-                            var notificationRequestId: NotificationManagedNotificationRequestId?
-                            
-                            var peerId: PeerId?
-                            if let fromId = notificationPayloadInt64(payload["from_id"]) {
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(fromId))
-                            } else if let fromId = notificationPayloadInt64(payload["chat_id"]) {
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(fromId))
-                            } else if let fromId = notificationPayloadInt64(payload["channel_id"]) {
-                                peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(fromId))
-                            }
-                            
-                            if let msgId = notificationPayloadInt32(payload["msg_id"]) {
-                                if let peerId = peerId {
-                                    notificationRequestId = .messageId(MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId))
-                                }
-                            }
-                            
-                            if let notificationRequestId = notificationRequestId {
-                                result.append((notification.request.identifier, notificationRequestId))
-                            }
                         }
                     }
                     completion.f(result)
@@ -458,7 +464,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 if let notifications = UIApplication.shared.scheduledLocalNotifications {
                     for notification in notifications {
                         if let userInfo = notification.userInfo, let id = userInfo["id"] as? String {
-                            if let requestId = NotificationManagedNotificationRequestId(string: id) {
+                            if let requestId = NotificationManagedNotificationRequestId(string: id, userInfo: userInfo) {
                                 result.append((id, requestId))
                             }
                         }
@@ -485,7 +491,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 UNUserNotificationCenter.current().getPendingNotificationRequests(completionHandler: { requests in
                     var result: [(String, NotificationManagedNotificationRequestId)] = []
                     for request in requests {
-                        if let requestId = NotificationManagedNotificationRequestId(string: request.identifier) {
+                        if let requestId = NotificationManagedNotificationRequestId(string: request.identifier, userInfo: request.content.userInfo) {
                             result.append((request.identifier, requestId))
                         }
                     }
@@ -496,7 +502,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 if let notifications = UIApplication.shared.scheduledLocalNotifications {
                     for notification in notifications {
                         if let userInfo = notification.userInfo, let id = userInfo["id"] as? String {
-                            if let requestId = NotificationManagedNotificationRequestId(string: id) {
+                            if let requestId = NotificationManagedNotificationRequestId(string: id, userInfo: userInfo) {
                                 result.append((id, requestId))
                             }
                         }
@@ -524,7 +530,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
         
         let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
+        let appGroupName = telegramAppGroupIdentifier
         let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
         
         let buildConfig = BuildConfig(baseAppBundleId: baseAppBundleId)
@@ -559,12 +565,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                 CallSessionManagerImplementationVersion(version: version, supportsVideo: supportsVideo)
             },
             appData: self.regularDeviceToken.get() |> map { token in
-                let tokenEnvironment: String
-                #if DEBUG
-                tokenEnvironment = "sandbox"
-                #else
-                tokenEnvironment = "production"
-                #endif
+                let tokenEnvironment = telegramPushNotificationEnvironmentIsSandbox ? "sandbox" : "production"
                 
                 let data = buildConfig.bundleData(withAppToken: token, tokenType: "apns", tokenEnvironment: tokenEnvironment, signatureDict: signatureDict)
                 if let data = data, let _ = String(data: data, encoding: .utf8) {
@@ -643,20 +644,9 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             return true
         }
         
-        var isDebugConfiguration = false
-        #if DEBUG
-        isDebugConfiguration = true
-        #endif
-        
-        if Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" {
-            isDebugConfiguration = true
-        }
-        
-        if isDebugConfiguration || buildConfig.isInternalBuild {
-            LoggingSettings.defaultSettings = LoggingSettings(logToFile: true, logToConsole: false, redactSensitiveData: true)
-        } else {
-            LoggingSettings.defaultSettings = LoggingSettings(logToFile: false, logToConsole: false, redactSensitiveData: true)
-        }
+        // SuperGram: internal builds and sandbox-receipt (ad-hoc) installs no longer log to file by default;
+        // file logging follows the "sgFileLogging" switch only.
+        LoggingSettings.defaultSettings = LoggingSettings(logToFile: superGramFileLoggingEnabled(), logToConsole: false, redactSensitiveData: true)
         
         let isUITest = CommandLine.arguments.contains("--ui-test")
 
@@ -676,6 +666,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let encryptionParameters = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: false, key: ValueBoxEncryptionParameters.Key(data: deviceSpecificEncryptionParameters.key)!, salt: ValueBoxEncryptionParameters.Salt(data: deviceSpecificEncryptionParameters.salt)!)
         
         TempBox.initializeShared(basePath: rootPath, processType: "app", launchSpecificId: Int64.random(in: Int64.min ... Int64.max))
+
+        SuperGramNotificationDiagnostics.shared.setRootPath(rootPath)
+        SuperGramHangDetector.shared.start()
+        SuperGramNotificationDiagnostics.shared.log("launch: state=\(SuperGramNotificationDiagnostics.describe(application.applicationState)) options=\(launchOptions?.keys.map { $0.rawValue }.joined(separator: ",") ?? "-") build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")")
         
         let writeAbilityTestFile = TempBox.shared.tempFile(fileName: "test.bin")
         var writeAbilityTestSuccess = true
@@ -727,7 +721,21 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         let logsPath = rootPath + "/logs/app-logs"
         let _ = try? FileManager.default.createDirectory(atPath: logsPath, withIntermediateDirectories: true, attributes: nil)
-        Logger.setSharedLogger(Logger(rootPath: rootPath, basePath: logsPath))
+        // SuperGram: start with the effective switches instead of logging everything (file, console, MTProto)
+        // until the stored logging settings are applied.
+        let sharedLogger = Logger(rootPath: rootPath, basePath: logsPath, logToFile: superGramFileLoggingEnabled(), logToConsole: false)
+        sharedLogger.logNetwork = superGramNetworkLoggingEnabled()
+        Logger.setSharedLogger(sharedLogger)
+        self.superGramLoggingDefaultsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: OperationQueue.main, using: { _ in
+            let fileLogging = superGramFileLoggingEnabled()
+            if Logger.shared.logToFile != fileLogging {
+                Logger.shared.logToFile = fileLogging
+            }
+            let networkLogging = superGramNetworkLoggingEnabled()
+            if Logger.shared.logNetwork != networkLogging {
+                Logger.shared.logNetwork = networkLogging
+            }
+        })
 
         setManagedAudioSessionLogger({ s in
             Logger.shared.log("ManagedAudioSession", s)
@@ -857,10 +865,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }, displayNotification: { text in
         }, applicationInForeground: self.isInForegroundPromise.get(),
            applicationIsActive: self.isActivePromise.get(),
-           clearMessageNotifications: { ids in
-            for id in ids {
-                self.clearNotificationsManager?.append(id)
-            }
+           clearMessageNotifications: { _ in
+            // The legacy API cannot identify the account. Main-app callers use the scoped binding below.
         }, pushIdleTimerExtension: {
             let disposable = MetaDisposable()
             Queue.mainQueue().async {
@@ -962,9 +968,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     icons.append(PresentationAppIcon(name: "WhiteFilledIcon", imageName: "WhiteFilledIcon"))
                 }
                 
-                icons.append(PresentationAppIcon(name: "Premium", imageName: "Premium", isPremium: true))
-                icons.append(PresentationAppIcon(name: "PremiumTurbo", imageName: "PremiumTurbo", isPremium: true))
-                icons.append(PresentationAppIcon(name: "PremiumBlack", imageName: "PremiumBlack", isPremium: true))
+                // Alternate icons are bundled client assets. Their names do not require an account entitlement.
+                icons.append(PresentationAppIcon(name: "Premium", imageName: "Premium"))
+                icons.append(PresentationAppIcon(name: "PremiumTurbo", imageName: "PremiumTurbo"))
+                icons.append(PresentationAppIcon(name: "PremiumBlack", imageName: "PremiumBlack"))
                 
                 return icons
             } else {
@@ -1006,6 +1013,10 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             } else {
                 UIDevice.current.setValue(value, forKey: "orientation")
                 UINavigationController.attemptRotationToDeviceOrientation()
+            }
+        }, clearMessageNotificationsForAccount: { accountId, ids in
+            for id in ids {
+                self.clearNotificationsManager?.append(id, accountId: accountId.int64)
             }
         })
         
@@ -1176,16 +1187,59 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             let wakeupManager = SharedWakeupManager(beginBackgroundTask: { name, expiration in
                 let id = application.beginBackgroundTask(withName: name, expirationHandler: expiration)
                 Logger.shared.log("App \(self.episodeId)", "Begin background task \(name): \(id)")
-                print("App \(self.episodeId)", "Begin background task \(name): \(id)")
-                return id
+                return id == .invalid ? nil : id
             }, endBackgroundTask: { id in
-                print("App \(self.episodeId)", "End background task \(id)")
                 Logger.shared.log("App \(self.episodeId)", "End background task \(id)")
                 application.endBackgroundTask(id)
             }, backgroundTimeRemaining: { application.backgroundTimeRemaining }, acquireIdleExtension: {
                 return applicationBindings.pushIdleTimerExtension()
             }, activeAccounts: sharedContext.activeAccountContexts |> map { ($0.0?.account, $0.1.map { ($0.0, $0.1.account) }) }, liveLocationPolling: liveLocationPolling, watchTasks: .single(nil), inForeground: applicationBindings.applicationInForeground, hasActiveAudioSession: self.hasActiveAudioSession.get(), notificationManager: notificationManager, mediaManager: sharedContext.mediaManager, callManager: sharedContext.callManager, accountUserInterfaceInUse: { id in
                 return sharedContext.accountUserInterfaceInUse(id)
+            }, accountHasUserInitiatedDownloads: { (id: AccountRecordId) -> Signal<Bool, NoError> in
+                // SuperGram: "there is a download the user actually started" for this account, used by the
+                // background-download keep-alive. `FetchManagerImpl.hasUserInitiatedEntries` is true exactly while
+                // some active FetchManager entry was created with `userInitiated: true` — the same flag that
+                // becomes `continueInBackground` on the fetch (FetchManagerImpl.swift:710) and decides whether the
+                // media worker connections survive backgrounding (Network.swift:1020).
+                return sharedContext.activeAccountContexts
+                |> map { _, accounts, _ -> AccountContext? in
+                    return accounts.first(where: { $0.0 == id })?.1
+                }
+                |> distinctUntilChanged(isEqual: { (lhs: AccountContext?, rhs: AccountContext?) -> Bool in
+                    return lhs === rhs
+                })
+                |> mapToSignal { context -> Signal<Bool, NoError> in
+                    guard let context else {
+                        return .single(false)
+                    }
+                    guard let fetchManager = context.fetchManager as? FetchManagerImpl else {
+                        // Unreachable with the shipped AccountContextImpl. If it ever were, fall back to the
+                        // previous behaviour (download activity alone) rather than silently switching background
+                        // downloads off.
+                        return .single(true)
+                    }
+                    // `hasUserInitiatedEntries` is derived from the category contexts' *active* contexts, and a
+                    // user-initiated entry leaves that set while it waits out its retry backoff (exponential, up
+                    // to 60 s — FetchManagerImpl.handleEntryFetchFailed) and while the queue hands over to the
+                    // next file. A bare `false` there would let the process suspend in the middle of a download
+                    // the user started, on exactly the flaky network that produces the backoff. So the falling
+                    // edge is held; a new `true` cancels the pending `false` because mapToSignal disposes the
+                    // inner signal. The leading `.single(false)` keeps the very first value synchronous —
+                    // without it the whole per-account task signal (and with it every
+                    // `setCanBeginTransactions` / `shouldBeServiceTaskMaster` update) would be blocked for the
+                    // hold period on every launch.
+                    return Signal<Bool, NoError>.single(false)
+                    |> then(fetchManager.hasUserInitiatedEntries
+                    |> mapToSignal { value -> Signal<Bool, NoError> in
+                        if value {
+                            return .single(true)
+                        } else {
+                            return Signal<Bool, NoError>.single(false)
+                            |> delay(superGramUserInitiatedDownloadHoldPeriod, queue: Queue.mainQueue())
+                        }
+                    })
+                    |> distinctUntilChanged
+                }
             }, presentationData: {
                 return sharedContext.currentPresentationData.with({ $0 })
             })
@@ -1193,13 +1247,25 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             sharedApplicationContext.sharedContext.mediaManager.overlayMediaManager.attachOverlayMediaController(sharedApplicationContext.overlayMediaController)
             
             return accountManager.transaction { transaction -> (SharedApplicationContext, LoggingSettings) in
-                return (sharedApplicationContext, transaction.getSharedData(SharedDataKeys.loggingSettings)?.get(LoggingSettings.self) ?? LoggingSettings.defaultSettings)
+                let loggingSettings = transaction.getSharedData(SharedDataKeys.loggingSettings)?.get(LoggingSettings.self) ?? LoggingSettings.defaultSettings
+                // SuperGram: "sgFileLogging" overrides a stale stored value (e.g. persisted from the old internal-build
+                // default) and is mirrored into the shared settings, which the Debug menu and app extensions read.
+                let fileLogging = superGramFileLoggingEnabled()
+                if loggingSettings.logToFile != fileLogging {
+                    let updatedLoggingSettings = loggingSettings.withUpdatedLogToFile(fileLogging)
+                    transaction.updateSharedData(SharedDataKeys.loggingSettings, { _ in
+                        return PreferencesEntry(updatedLoggingSettings)
+                    })
+                    return (sharedApplicationContext, updatedLoggingSettings)
+                }
+                return (sharedApplicationContext, loggingSettings)
             }
         }
         self.sharedContextPromise.set(sharedContextSignal
         |> mapToSignal { sharedApplicationContext, loggingSettings -> Signal<SharedApplicationContext, NoError> in
             Logger.shared.logToFile = loggingSettings.logToFile
             Logger.shared.logToConsole = loggingSettings.logToConsole
+            Logger.shared.logNetwork = superGramNetworkLoggingEnabled()
             Logger.shared.redactSensitiveData = loggingSettings.redactSensitiveData
             
             return .single(sharedApplicationContext)
@@ -1549,6 +1615,39 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         #endif
         
         if #available(iOS 13.0, *) {
+            // SuperGram: this bundle gets no server pushes, so notifications exist only while the process runs. When
+            // iOS has suspended or killed it anyway (memory pressure, a call took the audio session, reboot), the
+            // system-scheduled app refresh is the only thing that can bring it back: the wakeup gives the accounts
+            // time to sync — new messages then become local notifications — and lets SharedWakeupManager re-arm the
+            // background keep-alive.
+            let refreshTaskId = "\(baseAppBundleId).refresh"
+            BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshTaskId, using: DispatchQueue.main) { [weak self] task in
+                guard let self else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                SuperGramNotificationDiagnostics.shared.log("app refresh task started")
+                self.superGramScheduleAppRefresh(taskId: refreshTaskId)
+                let didComplete = Atomic<Bool>(value: false)
+                let complete: (Bool) -> Void = { success in
+                    if !didComplete.swap(true) {
+                        SuperGramNotificationDiagnostics.shared.log("app refresh task finished: \(success)")
+                        task.setTaskCompleted(success: success)
+                    }
+                }
+                task.expirationHandler = {
+                    complete(false)
+                }
+                let _ = (self.sharedContextPromise.get()
+                |> take(1)
+                |> deliverOnMainQueue).start(next: { sharedApplicationContext in
+                    sharedApplicationContext.wakeupManager.replaceCurrentExtensionWithExternalTime(completion: {
+                        complete(true)
+                    }, timeout: 25.0)
+                })
+            }
+            self.superGramAppRefreshTaskId = refreshTaskId
+
             let cleanupTaskId = "\(baseAppBundleId).cleanup"
             
             BGTaskScheduler.shared.register(forTaskWithIdentifier: cleanupTaskId, using: DispatchQueue.main) { task in
@@ -1929,6 +2028,19 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
+        SuperGramNotificationDiagnostics.shared.log("did enter background, remaining=\(Int(min(application.backgroundTimeRemaining, 99999)))s")
+        SuperGramLayerCensus.log(reason: "background")
+        let mediaStats = MediaBoxWriteStats.shared.snapshotAndReset()
+        if mediaStats.written > 0 {
+            let megabytes: (Int64) -> String = { String(format: "%.1fMB", Double($0) / 1048576.0) }
+            SuperGramNotificationDiagnostics.shared.log("media(background): written=\(megabytes(mediaStats.written)) rewritten=\(megabytes(mediaStats.rewritten)) resources=\(mediaStats.resourceCount) refetched=\(mediaStats.refetchedResourceCount)")
+            for item in mediaStats.top {
+                SuperGramNotificationDiagnostics.shared.log("media:   \(megabytes(item.entry.written)) rewritten=\(megabytes(item.entry.rewritten)) contexts=\(item.entry.contexts) \(item.id.prefix(48))")
+            }
+        }
+        if #available(iOS 13.0, *), let refreshTaskId = self.superGramAppRefreshTaskId {
+            self.superGramScheduleAppRefresh(taskId: refreshTaskId)
+        }
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -2008,6 +2120,8 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        SuperGramNotificationDiagnostics.shared.log("did become active")
+        SuperGramNotificationDiagnostics.shared.dumpDeliveredNotifications(reason: "active")
         self.isInForegroundValue = true
         self.isInForegroundPromise.set(true)
         self.isActiveValue = true
@@ -2036,7 +2150,19 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         //cancelWindowPanGestures(view: self.mainWindow.hostView.containerView)
     }
     
+    @available(iOS 13.0, *)
+    private func superGramScheduleAppRefresh(taskId: String) {
+        let request = BGAppRefreshTaskRequest(identifier: taskId)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15.0 * 60.0)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch let e {
+            SuperGramNotificationDiagnostics.shared.log("app refresh submit error: \(e)")
+        }
+    }
+
     func applicationWillTerminate(_ application: UIApplication) {
+        SuperGramNotificationDiagnostics.shared.log("will terminate")
         Logger.shared.log("App \(self.episodeId)", "terminating")
     }
     
@@ -2050,6 +2176,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable : Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        SuperGramNotificationDiagnostics.shared.log("remote notification keys=\(userInfo.keys.map { "\($0)" }.sorted().joined(separator: ","))")
         let _ = (self.sharedContextPromise.get()
         |> take(1)
         |> deliverOnMainQueue).start(next: { sharedApplicationContext in
@@ -2209,7 +2336,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         
         let phoneNumber = payloadJson["phoneNumber"] as? String
         
-        if let fromIdString = payloadJson["from_id"] as? String, let fromId = Int64(fromIdString), let groupCallIdString = payloadJson["group_call_id"] as? String, let groupCallId = Int64(groupCallIdString), let messageIdString = payloadJson["msg_id"] as? String, let messageId = Int32(messageIdString), let fromTitle = payloadJson["from_title"] as? String {
+        if let fromIdString = payloadJson["from_id"] as? String, let fromId = Int64(fromIdString), fromId > 0, fromId <= 0x00ffffffffffffff, let groupCallIdString = payloadJson["group_call_id"] as? String, let groupCallId = Int64(groupCallIdString), let messageIdString = payloadJson["msg_id"] as? String, let messageId = Int32(messageIdString), let fromTitle = payloadJson["from_title"] as? String {
             guard let callKitIntegration = CallKitIntegration.shared else {
                 Logger.shared.log("App \(self.episodeId) PushRegistry", "CallKitIntegration is not available")
                 completion()
@@ -2811,7 +2938,32 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
             context.openChatWithPeerId(peerId: peerId, threadId: threadId, messageId: messageId, activateInput: activateInput, storyId: storyId, openAppIfAny: openAppIfAny, alwaysKeepMessageId: alwaysKeepMessageId)
         }))
     }
-    
+
+    // SuperGram: openChatWhenReady for a tapped notification — same account switching, but the destination is resolved
+    // by AuthorizedApplicationContext.openChatFromNotification (topic / discussion thread / Replies source at the message).
+    private func openNotificationChatWhenReady(accountId: AccountRecordId?, peerId: PeerId, threadId: Int64?, messageId: MessageId?, storyId: StoryId?) {
+        let signal = self.sharedContextPromise.get()
+        |> take(1)
+        |> deliverOnMainQueue
+        |> mapToSignal { sharedApplicationContext -> Signal<AuthorizedApplicationContext, NoError> in
+            if let accountId = accountId {
+                sharedApplicationContext.sharedContext.switchToAccount(id: accountId)
+                return self.authorizedContext()
+                |> filter { context in
+                    context.context.account.id == accountId
+                }
+                |> take(1)
+            } else {
+                return self.authorizedContext()
+                |> take(1)
+            }
+        }
+        self.openChatWhenReadyDisposable.set((signal
+        |> deliverOnMainQueue).start(next: { context in
+            context.openChatFromNotification(peerId: peerId, threadId: threadId, messageId: messageId, storyId: storyId)
+        }))
+    }
+
     private var openUrlInProgress: URL?
     private func openUrlWhenReady(accountId: AccountRecordId? = nil, url: URL, external: Bool = false) {
         self.openUrlInProgress = url
@@ -2843,8 +2995,14 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        SuperGramNotificationDiagnostics.shared.log("tap action=\(response.actionIdentifier) " + SuperGramNotificationDiagnostics.describe(response.notification))
         let _ = (accountIdFromNotification(response.notification, sharedContext: self.sharedContextPromise.get())
         |> deliverOnMainQueue).start(next: { accountId in
+            if accountId == nil && response.notification.request.content.userInfo["accountId"] != nil {
+                // Explicit invalid ownership must not fall back to opening the currently selected account.
+                completionHandler()
+                return
+            }
             if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
                 if let dataUrl = response.notification.request.content.userInfo["url"] as? String {
                     if let url = URL(string: dataUrl) {
@@ -2852,12 +3010,13 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     }
                 } else {
                     if let (peerId, threadId) = peerIdFromNotification(response.notification) {
-                        var messageId: MessageId? = nil
-                        if response.notification.request.content.categoryIdentifier == "c" || response.notification.request.content.categoryIdentifier == "t" {
-                            messageId = messageIdFromNotification(peerId: peerId, notification: response.notification)
-                        }
+                        // SuperGram: always carry the message id (not only for the "c"/"t" categories) and route through
+                        // the notification resolver, which opens the forum topic / discussion thread / Replies source at
+                        // that message instead of a fake forum replyThread built from a non-forum thread id. Private and
+                        // secret chats keep upstream behaviour inside the resolver.
+                        let messageId = messageIdFromNotification(peerId: peerId, notification: response.notification)
                         let storyId = storyIdFromNotification(peerId: peerId, notification: response.notification)
-                        self.openChatWhenReady(accountId: accountId, peerId: peerId, threadId: threadId, messageId: messageId, storyId: storyId)
+                        self.openNotificationChatWhenReady(accountId: accountId, peerId: peerId, threadId: threadId, messageId: messageId, storyId: storyId)
                     }
                 }
                 completionHandler()
@@ -2887,11 +3046,17 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                         if let messageId = messageIdFromNotification(peerId: peerId, notification: response.notification) {
                             let _ = TelegramEngine(account: account).messages.applyMaxReadIndexInteractively(index: MessageIndex(id: messageId, timestamp: 0)).start()
                         }
-                        var replyToMessageId: MessageId?
-                        if let threadId {
-                            replyToMessageId = MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: threadId))
+                        // SuperGram: only a forum topic id is a reply target. Local fallback notifications carry
+                        // Message.threadId, which for a non-forum supergroup is 1 (or the replied-to id), and replying to
+                        // message 1 sent the quick reply against a nonexistent message.
+                        return TelegramEngine(account: account).data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
+                        |> mapToSignal { peer -> Signal<[MessageId?], NoError> in
+                            var replyToMessageId: MessageId?
+                            if let threadId, let peer, peer._asPeer().isForum {
+                                replyToMessageId = MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: Int32(clamping: threadId))
+                            }
+                            return enqueueMessages(account: account, peerId: peerId, messages: [EnqueueMessage.message(text: text, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: replyToMessageId.flatMap { EngineMessageReplySubject(messageId: $0, quote: nil, innerSubject: nil) }, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])])
                         }
-                        return enqueueMessages(account: account, peerId: peerId, messages: [EnqueueMessage.message(text: text, attributes: [], inlineStickers: [:], mediaReference: nil, threadId: nil, replyToMessageId: replyToMessageId.flatMap { EngineMessageReplySubject(messageId: $0, quote: nil, innerSubject: nil) }, replyToStoryId: nil, localGroupingKey: nil, correlationId: nil, bubbleUpEmojiOrStickersets: [])])
                         |> map { messageIds -> MessageId? in
                             if messageIds.isEmpty {
                                 return nil
@@ -2956,7 +3121,11 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let notificationCenter = UNUserNotificationCenter.current()
         Logger.shared.log("App \(self.episodeId)", "register for notifications: get settings (authorize: \(authorize))")
         notificationCenter.getNotificationSettings(completionHandler: { settings in
-            Logger.shared.log("App \(self.episodeId)", "register for notifications: received settings: \(settings.authorizationStatus)")
+            var settingsDescription = "authorization=\(settings.authorizationStatus.rawValue), alert=\(settings.alertSetting.rawValue), lockScreen=\(settings.lockScreenSetting.rawValue), notificationCenter=\(settings.notificationCenterSetting.rawValue), sound=\(settings.soundSetting.rawValue), badge=\(settings.badgeSetting.rawValue)"
+            if #available(iOS 15.0, *) {
+                settingsDescription += ", timeSensitive=\(settings.timeSensitiveSetting.rawValue), scheduledDelivery=\(settings.scheduledDeliverySetting.rawValue)"
+            }
+            Logger.shared.log("App \(self.episodeId)", "register for notifications: received settings: \(settingsDescription)")
             
             switch (settings.authorizationStatus, authorize) {
                 case (.authorized, _), (.notDetermined, true):
@@ -2967,9 +3136,16 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
                     if #available(iOS 13.0, *) {
                         authorizationOptions.insert(.announcement)
                     }
+                    // SuperGram: `.timeSensitive` requires the com.apple.developer.usernotifications.time-sensitive
+                    // entitlement, which this fork's provisioning profile does not carry (see Telegram/BUILD —
+                    // TelegramEntitlements has no such fragment). Asking for an unentitled option can make the whole
+                    // authorization request fail, and local notifications are this build's ONLY notification path,
+                    // so it is not requested. `content.interruptionLevel = .timeSensitive` is still set on the
+                    // fallback notifications: without the entitlement iOS just downgrades it to `.active`, and it
+                    // starts working the moment the entitlement is added.
                     Logger.shared.log("App \(self.episodeId)", "register for notifications: request authorization")
-                    notificationCenter.requestAuthorization(options: authorizationOptions, completionHandler: { result, _ in
-                        Logger.shared.log("App \(self.episodeId)", "register for notifications: received authorization: \(result)")
+                    notificationCenter.requestAuthorization(options: authorizationOptions, completionHandler: { result, error in
+                        Logger.shared.log("App \(self.episodeId)", "register for notifications: received authorization: \(result)\(error.flatMap({ " error: \($0)" }) ?? "")")
                         completion(result)
                         if result {
                             Queue.mainQueue().async {
@@ -3031,13 +3207,45 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
     
     @available(iOS 10.0, *)
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        let _ = (accountIdFromNotification(notification, sharedContext: self.sharedContextPromise.get())
-        |> deliverOnMainQueue).start(next: { accountId in
-            if let context = self.contextValue {
-                if let accountId = accountId, context.context.account.id != accountId || notification.request.content.userInfo["url"] != nil {
-                    completionHandler([.alert])
-                }
+        // SuperGram: the completion handler must run exactly once, and iOS holds the notification until it does.
+        let didComplete = Atomic<Bool>(value: false)
+        let complete: (UNNotificationPresentationOptions) -> Void = { options in
+            let alreadyCompleted = didComplete.swap(true)
+            if !alreadyCompleted {
+                completionHandler(options)
             }
+        }
+        // SuperGram: the local notification fallback adds its requests while the app may still be in the
+        // foreground-but-inactive state (app switcher, Control Center, an incoming-call banner). The in-app overlay
+        // path is skipped for exactly those states, so suppressing the banner here would drop the message silently.
+        let isLocalFallback = (notification.request.content.userInfo[telegramLocalNotificationFallbackKey] as? Bool) ?? false
+        SuperGramNotificationDiagnostics.shared.log("willPresent " + SuperGramNotificationDiagnostics.describe(notification))
+        var presentationOptions: UNNotificationPresentationOptions
+        if #available(iOS 14.0, *) {
+            presentationOptions = [.banner, .list]
+        } else {
+            presentationOptions = [.alert]
+        }
+        if isLocalFallback {
+            // The fallback already decided about the sound (muted peer / "play sounds" setting) when it built the
+            // request; the other cases keep the upstream alert-without-sound behaviour.
+            presentationOptions.insert(.sound)
+        }
+
+        let _ = (accountIdFromNotification(notification, sharedContext: self.sharedContextPromise.get())
+        |> take(1)
+        |> timeout(1.0, queue: .mainQueue(), alternate: .single(nil))
+        |> deliverOnMainQueue).start(next: { accountId in
+            guard let context = self.contextValue else {
+                complete(presentationOptions)
+                return
+            }
+
+            let belongsToAnotherAccount = accountId.map { $0 != context.context.account.id } ?? false
+            let containsExternalUrl = notification.request.content.userInfo["url"] != nil
+            complete(belongsToAnotherAccount || containsExternalUrl || isLocalFallback ? presentationOptions : [])
+        }, completed: {
+            complete(isLocalFallback ? presentationOptions : [])
         })
     }
     
@@ -3164,10 +3372,8 @@ private func notificationPayloadKey(data: Data) -> Data? {
 
 @available(iOS 10.0, *)
 private func accountIdFromNotification(_ notification: UNNotification, sharedContext: Signal<SharedApplicationContext, NoError>) -> Signal<AccountRecordId?, NoError> {
-    if let id = notification.request.content.userInfo["accountId"] as? Int64 {
-        return .single(AccountRecordId(rawValue: id))
-    } else if let idString = notification.request.content.userInfo["accountId"] as? String, let id = Int64(idString) {
-        return .single(AccountRecordId(rawValue: id))
+    if let rawId = notification.request.content.userInfo["accountId"] {
+        return .single(notificationPayloadInt64(rawId).map { AccountRecordId(rawValue: $0) })
     } else {
         var encryptedData: Data?
         if var encryptedPayload = notification.request.content.userInfo["p"] as? String {
@@ -3202,7 +3408,10 @@ private func accountIdFromNotification(_ notification: UNNotification, sharedCon
                     }
                 }
             }
-        } else if let userId = notification.request.content.userInfo["userId"] as? Int {
+        } else if let userId = notificationPayloadInt64(notification.request.content.userInfo["userId"]) ?? notificationPayloadInt64(notificationPayloadField(notification.request.content.userInfo, "user_id")) {
+            // SuperGram: unencrypted pushes identify the receiving account by "user_id" (string or number, top level or in
+            // "custom"); the old `as? Int` on "userId" alone never matched them, so multi-account taps opened in the
+            // currently selected account.
             return sharedContext
             |> take(1)
             |> mapToSignal { sharedContext -> Signal<AccountRecordId?, NoError> in
@@ -3210,7 +3419,7 @@ private func accountIdFromNotification(_ notification: UNNotification, sharedCon
                 |> take(1)
                 |> map { _, contexts, _ -> AccountRecordId? in
                     for (_, context, _) in contexts {
-                        if Int(context.account.peerId.id._internalGetInt64Value()) == userId {
+                        if context.account.peerId.id._internalGetInt64Value() == userId {
                             return context.account.id
                         }
                     }
@@ -3225,21 +3434,29 @@ private func accountIdFromNotification(_ notification: UNNotification, sharedCon
 
 @available(iOS 10.0, *)
 private func peerIdFromNotification(_ notification: UNNotification) -> (peerId: PeerId, threadId: Int64?)? {
-    let threadId = notificationPayloadInt64(notification.request.content.userInfo["threadId"])
-    
-    if let peerId = notificationPayloadInt64(notification.request.content.userInfo["peerId"]) {
-        return (PeerId(peerId), threadId)
+    let payload = notification.request.content.userInfo
+    // SuperGram: unencrypted APNs pushes carry the forum topic as "topic_id" (the NotificationService extension, absent
+    // in this build, used to translate it into "threadId"). "top_msg_id" is accepted as well for comment threads; the
+    // resolver only treats it as a thread after verifying it against the actual message.
+    let threadId = notificationPayloadInt64(payload["threadId"]) ?? notificationPayloadInt64(notificationPayloadField(payload, "topic_id")) ?? notificationPayloadInt64(notificationPayloadField(payload, "top_msg_id"))
+
+    if let rawPeerId = payload["peerId"] {
+        guard let value = notificationPayloadInt64(rawPeerId), let peerId = managedNotificationPackedPeerId(value) else {
+            return nil
+        }
+        return (peerId, threadId)
     } else {
-        let payload = notification.request.content.userInfo
         var peerId: PeerId?
-        if let fromId = notificationPayloadInt64(payload["from_id"]) {
-            peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(fromId))
-        } else if let fromId = notificationPayloadInt64(payload["chat_id"]) {
-            peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(fromId))
-        } else if let fromId = notificationPayloadInt64(payload["channel_id"]) {
+        // SuperGram: the conversation keys (channel_id / chat_id) win over from_id, so a group push that also names its
+        // sender can never route to a private chat with that sender. Keys are read at the top level or inside "custom".
+        if let fromId = notificationPayloadInt64(notificationPayloadField(payload, "channel_id")), fromId > 0, fromId <= 0x00ffffffffffffff {
             peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(fromId))
-        } else if let fromId = notificationPayloadInt64(payload["encryption_id"]) {
-            peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt64(notificationPayloadField(payload, "chat_id")), fromId > 0, fromId <= 0x00ffffffffffffff {
+            peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt64(notificationPayloadField(payload, "from_id")), fromId > 0, fromId <= 0x00ffffffffffffff {
+            peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(fromId))
+        } else if let fromId = notificationPayloadInt32(notificationPayloadField(payload, "encryption_id")), fromId != 0 {
+            peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(Int64(fromId)))
         }
         
         if let peerId = peerId {
@@ -3256,36 +3473,42 @@ private func messageIdFromNotification(peerId: PeerId, notification: UNNotificat
         return MessageId(peerId: peerId, namespace: messageIdNamespace, id: messageIdId)
     }
     
-    if let msgId = notificationPayloadInt32(payload["msg_id"]) {
+    // SuperGram: a bare msg_id is a cloud message id; secret chats use their own namespaces, so without an explicit
+    // namespace it cannot name a secret-chat message.
+    if peerId.namespace == Namespaces.Peer.SecretChat {
+        return nil
+    }
+    if let msgId = notificationPayloadInt32(notificationPayloadField(payload, "msg_id")) {
         return MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId)
+    }
+    return nil
+}
+
+// SuperGram: a field of a Telegram push payload, either at the top level of userInfo (NotificationService output,
+// local fallback notifications) or inside the "custom" object of an unencrypted APNs push (dictionary or JSON string).
+private func notificationPayloadField(_ payload: [AnyHashable: Any], _ key: String) -> Any? {
+    if let value = payload[key] {
+        return value
+    }
+    if let custom = payload["custom"] as? [AnyHashable: Any] {
+        return custom[key]
+    }
+    if let customString = payload["custom"] as? String, let data = customString.data(using: .utf8), let custom = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+        return custom[key]
     }
     return nil
 }
 
 private func storyIdFromNotification(peerId: PeerId, notification: UNNotification) -> StoryId? {
     let payload = notification.request.content.userInfo
-    if let storyId = notificationPayloadInt32(payload["story_id"]) {
+    if let storyId = notificationPayloadInt32(notificationPayloadField(payload, "story_id")) {
         return StoryId(peerId: peerId, id: storyId)
     }
     return nil
 }
 
 private func notificationPayloadInt64(_ value: Any?) -> Int64? {
-    if let value = value as? Int64 {
-        return value
-    } else if let value = value as? Int32 {
-        return Int64(value)
-    } else if let value = value as? Int {
-        return Int64(value)
-    } else if let value = value as? NSNumber {
-        return value.int64Value
-    } else if let value = value as? String {
-        return Int64(value)
-    } else if let value = value as? NSString {
-        return Int64(value as String)
-    } else {
-        return nil
-    }
+    return managedNotificationPayloadInt64(value)
 }
 
 private func notificationPayloadInt32(_ value: Any?) -> Int32? {

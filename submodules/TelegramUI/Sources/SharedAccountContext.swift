@@ -107,6 +107,58 @@ import CreateBotScreen
 import EmojiStatusSelectionComponent
 import EntityKeyboard
 
+// SuperGram: whether this app bundle embeds a NotificationService extension (the Bazel flag
+// //Telegram:disableExtensions ships an IPA without any .appex, and the signing profile cannot authorize one).
+// Only that extension can decrypt Telegram's encrypted APNs payloads (`p`) and build sender/text; without it iOS
+// shows a contentless placeholder. Detected at runtime so a future build that embeds the NSE keeps encrypted pushes.
+let superGramHasNotificationServiceExtension: Bool = {
+    guard let pluginsUrl = Bundle.main.builtInPlugInsURL, let contents = try? FileManager.default.contentsOfDirectory(at: pluginsUrl, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+        return false
+    }
+    for url in contents where url.pathExtension == "appex" {
+        guard let bundle = Bundle(url: url) else {
+            continue
+        }
+        if let extensionInfo = bundle.object(forInfoDictionaryKey: "NSExtension") as? [String: Any], let pointIdentifier = extensionInfo["NSExtensionPointIdentifier"] as? String, pointIdentifier == "com.apple.usernotifications.service" {
+            return true
+        }
+        if let bundleIdentifier = bundle.bundleIdentifier, bundleIdentifier.hasSuffix(".NotificationService") {
+            return true
+        }
+    }
+    return false
+}()
+
+// SuperGram: accounts whose APNs token is currently registered WITHOUT a secret, i.e. the server sends readable
+// aps.alert (loc-key/loc-args) pushes that iOS displays by itself. The local notification fallback
+// (AuthorizedApplicationContext) reads this to avoid showing the same message twice.
+let superGramPlaintextPushAccountIds = Atomic<Set<AccountRecordId>>(value: Set())
+
+private func superGramEffectiveEnergyUsageSettings(_ settings: EnergyUsageSettings, performanceMode: Bool) -> EnergyUsageSettings {
+    // SuperGram (MEM-05): the energy settings used to depend only on the battery level, so a device that was
+    // throttling under sustained heat kept doing every bit of decorative work. Serious/critical thermal state
+    // now trims the same things performance mode does, whether or not the user turned performance mode on,
+    // and drops GIF autoplay on top - by then the system is already clamping the CPU and GPU, so the work is
+    // being paid for in frame drops elsewhere.
+    let isThermallyConstrained = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+
+    guard performanceMode || isThermallyConstrained else {
+        return settings
+    }
+
+    // SuperGram: performance mode only trims decorative work. Inline video/GIF autoplay is controlled by
+    // the sgInlineAutoplayVideos key (ChatMessageInteractiveMediaNode); autoplayVideo also drives round-video
+    // autoplay, loopStickers breaks the sticker-pack tap, and extendBackgroundWork/autodownloadInBackground
+    // decide whether downloads survive backgrounding, so those keep the regular energy settings.
+    var result = settings
+    result.loopEmoji = false
+    result.fullTranslucency = false
+    if isThermallyConstrained {
+        result.autoplayGif = false
+    }
+    return result
+}
+
 private final class AccountUserInterfaceInUseContext {
     let subscribers = Bag<(Bool) -> Void>()
     let tokens = Bag<Void>()
@@ -327,15 +379,9 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             guard let data else {
                 return nil
             }
-            let sandbox: Bool
-            #if DEBUG
-            sandbox = true
-            #else
-            sandbox = false
-            #endif
             return AuthorizationCodePushNotificationConfiguration(
                 token: hexString(data),
-                isSandbox: sandbox
+                isSandbox: telegramPushNotificationEnvironmentIsSandbox
             )
         })
                 
@@ -356,11 +402,8 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.currentInAppNotificationSettings = Atomic(value: initialPresentationDataAndSettings.inAppNotificationSettings)
         self.currentChatSettings = Atomic(value: initialPresentationDataAndSettings.chatSettings)
         
-        if automaticEnergyUsageShouldBeOnNow(settings: self.currentAutomaticMediaDownloadSettings) {
-            self.energyUsageSettings = EnergyUsageSettings.powerSavingDefault
-        } else {
-            self.energyUsageSettings = self.currentAutomaticMediaDownloadSettings.energyUsageSettings
-        }
+        let initialEnergyUsageSettings = automaticEnergyUsageShouldBeOnNow(settings: self.currentAutomaticMediaDownloadSettings) ? EnergyUsageSettings.powerSavingDefault : self.currentAutomaticMediaDownloadSettings.energyUsageSettings
+        self.energyUsageSettings = superGramEffectiveEnergyUsageSettings(initialEnergyUsageSettings, performanceMode: initialPresentationDataAndSettings.mediaDisplaySettings.performanceMode)
         
         let presentationData: Signal<PresentationData, NoError> = .single(initialPresentationDataAndSettings.presentationData)
         |> then(
@@ -488,10 +531,26 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             if let strongSelf = self {
                 if let settings = sharedData.entries[ApplicationSpecificSharedDataKeys.mediaDisplaySettings]?.get(MediaDisplaySettings.self) {
                     let _ = strongSelf.currentMediaDisplaySettings.swap(settings)
+                    let baseEnergyUsageSettings = automaticEnergyUsageShouldBeOnNow(settings: strongSelf.currentAutomaticMediaDownloadSettings) ? EnergyUsageSettings.powerSavingDefault : strongSelf.currentAutomaticMediaDownloadSettings.energyUsageSettings
+                    strongSelf.energyUsageSettings = superGramEffectiveEnergyUsageSettings(baseEnergyUsageSettings, performanceMode: settings.performanceMode)
                 }
             }
         })
-        
+
+        // SuperGram (MEM-05): the effective energy settings now depend on the thermal state, which changes on
+        // its own schedule and is not covered by any of the settings subscriptions above. The observer token
+        // is intentionally not stored: this object lives for the process, and the handler is weak, so a stale
+        // observer after a hypothetical teardown is a no-op.
+        let _ = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.superGramUpdateEnergyUsageSettings()
+            // A battery update may already have changed the policy without relaying out an idle GIF.
+            // Let each node compare its cached playback with the now-current policy, even if it is equal.
+            NotificationCenter.default.post(name: .superGramEnergyUsageSettingsDidChange, object: self)
+        })
+
         self.stickerSettingsDisposable = (self.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.stickerSettings])
         |> deliverOnMainQueue).start(next: { [weak self] sharedData in
             if let strongSelf = self {
@@ -537,19 +596,13 @@ public final class SharedAccountContextImpl: SharedAccountContext {
             if let strongSelf = self {
                 strongSelf.currentAutomaticMediaDownloadSettings = next
                 
-                if automaticEnergyUsageShouldBeOnNow(settings: next) {
-                    strongSelf.energyUsageSettings = EnergyUsageSettings.powerSavingDefault
-                } else {
-                    strongSelf.energyUsageSettings = next.energyUsageSettings
-                }
+                let baseEnergyUsageSettings = automaticEnergyUsageShouldBeOnNow(settings: next) ? EnergyUsageSettings.powerSavingDefault : next.energyUsageSettings
+                strongSelf.energyUsageSettings = superGramEffectiveEnergyUsageSettings(baseEnergyUsageSettings, performanceMode: strongSelf.currentMediaDisplaySettings.with({ $0.performanceMode }))
                 strongSelf.energyUsageAutomaticDisposable.set((automaticEnergyUsageShouldBeOn(settings: next)
                 |> deliverOnMainQueue).start(next: { value in
                     if let strongSelf = self {
-                        if value {
-                            strongSelf.energyUsageSettings = EnergyUsageSettings.powerSavingDefault
-                        } else {
-                            strongSelf.energyUsageSettings = next.energyUsageSettings
-                        }
+                        let baseEnergyUsageSettings = value ? EnergyUsageSettings.powerSavingDefault : next.energyUsageSettings
+                        strongSelf.energyUsageSettings = superGramEffectiveEnergyUsageSettings(baseEnergyUsageSettings, performanceMode: strongSelf.currentMediaDisplaySettings.with({ $0.performanceMode }))
                     }
                 }))
             }
@@ -1111,7 +1164,14 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         self.awaitingCallConnectionDisposable?.dispose()
         self.callPeerDisposable?.dispose()
     }
-    
+
+    // SuperGram (MEM-05): recomputes the effective energy settings from the values already held here. Used by
+    // the thermal-state observer; every other input has its own subscription that assigns directly.
+    private func superGramUpdateEnergyUsageSettings() {
+        let baseEnergyUsageSettings = automaticEnergyUsageShouldBeOnNow(settings: self.currentAutomaticMediaDownloadSettings) ? EnergyUsageSettings.powerSavingDefault : self.currentAutomaticMediaDownloadSettings.energyUsageSettings
+        self.energyUsageSettings = superGramEffectiveEnergyUsageSettings(baseEnergyUsageSettings, performanceMode: self.currentMediaDisplaySettings.with({ $0.performanceMode }))
+    }
+
     private var didPerformAccountSettingsImport = false
     private func performAccountSettingsImportIfNecessary() {
         if self.didPerformAccountSettingsImport {
@@ -1618,12 +1678,7 @@ public final class SharedAccountContextImpl: SharedAccountContext {
     }
     
     public func updateNotificationTokensRegistration() {
-        let sandbox: Bool
-        #if DEBUG
-        sandbox = true
-        #else
-        sandbox = false
-        #endif
+        let sandbox = telegramPushNotificationEnvironmentIsSandbox
         
         let settings = self.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.inAppNotificationSettings])
         |> map { sharedData -> (allAccounts: Bool, includeMuted: Bool) in
@@ -1641,13 +1696,23 @@ public final class SharedAccountContextImpl: SharedAccountContext {
         })
         
         let updatedApsToken = self.apsNotificationToken |> distinctUntilChanged(isEqual: { $0 == $1 })
+
+        // SuperGram: always register the token with a secret (upstream behaviour). Telegram's servers deliver APNs
+        // only with the official app's credentials, so no server push ever reaches this bundle — plaintext
+        // registration (tried in 10041) only made the server hand message previews to APNs for nothing, and made
+        // the local fallback wait for an alert that never comes. Notifications of this build come from the running
+        // app (SharedWakeupManager keep-alive + AuthorizedApplicationContext local fallback).
+        let encryptApsPayloads: Signal<Bool, NoError> = .single(true)
+        Logger.shared.log("SharedAccountContext", "SuperGram: NotificationService extension embedded: \(superGramHasNotificationServiceExtension)")
+
         self.registeredNotificationTokensDisposable.set((combineLatest(
             queue: .mainQueue(),
             settings,
             self.activeAccountContexts,
-            updatedApsToken
+            updatedApsToken,
+            encryptApsPayloads
         )
-        |> mapToSignal { settings, activeAccountsAndInfo, apsNotificationToken -> Signal<(Bool, Data?), NoError> in
+        |> mapToSignal { settings, activeAccountsAndInfo, apsNotificationToken, encryptApsPayloads -> Signal<(Bool, Data?), NoError> in
             let (primary, activeAccounts, _) = activeAccountsAndInfo
             var appliedApsList: [Signal<Bool?, NoError>] = []
             var appliedVoipList: [Signal<Never, NoError>] = []
@@ -1677,7 +1742,10 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                 let appliedVoip: Signal<Never, NoError>
                 
                 if !activeProductionUserIds.contains(account.account.peerId.id) && !activeTestingUserIds.contains(account.account.peerId.id) {
+                    // SuperGram: this account receives no pushes on this device any more.
+                    let _ = superGramPlaintextPushAccountIds.modify { $0.subtracting([account.account.id]) }
                     if let apsNotificationToken {
+                        // `encrypt` is ignored by unregisterDevice (the server matches token type + token only).
                         appliedAps = account.engine.accountData.unregisterNotificationToken(token: apsNotificationToken, type: .aps(encrypt: false), otherAccountUserIds: (account.account.testingEnvironment ? allTestingUserIds : allProductionUserIds).filter({ $0 != account.account.peerId.id }))
                         |> map { _ -> Bool in
                         }
@@ -1696,8 +1764,22 @@ public final class SharedAccountContextImpl: SharedAccountContext {
                     }
                 } else {
                     if let apsNotificationToken {
-                        appliedAps = account.engine.accountData.registerNotificationToken(token: apsNotificationToken, type: .aps(encrypt: true), sandbox: sandbox, otherAccountUserIds: (account.account.testingEnvironment ? activeTestingUserIds : activeProductionUserIds).filter({ $0 != account.account.peerId.id }), excludeMutedChats: !settings.includeMuted)
+                        // SuperGram: encrypt only when an NSE can decrypt (or a passcode requires contentless pushes).
+                        let accountRecordId = account.account.id
+                        if encryptApsPayloads {
+                            let _ = superGramPlaintextPushAccountIds.modify { $0.subtracting([accountRecordId]) }
+                        }
+                        appliedAps = account.engine.accountData.registerNotificationToken(token: apsNotificationToken, type: .aps(encrypt: encryptApsPayloads), sandbox: sandbox, otherAccountUserIds: (account.account.testingEnvironment ? activeTestingUserIds : activeProductionUserIds).filter({ $0 != account.account.peerId.id }), excludeMutedChats: !settings.includeMuted)
+                        |> map { success -> Bool in
+                            // Mark plaintext mode only once the server accepted the secret-less registration, so the
+                            // local fallback is never suppressed before APNs alerts can actually carry content.
+                            if success && !encryptApsPayloads {
+                                let _ = superGramPlaintextPushAccountIds.modify { $0.union([accountRecordId]) }
+                            }
+                            return success
+                        }
                     } else {
+                        let _ = superGramPlaintextPushAccountIds.modify { $0.subtracting([account.account.id]) }
                         appliedAps = .single(true)
                     }
                     appliedVoip = self.voipNotificationToken

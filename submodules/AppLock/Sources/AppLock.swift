@@ -82,7 +82,9 @@ public final class AppLockContextImpl: AppLockContext {
     private var passcodeController: PasscodeEntryController?
     
     private var timestampRenewTimer: SwiftSignalKit.Timer?
-    
+    // SuperGram: the interval the running timer was created with, so a change of the auto-lock timeout re-arms it.
+    private var timestampRenewTimerInterval: Double?
+
     private var currentStateValue: LockState
     private let currentState = Promise<LockState>()
     
@@ -273,21 +275,36 @@ public final class AppLockContextImpl: AppLockContext {
     }
     
     private func updateTimestampRenewTimer(shouldRun: Bool) {
-        if shouldRun {
-            if self.timestampRenewTimer == nil {
-                let timestampRenewTimer = SwiftSignalKit.Timer(timeout: 5.0, repeat: true, completion: { [weak self] in
+        if shouldRun { // MARK: Swiftgram
+            // 2.5 s instead of 5 s: with the "5 seconds" auto-lock option and whole-second uptime values, any
+            // unrelated state emission shortly before a renewal could otherwise lock the app while it is in use.
+            // SuperGram: the faster renewal is needed only for very short auto-lock timeouts; each tick rewrites the lock state file
+            let renewInterval: Double = (self.currentStateValue.autolockTimeout ?? Int32.max) <= 10 ? 2.5 : 5.0
+            // SuperGram: the interval depends on the auto-lock timeout, which the user can change while the app is
+            // in the foreground. Recreating the timer only when the interval actually changes keeps this cheap —
+            // this runs on every emission of the lock-state signal — while making a switch to "5 seconds" take
+            // effect immediately instead of at the next invalidation.
+            if self.timestampRenewTimer == nil || self.timestampRenewTimerInterval != renewInterval {
+                self.timestampRenewTimer?.invalidate()
+                let timestampRenewTimer = SwiftSignalKit.Timer(timeout: renewInterval, repeat: true, completion: { [weak self] in
                     guard let strongSelf = self else {
                         return
                     }
                     strongSelf.updateApplicationActivityTimestamp()
                 }, queue: .mainQueue())
                 self.timestampRenewTimer = timestampRenewTimer
+                self.timestampRenewTimerInterval = renewInterval
                 timestampRenewTimer.start()
             }
         } else {
             if let timestampRenewTimer = self.timestampRenewTimer {
                 self.timestampRenewTimer = nil
+                self.timestampRenewTimerInterval = nil
                 timestampRenewTimer.invalidate()
+                // SuperGram: the timer renews the activity timestamp only periodically, so with the "5 seconds"
+                // auto-lock option (SGM-F16) a stale timestamp could lock the app right after a short trip to the
+                // background. Record the moment the app stopped being active (or got locked) as well.
+                self.updateApplicationActivityTimestamp()
             }
         }
     }

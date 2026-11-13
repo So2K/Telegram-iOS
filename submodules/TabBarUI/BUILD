@@ -1,5 +1,10 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
+# MARK: Swiftgram
+sgdeps = [
+    "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
+]
+
 swift_library(
     name = "TabBarUI",
     module_name = "TabBarUI",
@@ -9,7 +14,7 @@ swift_library(
     copts = [
         "-warnings-as-errors",
     ],
-    deps = [
+    deps = sgdeps + [
         "//submodules/AsyncDisplayKit",
         "//submodules/Display",
     	"//submodules/SSignalKit/SwiftSignalKit",

@@ -240,6 +240,10 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
                 } else if let rootController = params.navigationController?.view.window?.rootViewController {
                     let proceed = {
                         let canShare = !params.message.isCopyProtected() && !params.copyProtected
+                        // SuperGram: the iOS share sheet of the document preview (Save to Files, open in another app) follows
+                        // sgAllowSaveProtectedContent for protected (noforwards) documents; secret content stays locked.
+                        // The in-browser share button opens the chat picker (a forward), so it keeps the upstream gate.
+                        let canExternalShare = params.message.sgCanSaveContent(peerIsCopyProtected: params.copyProtected)
                         var useBrowserScreen = false
                         if BrowserScreen.supportedDocumentMimeTypes.contains(file.mimeType) {
                             useBrowserScreen = true
@@ -266,17 +270,17 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
                                 subject = .document(file: fileReference, canShare: canShare)
                             }
                             let controller = BrowserScreen(context: params.context, subject: subject)
-                            controller.openDocument = { [weak controller] file, canShare in
+                            controller.openDocument = { [weak controller] file, _ in
                                 guard let controller else {
                                     return
                                 }
                                 controller.dismiss()
-                                
-                                presentDocumentPreviewController(rootController: rootController, theme: presentationData.theme, strings: presentationData.strings, postbox: params.context.account.postbox, file: file, canShare: canShare)
+
+                                presentDocumentPreviewController(rootController: rootController, theme: presentationData.theme, strings: presentationData.strings, postbox: params.context.account.postbox, file: file, canShare: canExternalShare)
                             }
                             params.navigationController?.pushViewController(controller)
                         } else {
-                            presentDocumentPreviewController(rootController: rootController, theme: presentationData.theme, strings: presentationData.strings, postbox: params.context.account.postbox, file: file, canShare: canShare)
+                            presentDocumentPreviewController(rootController: rootController, theme: presentationData.theme, strings: presentationData.strings, postbox: params.context.account.postbox, file: file, canShare: canExternalShare)
                         }
                     }
                     if file.mimeType.contains("image/svg") {
@@ -375,6 +379,7 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
                     return true
                 }
             
+                let mediaGalleryOpenRequestId = params.beginMediaGalleryOpen?()
                 params.blockInteraction.set(.single(true))
             
                 var presentInCurrent = false
@@ -385,8 +390,11 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
                     }
                 }
 
-                let _ = (gallery
+                let disposable = (gallery
                 |> deliverOnMainQueue).startStandalone(next: { gallery in
+                    if let mediaGalleryOpenRequestId, params.isMediaGalleryOpenCurrent?(mediaGalleryOpenRequestId) == false {
+                        return
+                    }
                     params.blockInteraction.set(.single(false))
                     
                     gallery.centralItemUpdated = { messageId in
@@ -406,7 +414,13 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
                     }
                     
                     params.present(gallery, arguments, presentInCurrent ? .current : .window(.root))
+                    if let mediaGalleryOpenRequestId {
+                        params.endMediaGalleryOpen?(mediaGalleryOpenRequestId)
+                    }
                 })
+                if let mediaGalleryOpenRequestId {
+                    params.setMediaGalleryOpenDisposable?(mediaGalleryOpenRequestId, disposable)
+                }
                 return true
             case let .secretGallery(gallery):
                 params.dismissInput()

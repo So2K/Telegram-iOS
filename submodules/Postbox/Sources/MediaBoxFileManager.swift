@@ -35,6 +35,11 @@ public final class MediaBoxFileManager {
             func seek(position: Int64) -> Bool {
                 return self.file.seek(position: position)
             }
+
+            func truncate(count: Int64) -> Bool {
+                self.file.truncate(count: count)
+                return self.file.getSize() == count
+            }
         }
         
         weak var manager: MediaBoxFileManager?
@@ -131,7 +136,8 @@ public final class MediaBoxFileManager {
     
     public init(queue: Queue?) {
         self.queue = queue
-        self.maxOpenFiles = 16
+        // SuperGram: 16 caused open/close thrash of live partial files once more than 16 downloads were active
+        self.maxOpenFiles = 32
     }
     
     func open(path: String, mode: Mode) -> Item? {

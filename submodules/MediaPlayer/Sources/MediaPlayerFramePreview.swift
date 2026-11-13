@@ -42,12 +42,16 @@ private func initializedPreviewContext(queue: Queue, postbox: Postbox, userLocat
     }
 }
 
+private final class FramePreviewRequest {
+}
+
 private final class MediaPlayerFramePreviewImpl {
     private let queue: Queue
     private let context: Promise<QueueLocalObject<FramePreviewContext>>
     private let currentFrameDisposable = MetaDisposable()
     private var currentFrameTimestamp: Double?
     private var nextFrameTimestamp: Double?
+    private var currentFrameRequest: FramePreviewRequest?
     fileprivate let framePipe = ValuePipe<FramePreviewResult>()
     
     init(queue: Queue, postbox: Postbox, userLocation: MediaResourceUserLocation, userContentType: MediaResourceUserContentType, fileReference: FileMediaReference) {
@@ -67,19 +71,21 @@ private final class MediaPlayerFramePreviewImpl {
             return
         }
         self.currentFrameTimestamp = timestamp
+        let request = FramePreviewRequest()
+        self.currentFrameRequest = request
         
         let queue = self.queue
         let takeDisposable = MetaDisposable()
         let disposable = (self.context.get()
         |> take(1)).start(next: { [weak self] context in
             queue.justDispatch {
-                guard context.queue === queue else {
+                guard let strongSelf = self, strongSelf.currentFrameRequest === request, context.queue === queue else {
                     return
                 }
                 context.with { context in
-                    let disposable = context.source.takeFrame(at: timestamp).start(next: { result in
+                    let disposable = context.source.takeFrame(at: timestamp).start(next: { [weak self] result in
                         queue.async {
-                            guard let strongSelf = self else {
+                            guard let strongSelf = self, strongSelf.currentFrameRequest === request else {
                                 return
                             }
                             switch result {
@@ -89,6 +95,11 @@ private final class MediaPlayerFramePreviewImpl {
                                 if let image = image {
                                     strongSelf.framePipe.putNext(.image(image))
                                 }
+                                // A consumer can cancel or replace the request while the image is emitted.
+                                guard strongSelf.currentFrameRequest === request else {
+                                    return
+                                }
+                                strongSelf.currentFrameRequest = nil
                                 strongSelf.currentFrameTimestamp = nil
                                 if let nextFrameTimestamp = strongSelf.nextFrameTimestamp {
                                     strongSelf.nextFrameTimestamp = nil
@@ -110,6 +121,7 @@ private final class MediaPlayerFramePreviewImpl {
     }
     
     func cancelPendingFrames() {
+        self.currentFrameRequest = nil
         self.nextFrameTimestamp = nil
         self.currentFrameTimestamp = nil
         self.currentFrameDisposable.set(nil)
@@ -612,6 +624,11 @@ public final class MediaPlayerFramePreviewHLS: FramePreview {
                     }
                     
                     return allDataIsCached
+                },
+                requestFallbackFullFetch: {
+                    // SuperGram: scrubber previews read through a synthetic mapping of several quality files, so there
+                    // is no single resource to fall back to. A stalled preview read now gives up on its own instead of
+                    // blocking the reader thread forever; the preview simply stays empty.
                 },
                 size: mappedSize
             )

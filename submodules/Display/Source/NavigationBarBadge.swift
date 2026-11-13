@@ -10,7 +10,7 @@ public final class NavigationBarBadgeNode: ASDisplayNode {
     private let textNode: ImmediateTextNode
     private let backgroundNode: ASImageNode
     
-    private let font: UIFont = Font.regular(13.0)
+    private let font: UIFont = Font.regular(12.0) // SuperGram: slightly smaller unread counter on the Back button (was 13)
     
     public var text: String = "" {
         didSet {

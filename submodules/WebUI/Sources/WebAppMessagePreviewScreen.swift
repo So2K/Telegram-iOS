@@ -270,7 +270,7 @@ private final class SheetContent: CombinedComponent {
                         style: .glass,
                         color: theme.list.itemCheckColors.fillColor,
                         foreground: theme.list.itemCheckColors.foregroundColor,
-                        pressedColor: theme.list.itemCheckColors.fillColor.withMultipliedAlpha(0.9),
+                        pressedColor: theme.list.itemCheckColors.fillColor.withMultipliedAlpha(0.9)
                     ),
                     content: AnyComponentWithIdentity(
                         id: AnyHashable(0),
@@ -463,7 +463,7 @@ public final class WebAppMessagePreviewScreen: ViewControllerComponentContainer 
             var chargingPeers: [EngineRenderedPeer] = []
             for peer in renderedPeers {
                 if let maybeAmount = sendPaidMessageStars[peer.peerId], let amount = maybeAmount {
-                    totalAmount = totalAmount + amount
+                    totalAmount += amount
                     chargingPeers.append(peer)
                 }
             }

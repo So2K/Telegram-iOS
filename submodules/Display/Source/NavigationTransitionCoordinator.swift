@@ -2,6 +2,11 @@ import UIKit
 import AppBundle
 import AsyncDisplayKit
 
+// SuperGram: duration of screen push/pop and modal presentation springs. Upstream uses 0.5 s, but the spring is
+// visually settled well before that and the invisible tail keeps the transition "in progress" (gestures wait for
+// it). One constant so every navigation-level transition moves at the same, snappier pace.
+public let superGramNavigationTransitionDuration: Double = 0.38
+
 enum NavigationTransition {
     case Push
     case Pop
@@ -326,7 +331,9 @@ final class NavigationTransitionCoordinator {
         }
         
         if abs(velocity) < CGFloat.ulpOfOne && abs(self.progress) < CGFloat.ulpOfOne {
-            self.updateProgress(1.0, transition: .animated(duration: 0.5, curve: .spring), completion: {
+            // SuperGram: 0.38 s instead of 0.5 s — the spring is visually settled long before 0.5 s, and the
+            // remaining tail only delayed the moment the new screen accepts a back swipe.
+            self.updateProgress(1.0, transition: .animated(duration: superGramNavigationTransitionDuration, curve: .spring), completion: {
                 f()
             })
         } else {

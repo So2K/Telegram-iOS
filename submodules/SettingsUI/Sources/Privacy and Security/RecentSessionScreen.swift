@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -434,8 +436,10 @@ private final class RecentSessionSheetContent: CombinedComponent {
                 var appVersion = session.appVersion
                 appVersion = appVersion.replacingOccurrences(of: "APPSTORE", with: "").replacingOccurrences(of: "BETA", with: "Beta").trimmingTrailingSpaces()
                 applicationTitle = strings.AuthSessions_View_Application
-                applicationString =  "\(session.appName) \(appVersion)"
-                ipString = nil
+                applicationString = "\(session.appName) \(appVersion)"
+                // MARK: Swiftgram
+                // SuperGram (SGP-10): Telegram hides the IP for its own sessions and shows only the country.
+                ipString = SGSimpleSettings.shared.sgShowSessionIP ? session.ip : nil
                 dateString = nil
                 locationString = session.country
                 

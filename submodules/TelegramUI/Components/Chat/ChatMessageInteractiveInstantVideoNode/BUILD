@@ -40,6 +40,8 @@ swift_library(
         "//submodules/TelegramUI/Components/Chat/InstantVideoRadialStatusNode",
         "//submodules/TelegramUI/Components/Chat/ChatInstantVideoMessageDurationNode",
         "//submodules/TelegramUI/Components/ChatControllerInteraction",
+        "//submodules/Media/LocalAudioTranscription",
+        "//submodules/TelegramUI/Components/Chat/SuperGramLocalTranscription",
     ],
     visibility = [
         "//visibility:public",

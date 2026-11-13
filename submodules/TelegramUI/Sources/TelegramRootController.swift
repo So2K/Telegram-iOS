@@ -5,6 +5,7 @@ import AsyncDisplayKit
 import TelegramCore
 import SwiftSignalKit
 import TelegramPresentationData
+import TelegramUIPreferences
 import AccountContext
 import ContactListUI
 import CallListUI
@@ -70,6 +71,12 @@ private class DetailsChatPlaceholderNode: ASDisplayNode, NavigationDetailsPlaceh
     }
 }
 
+// MARK: Swiftgram
+// SuperGram: raw read of SGSimpleSettings `hideTabBar` (same key and default), so TelegramUI needs no new BUILD dep.
+private func sgIsTabBarHiddenSetting() -> Bool {
+    return UserDefaults.standard.object(forKey: "hideTabBar") as? Bool ?? false
+}
+
 public final class TelegramRootController: NavigationController, TelegramRootControllerInterface {
     private let context: AccountContext
     
@@ -88,7 +95,12 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
     
     private var applicationInFocusDisposable: Disposable?
     private var storyUploadEventsDisposable: Disposable?
-    
+
+    // MARK: Swiftgram
+    private var showContactsTab: Bool = true
+    private var showCallsTab: Bool = true
+    private var contactsTabSettingDisposable: Disposable?
+
     override public var minimizedContainer: MinimizedContainer? {
         didSet {
             self.minimizedContainer?.navigationController = self
@@ -146,6 +158,7 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
         self.presentationDataDisposable?.dispose()
         self.applicationInFocusDisposable?.dispose()
         self.storyUploadEventsDisposable?.dispose()
+        self.contactsTabSettingDisposable?.dispose()
     }
     
     public func getContactsController() -> ViewController? {
@@ -199,6 +212,15 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
     }
     
     public func addRootControllers(showCallsTab: Bool) {
+        // MARK: Swiftgram
+        self.addRootControllers(showContactsTab: self.showContactsTab, showCallsTab: showCallsTab)
+    }
+
+    // MARK: Swiftgram
+    public func addRootControllers(showContactsTab: Bool, showCallsTab: Bool) {
+        self.showContactsTab = showContactsTab
+        self.showCallsTab = showCallsTab
+
         let tabBarController = TabBarControllerImpl(theme: self.presentationData.theme, strings: self.presentationData.strings)
         tabBarController.navigationPresentation = .master
         let chatListController = self.context.sharedContext.makeChatListController(context: self.context, location: .chatList(groupId: .root), controlsHistoryPreload: true, hideNetworkActivityStatus: false, previewing: false, enableDebugActions: !GlobalExperimentalSettings.isAppStoreBuild)
@@ -213,8 +235,11 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
         contactsController.switchToChatsController = {  [weak self] in
             self?.openChatsController(activateSearch: false)
         }
-        controllers.append(contactsController)
-        
+        // MARK: Swiftgram
+        if showContactsTab {
+            controllers.append(contactsController)
+        }
+
         if showCallsTab {
             controllers.append(callListController)
         }
@@ -238,30 +263,70 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
         }
         accountSettingsController.parentController = self
         controllers.append(accountSettingsController)
-                
-        tabBarController.setControllers(controllers, selectedIndex: restoreSettignsController != nil ? (controllers.count - 1) : (controllers.count - 2))
-        
+
+        // SuperGram: with the tab bar hidden (Swiftgram `hideTabBar`) a selected Settings tab could not be left, so
+        // keep the chat list selected when an account switch restores the Settings screen.
+        let sgRestoreSettingsTab = restoreSettignsController != nil && !sgIsTabBarHiddenSetting()
+        tabBarController.setControllers(controllers, selectedIndex: sgRestoreSettingsTab ? (controllers.count - 1) : (controllers.count - 2))
+
         self.contactsController = contactsController
         self.callListController = callListController
         self.chatListController = chatListController
         self.accountSettingsController = accountSettingsController
         self.rootTabController = tabBarController
         self.pushViewController(tabBarController, animated: false)
+
+        // MARK: Swiftgram
+        self.sgObserveContactsTabSetting()
     }
-        
+
     public func updateRootControllers(showCallsTab: Bool) {
+        // MARK: Swiftgram
+        self.updateRootControllers(showContactsTab: self.showContactsTab, showCallsTab: showCallsTab)
+    }
+
+    // MARK: Swiftgram
+    public func updateRootControllers(showContactsTab: Bool, showCallsTab: Bool) {
+        self.showContactsTab = showContactsTab
+        self.showCallsTab = showCallsTab
+
         guard let rootTabController = self.rootTabController as? TabBarControllerImpl else {
             return
         }
         var controllers: [ViewController] = []
-        controllers.append(self.contactsController!)
+        if showContactsTab, let contactsController = self.contactsController {
+            controllers.append(contactsController)
+        }
         if showCallsTab {
             controllers.append(self.callListController!)
         }
         controllers.append(self.chatListController!)
         controllers.append(self.accountSettingsController!)
-        
+
         rootTabController.setControllers(controllers, selectedIndex: nil)
+    }
+
+    // MARK: Swiftgram
+    // SuperGram: the Contacts tab setting (CallListSettings.showContactsTab) is applied live here, so it works even
+    // when the caller only passes `showCallsTab` (ApplicationContext tracks the Calls tab itself).
+    private func sgObserveContactsTabSetting() {
+        guard self.contactsTabSettingDisposable == nil else {
+            return
+        }
+        self.contactsTabSettingDisposable = (self.context.sharedContext.accountManager.sharedData(keys: [ApplicationSpecificSharedDataKeys.callListSettings])
+        |> map { sharedData -> Bool in
+            let settings = sharedData.entries[ApplicationSpecificSharedDataKeys.callListSettings]?.get(CallListSettings.self) ?? CallListSettings.defaultSettings
+            return settings.showContactsTab
+        }
+        |> distinctUntilChanged
+        |> deliverOnMainQueue).startStrict(next: { [weak self] showContactsTab in
+            guard let self else {
+                return
+            }
+            if self.showContactsTab != showContactsTab {
+                self.updateRootControllers(showContactsTab: showContactsTab, showCallsTab: self.showCallsTab)
+            }
+        })
     }
     
     public func openChatsController(activateSearch: Bool, filter: ChatListSearchFilter = .chats, query: String? = nil) {
@@ -300,11 +365,12 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
         }
         
         self.popToRoot(animated: false)
-        
-        if let index = rootTabController.controllers.firstIndex(where: { $0 is PeerInfoScreenImpl }) {
+
+        // SuperGram: keep the chat list selected when the tab bar is hidden (Swiftgram `hideTabBar`).
+        if !sgIsTabBarHiddenSetting(), let index = rootTabController.controllers.firstIndex(where: { $0 is PeerInfoScreenImpl }) {
             rootTabController.selectedIndex = index
         }
-        
+
         let themeController = themeSettingsController(context: self.context, focusOnItemTag: .icon)
         var controllers: [UIViewController] = Array(self.viewControllers.prefix(1))
         controllers.append(themeController)
@@ -812,11 +878,18 @@ public final class TelegramRootController: NavigationController, TelegramRootCon
         }
         
         self.popToRoot(animated: false)
-    
-        if let index = rootTabController.controllers.firstIndex(where: { $0 is PeerInfoScreenImpl }) {
+
+        // SuperGram: with the tab bar hidden (Swiftgram `hideTabBar`) Settings is pushed like the chat list button does,
+        // otherwise the Settings tab would be selected with no way back.
+        if sgIsTabBarHiddenSetting(), let accountSettingsController = self.accountSettingsController {
+            if let index = rootTabController.controllers.firstIndex(where: { $0 is ChatListController }) {
+                rootTabController.selectedIndex = index
+            }
+            self.pushViewController(accountSettingsController, animated: false)
+        } else if let index = rootTabController.controllers.firstIndex(where: { $0 is PeerInfoScreenImpl }) {
             rootTabController.selectedIndex = index
         }
-        
+
         if edit {
             self.accountSettingsController?.activateEdit()
         }

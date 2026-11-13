@@ -1,15 +1,25 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
+# MARK: Swiftgram
+sgdeps = [
+    "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
+    "//Swiftgram/SGStrings:SGStrings",
+]
+
+sgsrcs = [
+    "//Swiftgram/SGOutgoingTranslationLanguageSelection:SGOutgoingTranslationLanguageSelection",
+]
+
 swift_library(
     name = "TranslateUI",
     module_name = "TranslateUI",
     srcs = glob([
 		"Sources/**/*.swift",
-    ]),
+    ]) + sgsrcs,
     copts = [
         "-warnings-as-errors",
     ],
-    deps = [
+    deps = sgdeps + [
         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
         "//submodules/AsyncDisplayKit:AsyncDisplayKit",
         "//submodules/Display:Display",

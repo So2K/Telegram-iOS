@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import LegacyComponents
@@ -194,6 +196,24 @@ private func legacyPickerPath(_ value: Any?) -> String? {
     } else {
         return legacyPickerString(value)
     }
+}
+
+// SuperGram: center square crop for round video ("Telescope") placeholders
+private func legacyAssetPickerSquareCroppedImage(_ image: UIImage) -> UIImage {
+    guard let cgImage = image.cgImage else {
+        return image
+    }
+    let width = CGFloat(cgImage.width)
+    let height = CGFloat(cgImage.height)
+    if abs(width - height) < 1.0 {
+        return image
+    }
+    let side = min(width, height)
+    let rect = CGRect(x: floor((width - side) / 2.0), y: floor((height - side) / 2.0), width: side, height: side)
+    guard let croppedImage = cgImage.cropping(to: rect) else {
+        return image
+    }
+    return UIImage(cgImage: croppedImage, scale: image.scale, orientation: image.imageOrientation)
 }
 
 public func legacyAssetPickerItemGenerator() -> ((Any?, NSAttributedString?, String?, String?) -> [AnyHashable : Any]?) {
@@ -463,7 +483,10 @@ public func legacyAssetPickerEnqueueMessages(
                                         defer {
                                             EngineTempBox.shared.dispose(tempFile)
                                         }
-                                        if let scaledImageData = compressImageToJPEG(scaledImage, quality: 0.6, tempFilePath: tempFile.path) {
+                                        // MARK: Swiftgram
+                                        // SuperGram (SGM-F5): outgoing JPEG quality is user-controlled. The default of
+                                        // 70 is slightly above the 0.6 stock Telegram used here.
+                                        if let scaledImageData = compressImageToJPEG(scaledImage, quality: SGSimpleSettings.shared.outgoingPhotoQualityFactor, tempFilePath: tempFile.path) {
                                             let _ = try? scaledImageData.write(to: URL(fileURLWithPath: tempFilePath))
 
                                             let resource = LocalFileReferenceMediaResource(localFilePath: tempFilePath, randomId: randomId)
@@ -856,6 +879,11 @@ public func legacyAssetPickerEnqueueMessages(
                                     break
                             }
                         case let .video(data, thumbnail, cover, adjustments, caption, asFile, asAnimation, stickers):
+                            // MARK: Swiftgram
+                            var adjustments = adjustments
+                            // SuperGram: files, animations and paid media are never converted into round videos
+                            var asTelescope = adjustments?.sendAsTelescope == true && !asFile && !asAnimation && item.price == nil
+
                             var finalDimensions: CGSize
                             var finalDuration: Double
                             switch data {
@@ -888,9 +916,15 @@ public func legacyAssetPickerEnqueueMessages(
                             }*/
                             
                             var previewRepresentations: [TelegramMediaImageRepresentation] = []
-                            if let thumbnail = thumbnail {
+                            if var thumbnail = thumbnail {
                                 let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
-                                let thumbnailSize = finalDimensions.aspectFitted(CGSize(width: 320.0, height: 320.0))
+                                var thumbnailSize = finalDimensions.aspectFitted(CGSize(width: 320.0, height: 320.0))
+                                // MARK: Swiftgram
+                                if asTelescope {
+                                    // SuperGram: round video placeholders are square
+                                    thumbnail = legacyAssetPickerSquareCroppedImage(thumbnail)
+                                    thumbnailSize = CGSize(width: 320.0, height: 320.0)
+                                }
                                 if let thumbnailImage = TGScaleImageToPixelSize(thumbnail, thumbnailSize), let thumbnailData = thumbnailImage.jpegData(compressionQuality: 0.4) {
                                     account.postbox.mediaBox.storeResourceData(resource.id, data: thumbnailData)
                                     previewRepresentations.append(TelegramMediaImageRepresentation(dimensions: PixelDimensions(thumbnailSize), resource: resource, progressiveSizes: [], immediateThumbnailData: nil, hasVideo: false, isPersonal: false))
@@ -898,7 +932,8 @@ public func legacyAssetPickerEnqueueMessages(
                             }
                             
                             var videoCover: TelegramMediaImage?
-                            if let cover {
+                            // SuperGram: round videos have no cover
+                            if let cover, !asTelescope {
                                 let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
                                 let maxSide: CGFloat = 1280.0
                                 let coverSize = cover.size.aspectFitted(CGSize(width: maxSide, height: maxSide))
@@ -927,7 +962,64 @@ public func legacyAssetPickerEnqueueMessages(
                             if asAnimation {
                                 preset = TGMediaVideoConversionPresetAnimation
                             }
-                            if !asAnimation {
+                            // MARK: Swiftgram
+                            if asTelescope, let strongAdjustments = adjustments {
+                                // Final size
+                                let size = CGSize(width: finalDimensions.width, height: finalDimensions.height)
+
+                                // Respecting user's crop
+                                let originalSize: CGSize
+                                let baseCropRect: CGRect
+                                if strongAdjustments.cropApplied(forAvatar: false) {
+                                    originalSize = strongAdjustments.originalSize
+                                    baseCropRect = strongAdjustments.cropRect
+                                } else {
+                                    // It's a hack, video is resized according to the quality preset
+                                    // To prevent this resize we must set original size the same as the after-resized video
+                                    originalSize = size
+                                    baseCropRect = CGRect(origin: CGPoint(), size: size)
+                                }
+
+                                // Need to make a square (centered inside the crop rect, in its own coordinate space).
+                                // SuperGram: cropLockedAspectRatio 1.0 keeps cropApplied() true, so Swiftgram's inset hack for already square sources is not needed
+                                let shortestSide = min(baseCropRect.width, baseCropRect.height)
+                                let cropRect = CGRect(x: baseCropRect.minX + (baseCropRect.width - shortestSide) / 2.0, y: baseCropRect.minY + (baseCropRect.height - shortestSide) / 2.0, width: shortestSide, height: shortestSide)
+
+                                // SuperGram: an untrimmed video has trimEndValue == 0, cap the real range instead of subtracting from zero
+                                let maxDuration: Double = TGVideoEditMaximumTelescopeDuration
+                                let trimStartValue = strongAdjustments.trimStartValue
+                                var trimEndValue = strongAdjustments.trimEndValue
+                                if trimEndValue <= trimStartValue {
+                                    trimEndValue = max(trimStartValue, finalDuration)
+                                }
+                                let trimEndValueLimited = min(trimEndValue, trimStartValue + maxDuration)
+                                let estimatedDuration = trimEndValueLimited - trimStartValue
+
+                                // Dynamically calculate size with different presets and use the best one
+                                // SuperGram: estimate with the capped duration; VideoMessage if nothing fits
+                                var telescopePreset = TGMediaVideoConversionPresetVideoMessage
+                                for presetTest in [TGMediaVideoConversionPresetVideoMessageHD, TGMediaVideoConversionPresetVideoMessage, TGMediaVideoConversionPresetCompressedLow] {
+                                    let estimatedVideoMessageSize = TGMediaVideoConverter.estimatedSize(for: presetTest, duration: estimatedDuration, hasAudio: true)
+                                    if estimatedVideoMessageSize < 8 * 1024 * 1024 {
+                                        telescopePreset = presetTest
+                                        break
+                                    }
+                                }
+
+                                if let telescopeAdjustments = TGVideoEditAdjustments(originalSize: originalSize, cropRect: cropRect, cropOrientation: strongAdjustments.cropOrientation, cropRotation: strongAdjustments.cropRotation, cropLockedAspectRatio: 1.0, cropMirrored: strongAdjustments.cropMirrored, trimStartValue: trimStartValue, trimEndValue: trimEndValueLimited, toolValues: strongAdjustments.toolValues, paintingData: strongAdjustments.paintingData, sendAsGif: false, sendAsTelescope: true, preset: telescopePreset) {
+                                    adjustments = telescopeAdjustments
+                                    // SuperGram: the encoded file is the capped range, so the `.Video(duration:)` attribute must be too.
+                                    // The generic `trimApplied()` branch below already recomputes this to the same value, but only as long
+                                    // as `trimEndValueLimited > 0` keeps `trimApplied()` true — state it explicitly so the 60 s cap and the
+                                    // advertised duration cannot drift apart.
+                                    finalDuration = estimatedDuration
+                                    preset = telescopePreset
+                                    finalDimensions = TGMediaVideoConverter.dimensions(for: finalDimensions, adjustments: telescopeAdjustments, preset: telescopePreset)
+                                } else {
+                                    asTelescope = false
+                                    finalDimensions = TGMediaVideoConverter.dimensions(for: finalDimensions, adjustments: adjustments, preset: TGMediaVideoConversionPresetCompressedMedium)
+                                }
+                            } else if !asAnimation {
                                 finalDimensions = TGMediaVideoConverter.dimensions(for: finalDimensions, adjustments: adjustments, preset: TGMediaVideoConversionPresetCompressedMedium)
                             }
                             
@@ -1006,7 +1098,11 @@ public func legacyAssetPickerEnqueueMessages(
                                 attributes.append(EmbeddedMediaStickersMessageAttribute(files: stickerFiles))
                                 fileAttributes.append(.HasLinkedStickers)
                             }
-                            
+                            // MARK: Swiftgram
+                            if asTelescope {
+                                fileAttributes = [.FileName(fileName: "video.mp4"), .Video(duration: finalDuration, size: PixelDimensions(finalDimensions), flags: [.instantRoundVideo], preloadSize: nil, coverTime: nil, videoCodec: nil)]
+                            }
+
                             let media: EngineRawMedia
                             let mediaReference: AnyMediaReference
                             if let adjustments, adjustments.isDefaultValuesForGif(), let originalMediaReference {
@@ -1068,7 +1164,10 @@ public func legacyAssetPickerEnqueueMessages(
                                     )
                                 }
                             } else {
-                                messages.append(LegacyAssetPickerEnqueueMessage(message: .message(text: text.string, attributes: attributes, inlineStickers: [:], mediaReference: mediaReference, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: item.groupedId, correlationId: nil, bubbleUpEmojiOrStickersets: bubbleUpEmojiOrStickersets), uniqueId: item.uniqueId, isFile: asFile))
+                                // SuperGram: a round video is never part of an album. The picker already clears grouping for the whole
+                                // batch as soon as one item is telescope (TGMediaAssetsController / TGMediaPickerGalleryInterfaceView),
+                                // but that lives three layers away in the ObjC UI — enforce it at the send site too.
+                                messages.append(LegacyAssetPickerEnqueueMessage(message: .message(text: text.string, attributes: attributes, inlineStickers: [:], mediaReference: mediaReference, threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: asTelescope ? nil : item.groupedId, correlationId: nil, bubbleUpEmojiOrStickersets: bubbleUpEmojiOrStickersets), uniqueId: item.uniqueId, isFile: asFile))
                             }
                     }
                 }

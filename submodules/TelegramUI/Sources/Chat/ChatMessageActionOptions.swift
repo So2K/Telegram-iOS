@@ -660,7 +660,20 @@ func moveReplyMessageToAnotherChat(selfController: ChatControllerImpl, replySubj
 
 func moveReplyToChat(selfController: ChatControllerImpl, peerId: EnginePeer.Id, threadId: Int64?, replySubject: ChatInterfaceState.ReplyMessageSubject, completion: @escaping () -> Void) {
     if let navigationController = selfController.effectiveNavigationController {
-        for controller in navigationController.viewControllers {
+        // SuperGram: upstream returns to the OLDEST matching chat anywhere in the stack and removes every screen above
+        // it. With the screen chain kept ("sgKeepNavigationStack"), only the current chat and the nearest chat below it
+        // may be reused; otherwise the destination opens on top (the branch below) and Back still walks the chain.
+        var candidateControllers = navigationController.viewControllers
+        if superGramKeepsNavigationStack() {
+            var allowed: [UIViewController] = [selfController]
+            let stack = navigationController.viewControllers
+            let selfIndex = stack.lastIndex(where: { $0 === selfController }) ?? stack.count
+            if let nearestChat = stack[..<selfIndex].last(where: { $0 is ChatControllerImpl }) {
+                allowed.append(nearestChat)
+            }
+            candidateControllers = stack.filter { controller in allowed.contains(where: { $0 === controller }) }
+        }
+        for controller in candidateControllers {
             if let maybeChat = controller as? ChatControllerImpl {
                 if chatLocationMatchesDestination(maybeChat.chatLocation, peerId: peerId, threadId: threadId) {
                     var isChatPinnedMessages = false

@@ -1,3 +1,4 @@
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -661,12 +662,19 @@ public final class TabBarComponent: Component {
             
             self.overrideUserInterfaceStyle = component.theme.overallDarkAppearance ? .dark : .light
 
-            let barHeight: CGFloat = 56.0 + innerInset * 2.0
+            // MARK: Swiftgram
+            // SuperGram (W2A-20): one read per layout pass instead of four. Besides being cheaper on a layout path,
+            // this guarantees the measure height, the item height, the bar height and the lens all agree even if the
+            // setting is written from another thread while this pass runs.
+            let sgShowTabNames = SGSimpleSettings.shared.showTabNames
+            let sgItemHeight: CGFloat = sgShowTabNames ? 56.0 : 40.0
 
-            var availableItemsWidth: CGFloat = availableSize.width - innerInset * 2.0
-            if component.search != nil {
-                availableItemsWidth -= barHeight + 8.0
-            }
+            let barHeight: CGFloat = sgItemHeight + innerInset * 2.0
+
+            let availableItemsWidth: CGFloat = availableSize.width - innerInset * 2.0
+            // SuperGram: the collapsed search (magnifier) button next to the tabs is gone — the chat list already has a
+            // search field at the top. The search view itself stays: it becomes the search bar while search is active.
+            let _ = barHeight
             
             var unboundItemWidths: [CGFloat] = []
             
@@ -695,7 +703,7 @@ public final class TabBarComponent: Component {
                         isUnconstrained: true
                     )),
                     environment: {},
-                    containerSize: CGSize(width: 200.0, height: 56.0)
+                    containerSize: CGSize(width: 200.0, height: sgItemHeight)
                 )
                 
                 unboundItemWidths.append(itemSize.width)
@@ -705,7 +713,9 @@ public final class TabBarComponent: Component {
             let itemWidths: [CGFloat]
             let totalItemsWidth: CGFloat
 
-            let equalWidth = floorToScreenPixels(availableItemsWidth / CGFloat(component.items.count))
+            // SuperGram: with few tabs (Contacts / Calls hidden) keep the bar a compact centered pill instead of
+            // stretching two buttons across the whole screen.
+            let equalWidth = min(104.0, floorToScreenPixels(availableItemsWidth / CGFloat(component.items.count)))
             if unboundItemWidths.allSatisfy({ $0 <= equalWidth }) {
                 // All items fit in equal width — use equal widths for optical alignment
                 itemWidths = Array(repeating: equalWidth, count: component.items.count)
@@ -724,7 +734,7 @@ public final class TabBarComponent: Component {
                 totalItemsWidth = total
             }
 
-            let itemHeight: CGFloat = 56.0
+            let itemHeight: CGFloat = sgItemHeight
             let contentWidth: CGFloat = innerInset * 2.0 + totalItemsWidth
             let tabsSize = CGSize(width: min(availableSize.width, contentWidth), height: itemHeight + innerInset * 2.0)
 
@@ -871,7 +881,7 @@ public final class TabBarComponent: Component {
             } else if let selectionFrame {
                 lensSelection = (selectionFrame.minX - innerInset, selectionFrame.width + innerInset * 2.0)
             } else {
-                lensSelection = (0.0, 56.0)
+                lensSelection = (0.0, sgItemHeight)
             }
 
             var lensSize: CGSize = tabsSize
@@ -897,8 +907,7 @@ public final class TabBarComponent: Component {
                     searchFrame = CGRect(origin: CGPoint(x: 0.0, y: size.height - searchSize.height), size: searchSize)
                 } else {
                     searchSize = CGSize(width: barHeight, height: barHeight)
-                    size.width += barHeight + 8.0
-                    searchFrame = CGRect(origin: CGPoint(x: availableSize.width - searchSize.width, y: 0.0), size: searchSize)
+                    searchFrame = CGRect(origin: CGPoint(x: availableSize.width + 50.0, y: 0.0), size: searchSize)
                 }
 
                 let searchView: NavigationSearchView
@@ -1276,21 +1285,30 @@ private final class ItemComponent: Component {
                 }
             }
 
-            let titleSize = self.title.update(
-                transition: .immediate,
-                component: AnyComponent(MultilineTextComponent(
-                    text: .plain(NSAttributedString(string: title, font: Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem) ? component.theme.rootController.tabBar.selectedTextColor : component.theme.rootController.tabBar.textColor))
-                )),
-                environment: {},
-                containerSize: CGSize(width: availableSize.width, height: 100.0)
-            )
-            let titleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - titleSize.width) * 0.5), y: availableSize.height - 8.0 - titleSize.height), size: titleSize)
-            if let titleView = self.title.view {
-                if titleView.superview == nil {
-                    self.contextContainerView.contentView.addSubview(titleView)
+            // MARK: Swiftgram
+            // SuperGram (W2A-02): the `else` branch is required. Turning "Show tab names" off while the bar exists
+            // shrinks it 56 -> 40 pt; without removing the label it stays at its old frame and overlaps the icon
+            // until the whole tab bar is rebuilt. Laying the text out at all is also pointless when it is hidden.
+            var titleSize = CGSize(width: 0.0, height: 0.0)
+            if SGSimpleSettings.shared.showTabNames {
+                titleSize = self.title.update(
+                    transition: .immediate,
+                    component: AnyComponent(MultilineTextComponent(
+                        text: .plain(NSAttributedString(string: title, font: Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem) ? component.theme.rootController.tabBar.selectedTextColor : component.theme.rootController.tabBar.textColor))
+                    )),
+                    environment: {},
+                    containerSize: CGSize(width: availableSize.width, height: 100.0)
+                )
+                let titleFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - titleSize.width) * 0.5), y: availableSize.height - 8.0 - titleSize.height), size: titleSize)
+                if let titleView = self.title.view {
+                    if titleView.superview == nil {
+                        self.contextContainerView.contentView.addSubview(titleView)
+                    }
+                    titleView.frame = titleFrame
+                    alphaTransition.setAlpha(view: titleView, alpha: component.isCompact ? 0.0 : 1.0)
                 }
-                titleView.frame = titleFrame
-                alphaTransition.setAlpha(view: titleView, alpha: component.isCompact ? 0.0 : 1.0)
+            } else if let titleView = self.title.view, titleView.superview != nil {
+                titleView.removeFromSuperview()
             }
 
             if let badgeText = badgeValue, !badgeText.isEmpty {
@@ -1334,7 +1352,8 @@ private final class ItemComponent: Component {
             self.contextContainerView.contentRect = CGRect(origin: CGPoint(), size: availableSize)
 
             if component.isUnconstrained {
-                return CGSize(width: titleSize.width + 10.0 * 2.0, height: availableSize.height)
+                // SuperGram: with tab names hidden there is no title to measure, so fall back to the icon width
+                return CGSize(width: max(titleSize.width, 25.0) + 10.0 * 2.0, height: availableSize.height)
             } else {
                 return availableSize
             }

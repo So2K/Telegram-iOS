@@ -13,6 +13,8 @@ import PeerPresenceStatusManager
 import AppBundle
 import SegmentedControlNode
 import ContextUI
+// MARK: Swiftgram
+import SGSimpleSettings
 
 private let subtitleFont = Font.regular(12.0)
 
@@ -163,7 +165,7 @@ final class SharePeersContainerNode: ASDisplayNode, ShareContentContainerNode {
         
         self.peersValue.set(.single(peers))
         
-        let canShareStory = controllerInteraction.shareStory != nil
+        let canShareStory = controllerInteraction.shareStory != nil && SGSimpleSettings.shared.showRepostToStoryV2 // MARK: Swiftgram
         
         let items: Signal<[SharePeerEntry], NoError> = combineLatest(self.peersValue.get(), self.foundPeers.get(), self.tick.get(), self.themePromise.get())
         |> map { [weak controllerInteraction] initialPeers, foundPeers, _, theme -> [SharePeerEntry] in

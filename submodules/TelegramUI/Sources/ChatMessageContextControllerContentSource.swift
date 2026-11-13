@@ -394,6 +394,12 @@ final class ChatViewOnceMessageContextExtractedContentSource: ContextExtractedCo
         }
         
         if let messageNodeCopy = self.messageNodeCopy, let sourceView = messageNodeCopy.supernode?.view, let contentNode = messageNodeCopy.getMessageContextSourceNode(stableId: nil)?.contentNode, let parentNode = contentNode.supernode?.supernode?.supernode {
+            // SuperGram: "Message Deletion Effects" off (disableSnapDeletionEffect) also skips the dust effect of the context menu copy.
+            if SuperGramChatHistorySettings.disableSnapDeletionEffect {
+                messageNodeCopy.removeFromSupernode()
+                contentNode.removeFromSupernode()
+                return nil
+            }
             let dustEffectLayer = DustEffectLayer()
             dustEffectLayer.position = sourceView.bounds.center.offsetBy(dx: (parentNode.frame.width - messageNodeCopy.frame.width), dy: 0.0)
             dustEffectLayer.bounds = CGRect(origin: CGPoint(), size: sourceView.bounds.size)

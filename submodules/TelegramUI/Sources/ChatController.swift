@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import Postbox
@@ -308,6 +311,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     
     let galleryHiddenMesageAndMediaDisposable = MetaDisposable()
     let temporaryHiddenGalleryMediaDisposable = MetaDisposable()
+    let pendingOpenMediaDisposable = MetaDisposable()
+    var pendingOpenMediaRequestId = 0
     
     let galleryPresentationContext = PresentationContext()
 
@@ -1650,12 +1655,76 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                         }
                     })
                     return rect
+                },
+                beginMediaGalleryOpen: { [weak self] in
+                    guard let self else {
+                        return 0
+                    }
+                    self.pendingOpenMediaRequestId += 1
+                    self.pendingOpenMediaDisposable.set(nil)
+                    return self.pendingOpenMediaRequestId
+                },
+                setMediaGalleryOpenDisposable: { [weak self] requestId, disposable in
+                    guard let self else {
+                        disposable.dispose()
+                        return
+                    }
+                    if self.pendingOpenMediaRequestId == requestId {
+                        self.pendingOpenMediaDisposable.set(disposable)
+                    } else {
+                        disposable.dispose()
+                    }
+                },
+                isMediaGalleryOpenCurrent: { [weak self] requestId in
+                    guard let self else {
+                        return false
+                    }
+                    return self.pendingOpenMediaRequestId == requestId
+                },
+                endMediaGalleryOpen: { [weak self] requestId in
+                    guard let self, self.pendingOpenMediaRequestId == requestId else {
+                        return
+                    }
+                    self.pendingOpenMediaDisposable.set(nil)
                 }
             )
             
             self.controllerInteraction?.isOpeningMediaSignal = openChatMessageParams.blockInteraction.get()
             
             return context.sharedContext.openChatMessage(openChatMessageParams)
+        }, sgStartMessageEdit: { [weak self] message in
+            // MARK: Swiftgram
+            guard let strongSelf = self else {
+                return false
+            }
+            // SuperGram: the same availability rules as the "Edit" context menu item.
+            let presentationInterfaceState = strongSelf.presentationInterfaceState
+            if presentationInterfaceState.interfaceState.selectionState != nil {
+                return false
+            }
+            if case .standard(.embedded) = presentationInterfaceState.mode {
+                return false
+            }
+            if case .pinnedMessages = presentationInterfaceState.subject {
+                return false
+            }
+            if case .messageOptions = presentationInterfaceState.subject {
+                return false
+            }
+            if case let .customChatContents(customChatContents) = presentationInterfaceState.subject, case .hashTagSearch = customChatContents.kind {
+                return false
+            }
+            if presentationInterfaceState.renderedPeer?.peer is TelegramChannel && message.id.peerId.namespace == Namespaces.Peer.CloudGroup {
+                return false
+            }
+            if message.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaTodo }) {
+                return false
+            }
+            if canEditMessage(context: strongSelf.context, limitsConfiguration: strongSelf.context.currentLimitsConfiguration.with { EngineConfiguration.Limits($0) }, message: message) {
+                strongSelf.interfaceInteraction?.setupEditMessage(message.id, { _ in })
+                return true
+            }
+            return false
         }, openPeer: { [weak self] peer, navigation, fromMessage, source in
             var expandAvatar = false
             if case let .groupParticipant(storyStats, avatarHeaderNode) = source {
@@ -2177,7 +2246,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 }
             }
 
-            let isSecret = strongSelf.presentationInterfaceState.copyProtectionEnabled || strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat
+            // SuperGram: copy protection honours sgAllowScreenCaptureProtected; secret chats stay protected.
+            let isSecret = SuperGramContentProtection.shouldDisableScreenCapture(isSecret: strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat, isCopyProtected: strongSelf.presentationInterfaceState.copyProtectionEnabled)
             let pinchController = makePinchController(sourceNode: sourceNode, disableScreenshots: isSecret, getContentAreaInScreenSpace: {
                 guard let strongSelf = self else {
                     return CGRect()
@@ -4301,7 +4371,11 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                         default:
                             break
                         }
-                        
+                        if sgPrefersOnDeviceChatTranslation() {
+                            // SuperGram: the user picked on-device Apple Translation (iOS 18+ is checked by the helper)
+                            useSystemTranslation = true
+                        }
+
                         if useSystemTranslation {
                             presentTranslateScreen(
                                 context: context,
@@ -6800,6 +6874,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.navigationActionDisposable.dispose()
         self.galleryHiddenMesageAndMediaDisposable.dispose()
         self.temporaryHiddenGalleryMediaDisposable.dispose()
+        self.pendingOpenMediaDisposable.dispose()
         self.messageContextDisposable.dispose()
         self.controllerNavigationDisposable.dispose()
         self.sentMessageEventsDisposable.dispose()
@@ -7492,6 +7567,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         super.viewDidAppear(animated)
         
         self.didAppear = true
+        self.superGramRecordHistoryVisit()
         
         self.chatDisplayNode.historyNode.experimentalSnapScrollToItem = false
         self.chatDisplayNode.historyNode.canReadHistory.set(self.computedCanReadHistoryPromise.get())
@@ -7977,6 +8053,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         
         self.chatDisplayNode.historyNode.canReadHistory.set(.single(false))
         self.saveInterfaceState()
+        self.superGramFinishHistoryVisit()
         
         self.dismissAllTooltips()
         
@@ -9809,6 +9886,12 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     }
     
     func displayMediaRecordingTooltip() {
+        // MARK: Swiftgram
+        // Swiftgram returns here unconditionally; SuperGram keeps the stock "Hold to record" hint available
+        // behind `sgHideRecordingTooltip` (default ON = suppressed, i.e. Swiftgram's behaviour).
+        if SGSimpleSettings.shared.sgHideRecordingTooltip {
+            return
+        }
         guard let peer = self.presentationInterfaceState.renderedPeer?.peer else {
             return
         }

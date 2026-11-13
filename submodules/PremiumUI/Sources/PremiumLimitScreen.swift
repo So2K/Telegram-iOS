@@ -859,7 +859,8 @@ private final class LimitSheetContent: CombinedComponent {
             if case .storiesChannelBoost = subject {
                 isPremiumDisabled = false
             } else {
-                isPremiumDisabled = premiumConfiguration.isPremiumDisabled
+                // SuperGram: limit sheets are informational for non-premium users (OK button, no "Increase Limit" upsell)
+                isPremiumDisabled = premiumConfiguration.isPremiumDisabled || (superGramHidePremiumUpsell && !component.context.isPremium)
             }
             
             let sideInset: CGFloat = 16.0 + environment.safeInsets.left
@@ -1084,8 +1085,10 @@ private final class LimitSheetContent: CombinedComponent {
                 buttonAnimationName = "premium_addone"
             
                 if isPremiumDisabled {
-                    badgeText = "\(limit)"
-                    string = strings.Premium_MaxAccountsNoPremiumText("\(limit)").string
+                    // SuperGram: the account cap is client-defined (AccountUtils), the sheet is shown when it is reached
+                    let displayedLimit = superGramHidePremiumUpsell ? Int(component.count) : limit
+                    badgeText = "\(displayedLimit)"
+                    string = strings.Premium_MaxAccountsNoPremiumText("\(displayedLimit)").string
                 }
             case .expiringStories:
                 let limit = state.limits.maxExpiringStoriesCount

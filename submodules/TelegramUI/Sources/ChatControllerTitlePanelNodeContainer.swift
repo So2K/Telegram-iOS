@@ -10,7 +10,10 @@ final class ChatControllerTitlePanelNodeContainer: ASDisplayNode {
             return nil
         }
         
-        for subview in self.view.subviews {
+        // SuperGram: iterate front to back (standard UIKit hit testing order). Iterating in subview
+        // order returned the lowest panel first, so a control that was visually on top could lose the
+        // touch to a panel below it.
+        for subview in self.view.subviews.reversed() {
             if let result = subview.hitTest(self.view.convert(point, to: subview), with: event) {
                 return result
             }

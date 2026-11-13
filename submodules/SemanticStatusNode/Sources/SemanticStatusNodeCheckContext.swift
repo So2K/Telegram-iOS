@@ -80,7 +80,8 @@ final class SemanticStatusNodeCheckContext: SemanticStatusNodeStateContext {
     var transition: SemanticStatusNodeProgressTransition?
     
     var isAnimating: Bool {
-        return true
+        // SuperGram: the check mark only animates while it is being drawn in
+        return self.transition != nil
     }
     
     var requestUpdate: () -> Void = {}

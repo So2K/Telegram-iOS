@@ -61,34 +61,10 @@ class ChatDocumentGalleryItem: GalleryItem {
     }
 }
 
-private let registeredURLProtocol: Void = {
-    URLProtocol.registerClass(ChatDocumentURLProtocol.self)
-}()
-
-private final class ChatDocumentURLProtocol: URLProtocol {
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        return request
-    }
-    
-    override class func canInit(with request: URLRequest) -> Bool {
-        if let mainDocumentURL = request.mainDocumentURL {
-            if mainDocumentURL.scheme == "file" && request.url != mainDocumentURL {
-                return true
-            }
-        }
-        return false
-    }
-    
-    override class func requestIsCacheEquivalent(_ a: URLRequest, to b: URLRequest) -> Bool {
-        return super.requestIsCacheEquivalent(a, to: b)
-    }
-    
-    override func startLoading() {
-    }
-    
-    override func stopLoading() {
-    }
-}
+// MARK: Swiftgram
+// SuperGram (SGP-12): `registeredURLProtocol` / `ChatDocumentURLProtocol` existed only to stop the removed
+// `UIWebView` fallback from loading sub-resources of a local document. The `WKWebView` path blocks those with
+// a `WKContentRuleList` instead (see `setFile`), so both are dead code and removed with the fallback.
 
 class ChatDocumentGalleryItemNode: ZoomableContentGalleryItemNode, WKNavigationDelegate {
     fileprivate let _title = Promise<String>()
@@ -112,22 +88,18 @@ class ChatDocumentGalleryItemNode: ZoomableContentGalleryItemNode, WKNavigationD
     private var status: EngineMediaResource.FetchStatus?
     
     init(context: AccountContext, presentationData: PresentationData) {
-        if #available(iOSApplicationExtension 11.0, iOS 11.0, *) {
-            let preferences = WKPreferences()
-            preferences.javaScriptEnabled = false
-            let configuration = WKWebViewConfiguration()
-            configuration.preferences = preferences
-            let webView = WKWebView(frame: CGRect(), configuration: configuration)
-            webView.allowsLinkPreview = false
-            webView.allowsBackForwardNavigationGestures = false
-            self.webView = webView
-        } else {
-            let _ = registeredURLProtocol
-            let webView = UIWebView()
-            
-            webView.scalesPageToFit = true
-            self.webView = webView
-        }
+        // MARK: Swiftgram
+        // SuperGram (SGP-12): the `else` branch built a `UIWebView` for iOS 10 and earlier. It is unreachable on
+        // every supported OS and only kept the deprecated symbol in the binary, so it is gone. Every other use
+        // site in this file already casts to `WKWebView` (`self.webView as? WKWebView`).
+        let preferences = WKPreferences()
+        preferences.javaScriptEnabled = false
+        let configuration = WKWebViewConfiguration()
+        configuration.preferences = preferences
+        let webView = WKWebView(frame: CGRect(), configuration: configuration)
+        webView.allowsLinkPreview = false
+        webView.allowsBackForwardNavigationGestures = false
+        self.webView = webView
         self.footerContentNode = ChatItemGalleryFooterContentNode(context: context, presentationData: presentationData)
         
         self.statusNodeContainer = HighlightableButtonNode()

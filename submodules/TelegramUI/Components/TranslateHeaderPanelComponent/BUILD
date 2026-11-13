@@ -27,6 +27,7 @@ swift_library(
         "//submodules/TelegramNotices",
         "//submodules/PremiumUI",
         "//submodules/TelegramUI/Components/TranslationLanguagesContextMenuContent",
+        "//submodules/UndoUI",
     ],
     visibility = [
         "//visibility:public",

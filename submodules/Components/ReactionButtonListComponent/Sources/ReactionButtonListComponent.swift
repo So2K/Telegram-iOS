@@ -699,7 +699,8 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
                         }
                         strongSelf.layer.contents = imageContents
                         
-                        if animated, let previousContents = previousContents as? CGImage {
+                        if animated, let previousContents = previousContents, CFGetTypeID(previousContents as CFTypeRef) == CGImage.typeID {
+                            let previousContents = previousContents as! CGImage
                             strongSelf.layer.animate(from: previousContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
                         }
                     }

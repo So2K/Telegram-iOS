@@ -35,7 +35,27 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
     static func navigationBarTheme(_ theme: PresentationTheme) -> NavigationBarTheme {
         return NavigationBarTheme(overallDarkAppearance: theme.overallDarkAppearance, buttonColor: theme.chat.inputPanel.panelControlColor, disabledButtonColor: theme.intro.disabledTextColor, primaryTextColor: theme.intro.primaryTextColor, backgroundColor: .clear, opaqueBackgroundColor: .clear, enableBackgroundBlur: false, separatorColor: .clear, badgeBackgroundColor: theme.rootController.navigationBar.badgeBackgroundColor, badgeStrokeColor: theme.rootController.navigationBar.badgeStrokeColor, badgeTextColor: theme.rootController.navigationBar.badgeTextColor, edgeEffectColor: .clear, accentButtonColor: theme.list.itemCheckColors.fillColor, accentDisabledButtonColor: theme.chat.inputPanel.panelControlDisabledColor, accentForegroundColor: theme.list.itemCheckColors.foregroundColor, style: .glass)
     }
-    
+
+    private static func apiCredentialsErrorText(_ info: (Int, String)?) -> String? {
+        guard let (code, description) = info, !description.isEmpty else {
+            return nil
+        }
+        guard description == "API_ID_INVALID" || description == "API_ID_PUBLISHED_FLOOD" || description.hasPrefix("API_") || description.contains("API_ID_INVALID") || description.contains("API_ID_PUBLISHED_FLOOD") else {
+            return nil
+        }
+        return "Telegram rejected these API credentials (\(code): \(description)). Enter api_id and api_hash from my.telegram.org/apps. Bot tokens are not valid here."
+    }
+
+    private static func genericAuthorizationErrorText(_ info: (Int, String)?, fallback: String) -> String {
+        if let apiCredentialsErrorText = self.apiCredentialsErrorText(info) {
+            return apiCredentialsErrorText
+        }
+        guard let (code, description) = info, !description.isEmpty else {
+            return fallback
+        }
+        return "\(fallback)\n\nServer error: \(code): \(description)"
+    }
+
     private let sharedContext: SharedAccountContext
     private var account: UnauthorizedAccount
     private let otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)])
@@ -46,25 +66,25 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
     public var presentationData: PresentationData
     private let openUrl: (String) -> Void
     private let authorizationCompleted: () -> Void
-    
+
     private var stateDisposable: Disposable?
     private let actionDisposable = MetaDisposable()
     private var applicationStateDisposable: Disposable?
-    
+
     private var didPlayPresentationAnimation = false
-    
+
     private let _ready = Promise<Bool>()
     override public var ready: Promise<Bool> {
         return self._ready
     }
     private var didSetReady = false
-    
+
     fileprivate var engine: TelegramEngineUnauthorized {
         return TelegramEngineUnauthorized(account: self.account)
     }
-    
+
     private var inAppPurchaseManager: InAppPurchaseManager!
-    
+
     public init(sharedContext: SharedAccountContext, account: UnauthorizedAccount, otherAccountPhoneNumbers: ((String, AccountRecordId, Bool)?, [(String, AccountRecordId, Bool)]), presentationData: PresentationData, openUrl: @escaping (String) -> Void, apiId: Int32, apiHash: String, authorizationCompleted: @escaping () -> Void) {
         self.sharedContext = sharedContext
         self.account = account
@@ -77,7 +97,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         self.presentationData = presentationData
         self.openUrl = openUrl
         self.authorizationCompleted = authorizationCompleted
-        
+
         let navigationStatusBar: NavigationStatusBarStyle
         switch presentationData.theme.rootController.statusBarStyle {
         case .black:
@@ -85,11 +105,13 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         case .white:
             navigationStatusBar = .white
         }
-        
+
         super.init(mode: .single, theme: NavigationControllerTheme(statusBar: navigationStatusBar, navigationBar: AuthorizationSequenceController.navigationBarTheme(presentationData.theme), emptyAreaColor: .black), isFlat: true)
-        
+
+        let _ = self.applyApiCredentials(apiCredentials)
+
         self.inAppPurchaseManager = InAppPurchaseManager(engine: .unauthorized(self.engine))
-        
+
         self.stateDisposable = (self.engine.auth.state()
         |> map { state -> InnerState in
             if case .authorized = state {
@@ -104,7 +126,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         |> deliverOnMainQueue).startStrict(next: { [weak self] state in
             self?.updateState(state: state)
         }).strict()
-        
+
         self.applicationStateDisposable = (self.sharedContext.applicationBindings.applicationIsActive
         |> deliverOnMainQueue).start(next: { [weak self] isActive in
             guard let self else {
@@ -117,22 +139,37 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             }
         })
     }
-    
+
     required public init(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
+    private func applyApiCredentials(_ credentials: AuthorizationApiCredentials?) -> AuthorizationApiCredentials {
+        let apiCredentials = credentials ?? AuthorizationApiCredentials(apiId: self.defaultApiId, apiHash: self.defaultApiHash)
+        self.apiId = apiCredentials.apiId
+        self.apiHash = apiCredentials.apiHash
+        self.account.network.context.updateApiEnvironment { environment in
+            guard let environment else {
+                return nil
+            }
+            let updatedEnvironment = environment.withUpdatedLangPackCode(environment.langPackCode)
+            updatedEnvironment.apiId = apiCredentials.apiId
+            return updatedEnvironment
+        }
+        return apiCredentials
+    }
+
     deinit {
         self.stateDisposable?.dispose()
         self.actionDisposable.dispose()
         self.applicationStateDisposable?.dispose()
     }
-    
+
     override public func loadView() {
         super.loadView()
         self.view.backgroundColor = self.presentationData.theme.list.plainBackgroundColor
     }
-    
+
     private func splashController() -> AuthorizationSequenceSplashController {
         var currentController: AuthorizationSequenceSplashController?
         for c in self.viewControllers {
@@ -150,16 +187,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 guard let self else {
                     return
                 }
-                let apiCredentials = credentials ?? AuthorizationApiCredentials(apiId: self.defaultApiId, apiHash: self.defaultApiHash)
-                self.apiId = apiCredentials.apiId
-                self.apiHash = apiCredentials.apiHash
-                self.account.network.context.updateApiEnvironment { environment in
-                    guard let environment else {
-                        return nil
-                    }
-                    environment.apiId = apiCredentials.apiId
-                    return environment
-                }
+                let _ = self.applyApiCredentials(credentials)
             }
             controller.nextPressed = { [weak self] strings in
                 if let strongSelf = self {
@@ -168,16 +196,16 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     }
                     let masterDatacenterId = strongSelf.account.masterDatacenterId
                     let isTestingEnvironment = strongSelf.account.testingEnvironment
-                    
+
                     let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                    
+
                     let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: isTestingEnvironment, masterDatacenterId: masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
                 }
             }
         }
         return controller
     }
-    
+
     private func phoneEntryController(countryCode: Int32, number: String, splashController: AuthorizationSequenceSplashController?) -> AuthorizationSequencePhoneEntryController {
         var currentController: AuthorizationSequencePhoneEntryController?
         for c in self.viewControllers {
@@ -207,6 +235,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             if let splashController = splashController {
                 controller.animateWithSplashController(splashController)
             }
+            controller.apiCredentialsUpdated = { [weak self, weak controller] credentials in
+                guard let self else {
+                    return
+                }
+                controller?.applyApiCredentials(self.applyApiCredentials(credentials))
+            }
             controller.accountUpdated = { [weak self] updatedAccount in
                 guard let strongSelf = self else {
                     return
@@ -219,7 +253,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 controller?.inProgress = true
-                
+
                 let disableAuthTokens = self.sharedContext.immediateExperimentalUISettings.disableReloginTokens
                 let authorizationPushConfiguration = self.sharedContext.authorizationPushConfiguration
                 |> take(1)
@@ -246,7 +280,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         }, error: { error in
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
-                                
+
                                 let text: String
                                 var actions: [TextAlertAction] = []
                                 switch error {
@@ -266,7 +300,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             let locale = Locale.current.identifier
                                             let carrier = CTCarrier()
                                             let mnc = carrier.mobileNetworkCode ?? "none"
-                                            
+
                                             AuthorizationSequenceController.presentEmailComposeController(sharedContext: strongSelf.sharedContext, address: "recover@telegram.org", subject: strongSelf.presentationData.strings.Login_InvalidPhoneEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_InvalidPhoneEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case .phoneLimitExceeded:
@@ -292,12 +326,17 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             let locale = Locale.current.identifier
                                             let carrier = CTCarrier()
                                             let mnc = carrier.mobileNetworkCode ?? "none"
-                                            
+
                                             AuthorizationSequenceController.presentEmailComposeController(sharedContext: strongSelf.sharedContext, address: "recover@telegram.org", subject: strongSelf.presentationData.strings.Login_PhoneBannedEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneBannedEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case let .generic(info):
-                                        text = strongSelf.presentationData.strings.Login_UnknownError
+                                        text = AuthorizationSequenceController.genericAuthorizationErrorText(info, fallback: strongSelf.presentationData.strings.Login_UnknownError)
                                         actions.append(TextAlertAction(type: .genericAction, title: strongSelf.presentationData.strings.Common_OK, action: {}))
+                                        if AuthorizationSequenceController.apiCredentialsErrorText(info) != nil {
+                                            actions.append(TextAlertAction(type: .defaultAction, title: "API", action: { [weak controller] in
+                                                controller?.apiCredentialsPressed()
+                                            }))
+                                        }
                                         actions.append(TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Login_PhoneNumberHelp, action: { [weak controller] in
                                             guard let strongSelf = self, let controller = controller else {
                                                 return
@@ -314,7 +353,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             } else {
                                                 errorString = "unknown"
                                             }
-                                            
+
                                             AuthorizationSequenceController.presentEmailComposeController(sharedContext: strongSelf.sharedContext, address: "recover@telegram.org", subject: strongSelf.presentationData.strings.Login_PhoneGenericEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneGenericEmailBody(formattedNumber, errorString, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case .timeout:
@@ -328,7 +367,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                         }))
                                 }
                                 (controller.navigationController as? NavigationController)?.presentOverlay(controller: textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: actions), inGlobal: true, blockInteraction: true)
-                                
+
                                 controller.dismissConfirmation()
                             }
                         }))
@@ -339,7 +378,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 guard let self else {
                     return
                 }
-                
+
                 self.actionDisposable.set((authorizeWithPasskey(
                     accountManager: self.sharedContext.accountManager,
                     account: self.account,
@@ -371,7 +410,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                             case .generic, .invalidEmailAddress, .codeExpired, .invalidEmailToken, .invalidCode:
                                 text = strongSelf.presentationData.strings.Login_UnknownError
                             }
-                            
+
                             controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                         }
                     }
@@ -381,7 +420,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(countryCode: countryCode, countryName: nil, number: number)
         return controller
     }
-    
+
     private func codeEntryController(number: String, phoneCodeHash: String, email: String?, type: SentAuthorizationCodeType, nextType: AuthorizationCodeNextType?, timeout: Int32?, previousCodeType: SentAuthorizationCodeType?, isPrevious: Bool, termsOfService: (UnauthorizedAccountTermsOfService, Bool)?) -> AuthorizationSequenceCodeEntryController {
         var currentController: AuthorizationSequenceCodeEntryController?
         for c in self.viewControllers {
@@ -401,7 +440,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                
+
                 let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.retryResetEmail = { [weak self] in
@@ -423,7 +462,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     let formattedNumber = formatPhoneNumber(number)
                                     let title = NSAttributedString(string: self.presentationData.strings.Login_Email_PremiumRequiredTitle, font: Font.semibold(self.presentationData.listsFontSize.baseDisplaySize), textColor: self.presentationData.theme.actionSheet.primaryTextColor, paragraphAlignment: .center)
                                     let text = parseMarkdownIntoAttributedString(self.presentationData.strings.Login_Email_PremiumRequiredText(formattedNumber).string, attributes: MarkdownAttributes(body: body, bold: bold, link: body, linkAttribute: { _ in nil }), textAlignment: .center).mutableCopy() as! NSMutableAttributedString
-                                    
+
                                     let alertController = textWithEntitiesAlertController(theme: AlertControllerTheme(presentationData: self.presentationData), title: title, text: text, actions: [TextAlertAction(type: .genericAction, title: self.presentationData.strings.Common_OK, action: { })])
                                     controller?.present(alertController, in: .window(.root))
                                 }
@@ -445,7 +484,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     text.addAttribute(NSAttributedString.Key(rawValue: TelegramTextAttributes.Spoiler), value: true, range: NSRange(location: first.range.location, length: matches.count))
                                 }
                             }
-                            
+
                             let alertController = textWithEntitiesAlertController(theme: AlertControllerTheme(presentationData: self.presentationData), title: title, text: text, actions: [TextAlertAction(type: .genericAction, title: self.presentationData.strings.Common_Cancel, action: {}), TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Login_Email_Reset, action: { [weak self] in
                                 guard let self else {
                                     return
@@ -458,7 +497,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                                  return
                                              }
                                              controller.inProgress = false
-                                             
+
                                              let text: String
                                              switch error {
                                              case .limitExceeded:
@@ -470,7 +509,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                                  let account = self.account
                                                  let _ = self.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                              }
-                                             
+
                                              controller.presentInGlobalOverlay(textAlertController(sharedContext: self.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]))
                                          }
                                      })
@@ -484,7 +523,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             controller.loginWithCode = { [weak self, weak controller] code in
                 if let strongSelf = self {
                     controller?.inProgress = true
-                    
+
                     let authorizationCode: AuthorizationCode
                     switch type {
                         case .email:
@@ -492,14 +531,14 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         default:
                             authorizationCode = .phoneCode(code)
                     }
-                    
+
                     if case let .email(_, _, _, _, _, setup) = type, setup, case let .emailVerification(emailCode) = authorizationCode {
                         strongSelf.actionDisposable.set(((verifyLoginEmailSetup(account: strongSelf.account, code: emailCode))
                         |> deliverOnMainQueue).startStrict(error: { error in
                             Queue.mainQueue().async {
                                 if let strongSelf = self, let controller = controller {
                                     controller.inProgress = false
-                                    
+
                                     if case .invalidCode = error {
                                         controller.animateError(text: strongSelf.presentationData.strings.Login_WrongCodeError)
                                     } else {
@@ -525,11 +564,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             case .emailNotAllowed:
                                                 text = strongSelf.presentationData.strings.Login_EmailNotAllowedError
                                         }
-                                        
+
                                         if resetCode {
                                             controller.resetCode()
                                         }
-                                        
+
                                         controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                                     }
                                 }
@@ -606,7 +645,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                             Queue.mainQueue().async {
                                 if let strongSelf = self, let controller = controller {
                                     controller.inProgress = false
-                                    
+
                                     if case .invalidCode = error {
                                         let text: String
                                         switch type {
@@ -638,11 +677,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             case .invalidEmailAddress:
                                                 text = strongSelf.presentationData.strings.Login_InvalidEmailAddressError
                                         }
-                                        
+
                                         if resetCode {
                                             controller.resetCode()
                                         }
-                                        
+
                                         controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                                     }
                                 }
@@ -658,13 +697,13 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     strongSelf.actionDisposable.set(togglePreviousCodeEntry(account: strongSelf.account).start())
                     return
                 }
-                
+
                 if nextType == nil {
                     if let controller {
                         let carrier = CTCarrier()
                         let mnc = carrier.mobileNetworkCode ?? "none"
                         let _ = strongSelf.engine.auth.reportMissingCode(phoneNumber: number, phoneCodeHash: phoneCodeHash, mnc: mnc).start()
-                        
+
                         AuthorizationSequenceController.presentDidNotGetCodeUI(sharedContext: strongSelf.sharedContext, controller: controller, presentationData: strongSelf.presentationData, phoneNumber: number, mnc: mnc)
                     }
                 } else {
@@ -675,9 +714,9 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     }, error: { error in
                         if let strongSelf = self, let controller = controller {
                             controller.inProgress = false
-                            
+
                             var actions: [TextAlertAction] = [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]
-                            
+
                             let text: String
                             switch error {
                                 case .limitExceeded:
@@ -695,12 +734,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     })]
                                 case .phoneBanned:
                                     text = strongSelf.presentationData.strings.Login_PhoneBannedError
-                                case .generic:
-                                    text = strongSelf.presentationData.strings.Login_UnknownError
+                                case let .generic(info):
+                                    text = AuthorizationSequenceController.genericAuthorizationErrorText(info, fallback: strongSelf.presentationData.strings.Login_UnknownError)
                                 case .timeout:
                                     text = strongSelf.presentationData.strings.Login_NetworkError
                             }
-                            
+
                             controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: actions), in: .window(.root))
                         }
                     }))
@@ -723,15 +762,15 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             guard let strongSelf = self else {
                 return
             }
-            
+
             strongSelf.signInWithAppleSetup = false
-            
+
             if #available(iOS 13.0, *) {
                 let appleIdProvider = ASAuthorizationAppleIDProvider()
                 let request = appleIdProvider.createRequest()
                 request.requestedScopes = [.email]
                 request.user = number
-                 
+
                 let authorizationController = ASAuthorizationController(authorizationRequests: [request])
                 authorizationController.delegate = strongSelf
                 authorizationController.presentationContextProvider = strongSelf
@@ -746,11 +785,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(number: formatPhoneNumber(number), email: email, codeType: type, nextType: nextType, timeout: timeout, termsOfService: termsOfService, previousCodeType: previousCodeType, isPrevious: isPrevious)
         return controller
     }
-    
+
     private var signInWithAppleSetup = false
     private var appleSignInAllowed = false
     private var currentEmail: String?
-    
+
     private func emailSetupController(number: String, appleSignInAllowed: Bool) -> AuthorizationSequenceEmailEntryController {
         var currentController: AuthorizationSequenceEmailEntryController?
         for c in self.viewControllers {
@@ -768,7 +807,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                
+
                 let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
         }
@@ -776,16 +815,16 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             guard let strongSelf = self else {
                 return
             }
-            
+
             controller?.inProgress = true
-            
+
             strongSelf.currentEmail = email
-            
+
             strongSelf.actionDisposable.set((sendLoginEmailCode(account: strongSelf.account, email: email)
             |> deliverOnMainQueue).startStrict(error: { error in
                 if let strongSelf = self, let controller = controller {
                     controller.inProgress = false
-                    
+
                     let text: String
                     switch error {
                         case .limitExceeded:
@@ -799,7 +838,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         case .emailNotAllowed:
                             text = strongSelf.presentationData.strings.Login_EmailNotAllowedError
                     }
-                    
+
                     controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                 }
             }, completed: {
@@ -810,15 +849,15 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             guard let strongSelf = self else {
                 return
             }
-            
+
             strongSelf.signInWithAppleSetup = true
-            
+
             if #available(iOS 13.0, *) {
                 let appleIdProvider = ASAuthorizationAppleIDProvider()
                 let request = appleIdProvider.createRequest()
                 request.requestedScopes = [.email]
                 request.user = number
-                 
+
                 let authorizationController = ASAuthorizationController(authorizationRequests: [request])
                 authorizationController.delegate = strongSelf
                 authorizationController.presentationContextProvider = strongSelf
@@ -828,7 +867,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(appleSignInAllowed: appleSignInAllowed)
         return controller
     }
-    
+
     private func paymentController(number: String, phoneCodeHash: String, storeProduct: String, premiumDays: Int32, supportEmailAddress: String, supportEmailSubject: String) -> AuthorizationSequencePaymentScreen {
         let controller = AuthorizationSequencePaymentScreen(sharedContext: self.sharedContext, engine: self.engine, presentationData: self.presentationData, inAppPurchaseManager: self.inAppPurchaseManager, phoneNumber: number, phoneCodeHash: phoneCodeHash, storeProduct: storeProduct, premiumDays: premiumDays, supportEmailAddress: supportEmailAddress, supportEmailSubject: supportEmailSubject, back: { [weak self] in
             guard let self else {
@@ -839,18 +878,18 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         })
         return controller
     }
-    
+
     @available(iOS 13.0, *)
     public func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         let lastController = self.viewControllers.last as? ViewController
-        
+
         switch authorization.credential {
             case let appleIdCredential as ASAuthorizationAppleIDCredential:
                 guard let tokenData = appleIdCredential.identityToken, let token = String(data: tokenData, encoding: .utf8) else {
                     lastController?.present(textAlertController(sharedContext: self.sharedContext, title: nil, text: self.presentationData.strings.Login_UnknownError, actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                     return
                 }
-            
+
             if self.signInWithAppleSetup {
                 self.actionDisposable.set((verifyLoginEmailSetup(account: self.account, code: .appleToken(token))
                 |> deliverOnMainQueue).startStrict(error: { [weak self, weak lastController] error in
@@ -910,7 +949,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     case .invalidEmailAddress:
                                         text = strongSelf.presentationData.strings.Login_InvalidEmailAddressError
                                 }
-                                
+
                                 lastController.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                             }
                         }
@@ -921,7 +960,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 break
         }
     }
-    
+
     @available(iOS 13.0, *)
     public func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         guard let lastController = self.viewControllers.last as? ViewController else {
@@ -929,12 +968,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         }
         lastController.present(textAlertController(sharedContext: self.sharedContext, title: nil, text: error.localizedDescription, actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
     }
-    
+
     @available(iOS 13.0, *)
     public func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         return self.view.window!
     }
-    
+
     private func passwordEntryController(hint: String, suggestReset: Bool, syncContacts: Bool) -> AuthorizationSequencePasswordEntryController {
         var currentController: AuthorizationSequencePasswordEntryController?
         for c in self.viewControllers {
@@ -952,18 +991,18 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                
+
                 let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.loginWithPassword = { [weak self, weak controller] password in
                 if let strongSelf = self {
                     controller?.inProgress = true
-                    
+
                     strongSelf.actionDisposable.set((authorizeWithPassword(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, password: password, syncContacts: syncContacts) |> deliverOnMainQueue).startStrict(error: { error in
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
-                                
+
                                 let text: String
                                 switch error {
                                     case .limitExceeded:
@@ -973,7 +1012,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     case .generic:
                                         text = strongSelf.presentationData.strings.Login_UnknownError
                                 }
-                                
+
                                 controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                                 controller.passwordIsInvalid()
                             }
@@ -1045,7 +1084,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(hint: hint, suggestReset: suggestReset)
         return controller
     }
-    
+
     private func passwordRecoveryController(emailPattern: String, syncContacts: Bool) -> TwoFactorDataInputScreen {
         var currentController: TwoFactorDataInputScreen?
         for c in self.viewControllers {
@@ -1079,7 +1118,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         }
         return controller
     }
-    
+
     private func awaitingAccountResetController(protectedUntil: Int32, number: String?) -> AuthorizationSequenceAwaitingAccountResetController {
         var currentController: AuthorizationSequenceAwaitingAccountResetController?
         for c in self.viewControllers {
@@ -1097,7 +1136,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                
+
                 let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.reset = { [weak self, weak controller] in
@@ -1139,7 +1178,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(protectedUntil: protectedUntil, number: number ?? "")
         return controller
     }
-    
+
     private func signUpController(firstName: String, lastName: String, termsOfService: UnauthorizedAccountTermsOfService?, displayCancel: Bool) -> AuthorizationSequenceSignUpController {
         var currentController: AuthorizationSequenceSignUpController?
         for c in self.viewControllers {
@@ -1157,7 +1196,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     return
                 }
                 let countryCode = AuthorizationSequenceCountrySelectionController.defaultCountryCode()
-                
+
                 let _ = strongSelf.engine.auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             }, displayCancel: displayCancel)
             controller.openUrl = { [weak self] url in
@@ -1169,12 +1208,12 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             controller.signUpWithName = { [weak self, weak controller] firstName, lastName, avatarData, avatarAsset, avatarAdjustments, announceSignUp in
                 if let strongSelf = self {
                     controller?.inProgress = true
-                    
+
                     var videoStartTimestamp: Double? = nil
                     if let adjustments = avatarAdjustments, adjustments.videoStartValue > 0.0 {
                         videoStartTimestamp = adjustments.videoStartValue - adjustments.trimStartValue
                     }
-                    
+
                     let avatarVideo: Signal<UploadedPeerPhotoData?, NoError>?
                     if let avatarAsset = avatarAsset as? AVAsset {
                         let engine = strongSelf.engine
@@ -1186,10 +1225,10 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     return nil
                                 }
                             }
-                            
+
                             let tempFile = EngineTempBox.shared.tempFile(fileName: "video.mp4")
                             let signal = TGMediaVideoConverter.convert(avatarAsset, adjustments: avatarAdjustments, path: tempFile.path, watcher: nil, entityRenderer: entityRenderer)!
-                            
+
                             let signalDisposable = signal.start(next: { next in
                                 if let result = next as? TGMediaVideoConversionResult {
                                     var value = stat()
@@ -1198,7 +1237,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                             let resource = LocalFileMediaResource(fileId: Int64.random(in: Int64.min ... Int64.max))
                                             engine.resources.storeResourceData(id: EngineMediaResource.Id(resource.id), data: data, synchronous: true)
                                             subscriber.putNext(EngineMediaResource(resource))
-                                            
+
                                             EngineTempBox.shared.dispose(tempFile)
                                         }
                                     }
@@ -1206,11 +1245,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                 }
                             }, error: { _ in
                             }, completed: nil)
-                            
+
                             let disposable = ActionDisposable {
                                 signalDisposable?.dispose()
                             }
-                            
+
                             return ActionDisposable {
                                 disposable.dispose()
                             }
@@ -1225,7 +1264,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     } else {
                         avatarVideo = nil
                     }
-                    
+
                     strongSelf.actionDisposable.set((signUpWithName(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, firstName: firstName, lastName: lastName, avatarData: avatarData, avatarVideo: avatarVideo, videoStartTimestamp: videoStartTimestamp, disableJoinNotifications: !announceSignUp, forcedPasswordSetupNotice: { value in
                         guard let entry = EngineCodableEntry(ApplicationSpecificCounterNotice(value: value)) else {
                             return nil
@@ -1236,7 +1275,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
-                                
+
                                 let text: String
                                 switch error {
                                     case .limitExceeded:
@@ -1250,7 +1289,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                                     case .generic:
                                         text = strongSelf.presentationData.strings.Login_UnknownError
                                 }
-                                
+
                                 controller.present(textAlertController(sharedContext: strongSelf.sharedContext, title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
                             }
                         }
@@ -1261,7 +1300,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         controller.updateData(firstName: firstName, lastName: lastName, termsOfService: termsOfService)
         return controller
     }
-    
+
     private func updateState(state: InnerState) {
         switch state {
         case .authorized:
@@ -1291,11 +1330,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                             break
                         }
                     }
-                
+
                     if let validLayout = self.validLayout, case .tablet = validLayout.deviceMetrics.type {
                         previousSplashController = nil
                     }
-                
+
                     controllers.append(self.phoneEntryController(countryCode: countryCode, number: number, splashController: previousSplashController))
                     self.setViewControllers(controllers, animated: !self.viewControllers.isEmpty && (previousSplashController == nil || self.viewControllers.count > 2))
                 case let .confirmationCodeEntry(number, type, phoneCodeHash, timeout, nextType, _, previousCodeEntry, usePrevious):
@@ -1304,7 +1343,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         controllers.append(self.splashController())
                     }
                     controllers.append(self.phoneEntryController(countryCode: AuthorizationSequenceCountrySelectionController.defaultCountryCode(), number: "", splashController: nil))
-                
+
                     var isGoingBack = false
                     if case let .emailSetupRequired(appleSignInAllowed) = type {
                         self.appleSignInAllowed = appleSignInAllowed
@@ -1313,7 +1352,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                         if let _ = self.currentEmail {
                             controllers.append(self.emailSetupController(number: number, appleSignInAllowed: self.appleSignInAllowed))
                         }
-                        
+
                         if let previousCodeEntry, case let .confirmationCodeEntry(number, previousType, phoneCodeHash, timeout, nextType, _, _, _) = previousCodeEntry, usePrevious {
                             controllers.append(self.codeEntryController(number: number, phoneCodeHash: phoneCodeHash, email: self.currentEmail, type: previousType, nextType: nextType, timeout: timeout, previousCodeType: type, isPrevious: true, termsOfService: nil))
                             isGoingBack = true
@@ -1325,7 +1364,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                             controllers.append(self.codeEntryController(number: number, phoneCodeHash: phoneCodeHash, email: self.currentEmail, type: type, nextType: nextType, timeout: timeout, previousCodeType: previousCodeType, isPrevious: false, termsOfService: nil))
                         }
                     }
-                
+
                     if isGoingBack, let currentLastController = self.viewControllers.last as? AuthorizationSequenceCodeEntryController, !currentLastController.isPrevious {
                         var tempControllers = controllers
                         tempControllers.append(currentLastController)
@@ -1377,7 +1416,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             }
         }
     }
-    
+
     override public func setViewControllers(_ viewControllers: [UIViewController], animated: Bool) {
         let wasEmpty = self.viewControllers.isEmpty
         super.setViewControllers(viewControllers, animated: animated)
@@ -1392,13 +1431,13 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             self._ready.set(.single(true))
         }
     }
-    
+
     public func applyConfirmationCode(_ code: Int) {
         if let controller = self.viewControllers.last as? AuthorizationSequenceCodeEntryController {
             controller.applyConfirmationCode(code)
         }
     }
-    
+
     static func presentEmailComposeController(sharedContext: SharedAccountContext, address: String, subject: String, body: String, from controller: ViewController, presentationData: PresentationData) {
         if MFMailComposeViewController.canSendMail() {
             final class ComposeDelegate: NSObject, MFMailComposeViewControllerDelegate {
@@ -1406,22 +1445,22 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                     controller.dismiss(animated: true, completion: nil)
                 }
             }
-        
+
             let composeController = MFMailComposeViewController()
             composeController.setToRecipients([address])
             composeController.setSubject(subject)
             composeController.setMessageBody(body, isHTML: false)
-            
+
             let composeDelegate = ComposeDelegate()
             objc_setAssociatedObject(composeDelegate, &ObjCKey_Delegate, composeDelegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             composeController.mailComposeDelegate = composeDelegate
-            
+
             controller.view.window?.rootViewController?.present(composeController, animated: true, completion: nil)
         } else {
             controller.present(textAlertController(sharedContext: sharedContext, title: nil, text: presentationData.strings.Login_EmailNotConfiguredError, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
         }
     }
-    
+
     private func animateIn() {
         if !self.otherAccountPhoneNumbers.1.isEmpty {
             self.view.layer.animatePosition(from: CGPoint(x: self.view.layer.position.x, y: self.view.layer.position.y + self.view.layer.bounds.size.height), to: self.view.layer.position, duration: 0.5, timingFunction: kCAMediaTimingFunctionSpring)
@@ -1431,31 +1470,31 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
             }
         }
     }
-    
+
     private func animateOut(completion: (() -> Void)? = nil) {
         self.view.layer.animatePosition(from: self.view.layer.position, to: CGPoint(x: self.view.layer.position.x, y: self.view.layer.position.y + self.view.layer.bounds.size.height), duration: 0.2, timingFunction: CAMediaTimingFunctionName.easeInEaseOut.rawValue, removeOnCompletion: false, completion: { _ in
             completion?()
         })
     }
-    
+
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
+
         if !self.didPlayPresentationAnimation {
             self.didPlayPresentationAnimation = true
             self.animateIn()
         }
     }
-    
+
     public func dismiss() {
         self.animateOut(completion: { [weak self] in
             self?.presentingViewController?.dismiss(animated: false, completion: nil)
         })
     }
-    
+
     public static func defaultCountryCode() -> Int32 {
         let countryId = (Locale.current as NSLocale).object(forKey: .countryCode) as? String
-     
+
         var countryCode: Int32 = 1
         if let countryId = countryId {
             let normalizedId = countryId.uppercased()
@@ -1466,10 +1505,10 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
                 }
             }
         }
-        
+
         return countryCode
     }
-    
+
     public static func presentDidNotGetCodeUI(
         sharedContext: SharedAccountContext,
         controller: ViewController,
@@ -1478,11 +1517,11 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         mnc: String
     ) {
         let formattedNumber = formatPhoneNumber(phoneNumber)
-        
+
         var emailBody = ""
         emailBody.append(presentationData.strings.Login_EmailCodeBody(formattedNumber).string)
         emailBody.append("\n\n")
-        
+
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
         let systemVersion = UIDevice.current.systemVersion
         let locale = Locale.current.identifier
@@ -1490,7 +1529,7 @@ public final class AuthorizationSequenceController: NavigationController, ASAuth
         emailBody.append("OS: \(systemVersion)\n")
         emailBody.append("Locale: \(locale)\n")
         emailBody.append("MNC: \(mnc)")
-        
+
         AuthorizationSequenceController.presentEmailComposeController(sharedContext: sharedContext, address: "sms@telegram.org", subject: presentationData.strings.Login_EmailCodeSubject(formattedNumber).string, body: emailBody, from: controller, presentationData: presentationData)
     }
 }

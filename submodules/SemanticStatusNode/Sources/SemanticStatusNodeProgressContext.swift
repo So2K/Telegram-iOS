@@ -159,7 +159,8 @@ final class SemanticStatusNodeProgressContext: SemanticStatusNodeStateContext {
     var transition: SemanticStatusNodeProgressTransition?
     
     var isAnimating: Bool {
-        return true
+        // SuperGram: a determinate, non-rotating ring with no value transition is static
+        return self.animateRotation || self.value == nil || self.transition != nil
     }
     
     var requestUpdate: () -> Void = {}

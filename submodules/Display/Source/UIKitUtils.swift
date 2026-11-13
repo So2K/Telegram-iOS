@@ -2,9 +2,24 @@ import UIKit
 import UIKitRuntimeUtils
 import AVFoundation
 
+#if targetEnvironment(simulator)
+@_silgen_name("UIAnimationDragCoefficient") func UIAnimationDragCoefficient() -> Float
+#endif
+
 public extension UIView {
+    // SuperGram: an earlier session made `animationDurationFactorImpl()` (UIKitRuntimeUtils) return 0.5 on device
+    // to speed every animation up globally. The fork then removed the factor from ContainedViewLayoutTransition and
+    // ComponentTransition, so only the remaining raw `UIView.animationDurationFactor()` call sites — ListView
+    // insert/delete/height animations above all — still ran at double speed while everything around them ran at
+    // normal speed. That mismatch is what makes list updates look like they snap. Match upstream (and
+    // ComponentFlow's own `UIView.animationDurationFactor`): 1.0 on device, the simulator's slow-animations
+    // coefficient in the simulator.
     static func animationDurationFactor() -> Double {
-        return animationDurationFactorImpl()
+        #if targetEnvironment(simulator)
+        return Double(UIAnimationDragCoefficient())
+        #else
+        return 1.0
+        #endif
     }
 }
 

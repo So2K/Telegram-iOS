@@ -90,15 +90,23 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
             
             var didBeginReading: Bool = false
             var isFinished: Bool = false
-            
+            // SuperGram: for direct streams, whether the lookahead has confirmed the end of the resource.
+            // An end-of-stream from the reader before that is a transient read miss, not the real end.
+            private(set) var directStreamIsEnded: Bool = true
+            var lastEnqueuedTimestamp: Double?
+
             init(queue: Queue, content: Content, mediaType: AVMediaType, codecName: String?, offset: Double) {
                 assert(queue.isCurrent())
-                
+
                 self.queue = queue
                 self.content = content
                 self.mediaType = mediaType
                 self.codecName = codecName
                 self.offset = offset
+
+                if case let .directStream(directStream) = content {
+                    self.directStreamIsEnded = directStream.maxReadablePts?.isEnded ?? true
+                }
             }
             
             deinit {
@@ -133,6 +141,9 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
             }
             
             func update(content: Content) {
+                if case let .directStream(directStream) = content {
+                    self.directStreamIsEnded = directStream.maxReadablePts?.isEnded ?? true
+                }
                 if let reader = self.reader {
                     if let reader = reader as? FFMpegMediaDataReaderV2, case let .directStream(directStream) = content {
                         reader.update(content: .directStream(directStream))
@@ -165,6 +176,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
         var parts: [ChunkMediaPlayerPart.Id: LoadedPart.MediaData] = [:]
         var directMediaData: LoadedPart.MediaData?
         var directReaderId: Double?
+        var directDuration: Double?
         var notifiedHasSound: Bool = false
         var seekFromMinTimestamp: Double?
     }
@@ -188,10 +200,21 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
     private var loadedPartsMediaData: QueueLocalObject<LoadedPartsMediaData>
     private var hasSound: Bool = false
     
+    private var lastEmittedStatus: MediaPlayerStatus?
     private var statusValue: MediaPlayerStatus? {
         didSet {
-            if let statusValue = self.statusValue, statusValue != oldValue {
-                self.statusPromise.set(statusValue)
+            if let statusValue = self.statusValue {
+                // SuperGram: a new status is built on every update pass (generationTimestamp always changes).
+                // Only notify consumers (UniversalVideo holders, chat bubbles, the hls.js bridge) when something
+                // they cannot extrapolate changed, plus a 5 Hz heartbeat while playing.
+                var isEquivalent = false
+                if let lastEmittedStatus = self.lastEmittedStatus {
+                    isEquivalent = statusValue.isNotificationEquivalent(to: lastEmittedStatus, maxPlayingInterval: 0.2)
+                }
+                if !isEquivalent {
+                    self.lastEmittedStatus = statusValue
+                    self.statusPromise.set(statusValue)
+                }
             }
         }
     }
@@ -229,7 +252,12 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
     private var didSetSourceSeek: Bool = false
     private var partsStateDisposable: Disposable?
     private var updateTimer: Foundation.Timer?
-    
+    private var bufferingDisplayTimer: Foundation.Timer?
+
+    private var directReaderRecoveryScheduled: Bool = false
+    private var directReaderRecoveryAttempts: (timestamp: Double, count: Int)?
+    private var pendingMediaDataRecheck: Bool = false
+
     private var audioSessionDisposable: Disposable?
     private var hasAudioSession: Bool = false
 
@@ -282,13 +310,6 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
             self.source = ChunkMediaPlayerDirectFetchSourceImpl(resource: resource)
         }
         
-        self.updateTimer = Foundation.Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true, block: { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.updateInternalState()
-        })
-        
         self.partsStateDisposable = (self.source.partsState
         |> deliverOnMainQueue).startStrict(next: { [weak self] partsState in
             guard let self else {
@@ -308,6 +329,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
     deinit {
         self.partsStateDisposable?.dispose()
         self.updateTimer?.invalidate()
+        self.bufferingDisplayTimer?.invalidate()
         self.audioSessionDisposable?.dispose()
         
         if #available(iOS 17.0, *) {
@@ -328,6 +350,8 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
     }
     
     private func updateInternalState() {
+        self.updateTimerIfNeeded()
+
         if self.isSoundEnabled && self.hasSound {
             if self.audioSessionDisposable == nil {
                 self.audioSessionDisposable = self.audioSessionManager.push(params: ManagedAudioSessionClientParams(
@@ -621,7 +645,9 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
             }
             
             let dataQueue = self.dataQueue
+            let directDuration: Double? = duration > 0.0 ? duration : nil
             self.loadedPartsMediaData.with { [weak self] loadedPartsMediaData in
+                loadedPartsMediaData.directDuration = directDuration
                 if !loadedPartsMediaData.ids.isEmpty {
                     loadedPartsMediaData.ids = []
                 }
@@ -723,8 +749,15 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
         let playbackStatus: MediaPlayerPlaybackStatus
         if isBuffering {
             var displayBuffering = false
-            if let bufferingStartTime = self.bufferingStartTime, (CFAbsoluteTimeGetCurrent() - bufferingStartTime) >= 0.3 {
-                displayBuffering = true
+            if let bufferingStartTime = self.bufferingStartTime {
+                let bufferingDuration = CFAbsoluteTimeGetCurrent() - bufferingStartTime
+                if bufferingDuration >= 0.3 {
+                    displayBuffering = true
+                } else if !self.isPlaying {
+                    // SuperGram: the playback timer only runs while playing; refresh once so a paused
+                    // player that is waiting for data switches to the visible buffering state.
+                    self.scheduleBufferingDisplayUpdate(delay: 0.3 - bufferingDuration + 0.02)
+                }
             }
             playbackStatus = .buffering(initial: false, whilePlaying: self.isPlaying, progress: 0.0, display: displayBuffering)
         } else if self.isPlaying {
@@ -775,6 +808,94 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                 }
             }
         }
+    }
+
+    private func updateTimerIfNeeded() {
+        if self.isPlaying {
+            if self.updateTimer == nil {
+                let interval = 1.0 / 30.0
+                let timer = Foundation.Timer(timeInterval: interval, repeats: true, block: { [weak self] _ in
+                    self?.updateInternalState()
+                })
+                timer.tolerance = interval * 0.15
+                // SuperGram: .common keeps the playback state advancing while a scroll view is tracking.
+                RunLoop.main.add(timer, forMode: .common)
+                self.updateTimer = timer
+            }
+        } else if let updateTimer = self.updateTimer {
+            self.updateTimer = nil
+            updateTimer.invalidate()
+        }
+    }
+
+    // SuperGram: one pending, throttled re-check of the renderer buffers. Used when a fill pass ended with nothing
+    // enqueued: the media-data request has been stopped, so something has to bring it back once data arrives, but
+    // re-arming synchronously spins the data queue against the main queue.
+    private func scheduleMediaDataRecheck() {
+        if self.pendingMediaDataRecheck {
+            return
+        }
+        self.pendingMediaDataRecheck = true
+        Queue.mainQueue().after(0.15, { [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingMediaDataRecheck = false
+            self.updateInternalState()
+        })
+    }
+
+    private func scheduleBufferingDisplayUpdate(delay: Double) {
+        if self.bufferingDisplayTimer != nil {
+            return
+        }
+        let timer = Foundation.Timer(timeInterval: max(0.01, delay), repeats: false, block: { [weak self] timer in
+            guard let self else {
+                return
+            }
+            if self.bufferingDisplayTimer === timer {
+                self.bufferingDisplayTimer = nil
+            }
+            self.updateInternalState()
+        })
+        RunLoop.main.add(timer, forMode: .common)
+        self.bufferingDisplayTimer = timer
+    }
+
+    // SuperGram: a direct-stream track reported end-of-stream before the lookahead reached the end of the
+    // resource (a transient cache miss, a partial -> complete file move, a .meta rewrite race). Without
+    // recovery the track stays finished and the picture freezes until the user seeks.
+    private func scheduleDirectReaderRecovery(seekId: Int) {
+        if self.directReaderRecoveryScheduled {
+            return
+        }
+        self.directReaderRecoveryScheduled = true
+        Queue.mainQueue().after(0.3, { [weak self] in
+            guard let self else {
+                return
+            }
+            self.directReaderRecoveryScheduled = false
+
+            guard self.seekId == seekId, self.pendingSeekTimestamp == nil, self.isPlaying, !self.stoppedAtEnd else {
+                return
+            }
+            guard case let .directReader(directReader) = self.partsState.content, directReader.id == seekId else {
+                return
+            }
+            let timestamp = self.renderSynchronizer.currentTime().seconds
+            if let duration = self.partsState.duration, duration > 0.0, timestamp >= duration - 0.5 {
+                return
+            }
+            if let attempts = self.directReaderRecoveryAttempts, abs(attempts.timestamp - timestamp) < 2.0 {
+                if attempts.count >= 3 {
+                    return
+                }
+                self.directReaderRecoveryAttempts = (attempts.timestamp, attempts.count + 1)
+            } else {
+                self.directReaderRecoveryAttempts = (timestamp, 1)
+            }
+            self.seek(timestamp: timestamp, play: nil, notify: false, force: true)
+        })
     }
     
     public func play() {
@@ -866,7 +987,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
         self.seek(timestamp: timestamp, play: play, notify: true)
     }
         
-    private func seek(timestamp: Double, play: Bool?, notify: Bool) {
+    private func seek(timestamp: Double, play: Bool?, notify: Bool, force: Bool = false) {
         let currentTimestamp: CMTime
         if let pendingSeekTimestamp = self.pendingSeekTimestamp {
             currentTimestamp = CMTimeMakeWithSeconds(pendingSeekTimestamp, preferredTimescale: 44000)
@@ -874,7 +995,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
             currentTimestamp = self.renderSynchronizer.currentTime()
         }
         let currentTimestampSeconds = currentTimestamp.seconds
-        if currentTimestampSeconds == timestamp {
+        if currentTimestampSeconds == timestamp && !force {
             if let play {
                 self.isPlaying = play
             }
@@ -957,29 +1078,45 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
     
     private func triggerRequestMediaData() {
         let loadedPartsMediaData = self.loadedPartsMediaData
-        
+        let requestSeekId = self.seekId
+
         if !self.videoIsRequestingMediaData {
             self.videoIsRequestingMediaData = true
-            
+
             let videoTarget: AVQueuedSampleBufferRendering
             if #available(iOS 17.0, *) {
                 videoTarget = self.videoRenderer.sampleBufferRenderer
             } else {
                 videoTarget = self.videoRenderer
             }
-        
+
             let didNotifySentVideoFrames = self.didNotifySentVideoFrames
             videoTarget.requestMediaDataWhenReady(on: self.dataQueue.queue, using: { [weak self] in
                 if let loadedPartsMediaData = loadedPartsMediaData.unsafeGet() {
                     let bufferFillResult = ChunkMediaPlayerV2.fillRendererBuffer(bufferTarget: videoTarget, loadedPartsMediaData: loadedPartsMediaData, isVideo: true)
                     if bufferFillResult.bufferIsReadyForMoreData {
                         videoTarget.stopRequestingMediaData()
+                        let didEnqueue = bufferFillResult.didEnqueue
+                        let didFinishPrematurely = bufferFillResult.didFinishPrematurely
                         Queue.mainQueue().async {
                             guard let self else {
                                 return
                             }
                             self.videoIsRequestingMediaData = false
-                            self.updateInternalState()
+                            if didFinishPrematurely {
+                                self.scheduleDirectReaderRecovery(seekId: requestSeekId)
+                            }
+                            // SuperGram: re-arm immediately only if samples were enqueued. When the readers have
+                            // nothing to give (waiting for data), re-arming right away turned into a dataQueue <-> main
+                            // busy loop (cpu_resource_fatal). Not re-arming at all is not safe either: the request was
+                            // already stopped on the data queue, so a parts-state update landing before this block runs
+                            // is swallowed (videoIsRequestingMediaData was still true) and playback never resumes.
+                            // Re-check on a slow timer instead.
+                            if didEnqueue {
+                                self.updateInternalState()
+                            } else {
+                                self.scheduleMediaDataRecheck()
+                            }
                         }
                     }
                     if !didNotifySentVideoFrames {
@@ -1009,12 +1146,21 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                     let bufferFillResult = ChunkMediaPlayerV2.fillRendererBuffer(bufferTarget: audioTarget, loadedPartsMediaData: loadedPartsMediaData, isVideo: false)
                     if bufferFillResult.bufferIsReadyForMoreData {
                         audioTarget.stopRequestingMediaData()
+                        let didEnqueue = bufferFillResult.didEnqueue
+                        let didFinishPrematurely = bufferFillResult.didFinishPrematurely
                         Queue.mainQueue().async {
                             guard let self else {
                                 return
                             }
                             self.audioIsRequestingMediaData = false
-                            self.updateInternalState()
+                            if didFinishPrematurely {
+                                self.scheduleDirectReaderRecovery(seekId: requestSeekId)
+                            }
+                            if didEnqueue {
+                                self.updateInternalState()
+                            } else {
+                                self.scheduleMediaDataRecheck()
+                            }
                         }
                     }
                 }
@@ -1022,9 +1168,10 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
         }
     }
     
-    private static func fillRendererBuffer(bufferTarget: AVQueuedSampleBufferRendering, loadedPartsMediaData: LoadedPartsMediaData, isVideo: Bool) -> (bufferIsReadyForMoreData: Bool, didEnqueue: Bool) {
+    private static func fillRendererBuffer(bufferTarget: AVQueuedSampleBufferRendering, loadedPartsMediaData: LoadedPartsMediaData, isVideo: Bool) -> (bufferIsReadyForMoreData: Bool, didEnqueue: Bool, didFinishPrematurely: Bool) {
         var bufferIsReadyForMoreData = true
         var didEnqueue = false
+        var didFinishPrematurely = false
         outer: while true {
             if !bufferTarget.isReadyForMoreMediaData {
                 bufferIsReadyForMoreData = false
@@ -1071,6 +1218,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                         print("Enqueue audio \(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value) next: \(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value + 1024)")
                     }*/
                     bufferTarget.enqueue(sampleBuffer)
+                    didEnqueue = true
                     hasData = true
                     continue outer
                 case .waitingForMoreData, .endOfStream, .error:
@@ -1114,6 +1262,7 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                     /*if !isVideo {
                         print("Enqueue audio \(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value) next: \(CMSampleBufferGetPresentationTimeStamp(sampleBuffer).value + 1024)")
                     }*/
+                    media.lastEnqueuedTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
                     bufferTarget.enqueue(sampleBuffer)
                     didEnqueue = true
                     hasData = true
@@ -1122,14 +1271,23 @@ public final class ChunkMediaPlayerV2: ChunkMediaPlayer {
                     break outer
                 case .endOfStream, .error:
                     media.isFinished = true
+
+                    // SuperGram: see LoadedPart.Media.directStreamIsEnded.
+                    var isPremature = !media.directStreamIsEnded
+                    if !isPremature, isVideo, let directDuration = loadedPartsMediaData.directDuration, let lastEnqueuedTimestamp = media.lastEnqueuedTimestamp, lastEnqueuedTimestamp.isFinite, lastEnqueuedTimestamp < directDuration - 1.5 {
+                        isPremature = true
+                    }
+                    if isPremature {
+                        didFinishPrematurely = true
+                    }
                 }
             }
             if !hasData {
                 break
             }
         }
-        
-        return (bufferIsReadyForMoreData: bufferIsReadyForMoreData, didEnqueue: didEnqueue)
+
+        return (bufferIsReadyForMoreData: bufferIsReadyForMoreData, didEnqueue: didEnqueue, didFinishPrematurely: didFinishPrematurely)
     }
 }
 

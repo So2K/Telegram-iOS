@@ -588,7 +588,8 @@ def generate_project(bazel, arguments):
         include_release=project_include_release,
         generate_dsym=generate_dsym,
         bazel_app_arguments=bazel_command_line.get_project_generation_arguments(),
-        target_name=target_name
+        target_name=target_name,
+        notification_service_only=arguments.notificationServiceOnly
     )
 
     if target_name == "Telegram":
@@ -979,6 +980,13 @@ if __name__ == '__main__':
             The generated project will not include app extensions.
             This allows Xcode to properly index the source code.
             '''
+    )
+
+    generateProjectParser.add_argument(
+        '--notificationServiceOnly',
+        action='store_true',
+        default=False,
+        help='Include only NotificationService; takes priority over --disableExtensions for Telegram.',
     )
 
     generateProjectParser.add_argument(

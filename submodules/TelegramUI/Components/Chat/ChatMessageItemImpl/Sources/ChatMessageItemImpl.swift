@@ -1,3 +1,4 @@
+import SGSimpleSettings
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -16,6 +17,46 @@ import ChatMessageItemView
 import ChatMessageStickerItemNode
 import ChatMessageAnimatedStickerItemNode
 import ChatMessageBubbleItemNode
+
+// MARK: Swiftgram
+// Message keyword filter (Swiftgram `messageFilterKeywords`, a Pro feature there): incoming messages whose text
+// contains one of the keywords are dimmed, nothing is hidden. SuperGram changes:
+// - no Pro gate;
+// - matching is case- and diacritic-insensitive and also checks every message of a grouped item (album captions);
+// - the dim is applied on every setupItem (create and update) and removed again when the message no longer
+//   matches (edited message, keywords changed, theme switch), instead of never restoring the alpha.
+private let superGramFilteredMessageAlphaDark: CGFloat = 0.2
+private let superGramFilteredMessageAlphaLight: CGFloat = 0.3
+
+private func superGramApplyMessageKeywordFilter(node: ChatMessageItemView, item: ChatMessageItemImpl) {
+    var isFiltered = false
+    let keywords = SGSimpleSettings.shared.messageFilterKeywords
+    if !keywords.isEmpty, item.content.effectivelyIncoming(item.context.account.peerId, associatedData: item.associatedData) {
+        outer: for (message, _) in item.content {
+            let text = message.text
+            if text.isEmpty {
+                continue
+            }
+            for keyword in keywords {
+                if !keyword.isEmpty, text.range(of: keyword, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                    isFiltered = true
+                    break outer
+                }
+            }
+        }
+    }
+
+    let dimmedAlpha = item.presentationData.theme.theme.overallDarkAppearance ? superGramFilteredMessageAlphaDark : superGramFilteredMessageAlphaLight
+    let currentAlpha = node.alpha
+    let isDimmedByFilter = abs(currentAlpha - superGramFilteredMessageAlphaDark) < 0.001 || abs(currentAlpha - superGramFilteredMessageAlphaLight) < 0.001
+    if isFiltered {
+        if abs(currentAlpha - dimmedAlpha) >= 0.001 {
+            node.alpha = dimmedAlpha
+        }
+    } else if isDimmedByFilter {
+        node.alpha = 1.0
+    }
+}
 
 private func mediaMergeableStyle(_ media: EngineRawMedia) -> ChatMessageMerge {
     if let story = media as? TelegramMediaStory, story.isMention {
@@ -567,7 +608,8 @@ public final class ChatMessageItemImpl: ChatMessageItem, CustomStringConvertible
         let configure = {
             let node = (viewClassName as! ChatMessageItemView.Type).init(rotated: self.controllerInteraction.chatIsRotated)
             node.setupItem(self, synchronousLoad: synchronousLoads)
-            
+            superGramApplyMessageKeywordFilter(node: node, item: self) // MARK: Swiftgram
+
             let nodeLayout = node.asyncLayout()
             let (top, bottom, dateAtBottom) = self.mergedWithItems(top: previousItem, bottom: nextItem, isRotated:  self.controllerInteraction.chatIsRotated)
             
@@ -668,7 +710,8 @@ public final class ChatMessageItemImpl: ChatMessageItem, CustomStringConvertible
         Queue.mainQueue().async {
             if let nodeValue = node() as? ChatMessageItemView {
                 nodeValue.setupItem(self, synchronousLoad: false)
-                
+                superGramApplyMessageKeywordFilter(node: nodeValue, item: self) // MARK: Swiftgram
+
                 let nodeLayout = nodeValue.asyncLayout()
                 
                 let isRotated = self.controllerInteraction.chatIsRotated

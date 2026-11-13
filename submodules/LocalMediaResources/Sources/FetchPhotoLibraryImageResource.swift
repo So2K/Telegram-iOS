@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Photos
@@ -182,7 +184,9 @@ public func fetchPhotoLibraryResource(localIdentifier: String, width: Int32?, he
                                     defer {
                                         EngineTempBox.shared.dispose(tempFile)
                                     }
-                                    if let scaledImage = scaledImage, let data = compressImageToJPEG(scaledImage, quality: 0.6, tempFilePath: tempFile.path) {
+                                    // MARK: Swiftgram
+                                    // SuperGram (SGM-F5): user-controlled outgoing JPEG quality (default 70, stock was 0.6).
+                                    if let scaledImage = scaledImage, let data = compressImageToJPEG(scaledImage, quality: SGSimpleSettings.shared.outgoingPhotoQualityFactor, tempFilePath: tempFile.path) {
     #if DEBUG
                                         print("compression completion \((CACurrentMediaTime() - startTime) * 1000.0) ms")
     #endif
@@ -192,7 +196,11 @@ public func fetchPhotoLibraryResource(localIdentifier: String, width: Int32?, he
                                         subscriber.putCompletion()
                                     }
                                 case .jxl:
-                                    if let scaledImage = scaledImage, let data = compressImageToJPEGXL(scaledImage, quality: Int(quality ?? 75)) {
+                                    // MARK: Swiftgram
+                                    // SuperGram (SGM-F5): fall back to the user's quality only when the caller did not
+                                    // request an explicit one. Swiftgram drops the `quality` argument here entirely,
+                                    // which silently overrides every caller that asks for a specific JXL quality.
+                                    if let scaledImage = scaledImage, let data = compressImageToJPEGXL(scaledImage, quality: Int(quality ?? SGSimpleSettings.shared.outgoingPhotoQuality)) {
     #if DEBUG
                                         print("jpegxl compression completion \((CACurrentMediaTime() - startTime) * 1000.0) ms")
     #endif

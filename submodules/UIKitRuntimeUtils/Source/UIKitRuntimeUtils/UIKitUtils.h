@@ -39,6 +39,16 @@ NSObject * _Nullable makeColorMatrixFilter();
 void setLayerDisableScreenshots(CALayer * _Nonnull layer, bool disableScreenshots);
 bool getLayerDisableScreenshots(CALayer * _Nonnull layer);
 
+// SuperGram: screen capture of protected (noforwards) content.
+// setLayerDisableScreenshots stays strict; callers split their flag into a secret part and a copy-protected part.
+// Secret chats, self-destructing / view-once media, paid media and login codes are always protected.
+// sgAllowScreenCaptureProtected: NSUserDefaults.standardUserDefaults key "sgAllowScreenCaptureProtected", default true (cached).
+bool sgAllowScreenCaptureProtected(void);
+// Final flag value: isSecret || (isCopyProtected && !sgAllowScreenCaptureProtected()).
+bool sgShouldDisableScreenCapture(bool isSecret, bool isCopyProtected) NS_SWIFT_NAME(sgShouldDisableScreenCapture(isSecret:isCopyProtected:));
+// setLayerDisableScreenshots(layer, sgShouldDisableScreenCapture(isSecret, isCopyProtected)).
+void setLayerDisableScreenshotsForContent(CALayer * _Nonnull layer, bool isSecret, bool isCopyProtected) NS_SWIFT_NAME(setLayerDisableScreenshotsForContent(_:isSecret:isCopyProtected:));
+
 void setLayerContentsMaskMode(CALayer * _Nonnull layer, bool maskMode);
 
 void setMonochromaticEffectImpl(UIView * _Nonnull view, bool isEnabled);

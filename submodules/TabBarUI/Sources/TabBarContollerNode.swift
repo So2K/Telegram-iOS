@@ -1,3 +1,4 @@
+import SGSimpleSettings
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -168,7 +169,8 @@ final class TabBarControllerNode: ASDisplayNode {
         transition.updateAlpha(node: self.disabledOverlayNode, alpha: value ? 0.0 : 1.0)
     }
     
-    var tabBarHidden = false {
+    // MARK: Swiftgram
+    var tabBarHidden = SGSimpleSettings.shared.hideTabBar {
         didSet {
             if self.tabBarHidden != oldValue {
                 self.requestUpdate()
@@ -227,6 +229,33 @@ final class TabBarControllerNode: ASDisplayNode {
         if self.tabBarView.view == nil {
             tabBarTransition = .immediate
         }
+        // MARK: Swiftgram
+        let sgTabBarSearchEnabled = SGSimpleSettings.shared.tabBarSearchEnabled
+        let sgTabBarSearchState: ViewController.TabBarSearchState? = sgTabBarSearchEnabled ? self.currentController?.tabBarSearchState : nil
+        // SuperGram: Swiftgram's `wideTabBar` width reducer (TabBarComponent.swift in Swiftgram) is applied to the
+        // container size here, so TabBarComponent itself stays untouched. The bar is centered below.
+        var sgTabBarContainerWidth: CGFloat = params.layout.size.width - sideInset * 2.0
+        if !(SGSimpleSettings.shared.wideTabBar || sgTabBarSearchState?.isActive ?? false) {
+            let sgInnerInset: CGFloat = 4.0
+            let widthReducer: CGFloat
+            switch self.tabBarItems.count {
+            case 1:
+                widthReducer = 1.75
+            case 2:
+                widthReducer = 1.5
+            case 3:
+                widthReducer = 1.25
+            case 4:
+                widthReducer = 1.0
+            default:
+                widthReducer = 1.0
+            }
+            sgTabBarContainerWidth = min(500.0, sgTabBarContainerWidth) / widthReducer
+            if !sgTabBarSearchEnabled {
+                sgTabBarContainerWidth -= 48.0
+                sgTabBarContainerWidth -= sgInnerInset * 2.0
+            }
+        }
         let tabBarSize = self.tabBarView.update(
             transition: tabBarTransition,
             component: AnyComponent(TabBarComponent(
@@ -265,7 +294,7 @@ final class TabBarControllerNode: ASDisplayNode {
                         }
                     )
                 },
-                search: self.currentController?.tabBarSearchState.flatMap { tabBarSearchState in
+                search: sgTabBarSearchState.flatMap { tabBarSearchState in
                     return TabBarComponent.Search(
                         isActive: tabBarSearchState.isActive,
                         activate: { [weak self] in
@@ -286,7 +315,7 @@ final class TabBarControllerNode: ASDisplayNode {
                 outerInsets: UIEdgeInsets(top: 0.0, left: sideInset, bottom: tabBarBottomInset, right: sideInset)
             )),
             environment: {},
-            containerSize: CGSize(width: params.layout.size.width - sideInset * 2.0, height: 100.0)
+            containerSize: CGSize(width: max(1.0, sgTabBarContainerWidth), height: 100.0)
         )
         let tabBarFrame = CGRect(origin: CGPoint(x: floor((params.layout.size.width - tabBarSize.width) * 0.5), y: params.layout.size.height - (self.tabBarHidden ? 0.0 : (tabBarSize.height + tabBarBottomInset))), size: tabBarSize)
         

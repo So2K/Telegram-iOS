@@ -63,14 +63,18 @@ public enum InteractiveTransitionGestureRecognizerEdgeWidth {
 public class InteractiveTransitionGestureRecognizer: UIPanGestureRecognizer {
     private let edgeWidth: InteractiveTransitionGestureRecognizerEdgeWidth
     private let allowedDirections: (CGPoint) -> InteractiveTransitionGestureRecognizerDirections
+    private let horizontalDirectionLockRatio: CGFloat
+    private let horizontalActivationDistance: CGFloat
     
     private var validatedGesture = false
     private var firstLocation: CGPoint = CGPoint()
     private var currentAllowedDirections: InteractiveTransitionGestureRecognizerDirections = []
     
-    public init(target: Any?, action: Selector?, allowedDirections: @escaping (CGPoint) -> InteractiveTransitionGestureRecognizerDirections, edgeWidth: InteractiveTransitionGestureRecognizerEdgeWidth = .constant(16.0)) {
+    public init(target: Any?, action: Selector?, allowedDirections: @escaping (CGPoint) -> InteractiveTransitionGestureRecognizerDirections, edgeWidth: InteractiveTransitionGestureRecognizerEdgeWidth = .constant(16.0), horizontalDirectionLockRatio: CGFloat = 1.55, horizontalActivationDistance: CGFloat = 14.0) {
         self.allowedDirections = allowedDirections
         self.edgeWidth = edgeWidth
+        self.horizontalDirectionLockRatio = max(1.0, horizontalDirectionLockRatio)
+        self.horizontalActivationDistance = max(10.0, horizontalActivationDistance)
         
         super.init(target: target, action: action)
         
@@ -183,29 +187,32 @@ public class InteractiveTransitionGestureRecognizer: UIPanGestureRecognizer {
                     return
                 }
                 
-                if self.currentAllowedDirections.contains(.rightEdge) && self.firstLocation.x < edgeWidth {
+                let isRightEdgeGesture = self.currentAllowedDirections.contains(.rightEdge) && self.firstLocation.x < edgeWidth
+                let isLeftEdgeGesture = self.currentAllowedDirections.contains(.leftEdge) && self.firstLocation.x > size.width - edgeWidth
+
+                let horizontalDirectionSlop: CGFloat = 4.0
+                if isRightEdgeGesture || isLeftEdgeGesture {
+                    // SuperGram: edge (back) swipes keep the upstream behaviour; the axis lock below
+                    // only applies to center swipes (folders, panes), where it prevents accidental switches.
                     self.validatedGesture = true
-                } else if self.currentAllowedDirections.contains(.leftEdge) && self.firstLocation.x > size.width - edgeWidth {
-                    self.validatedGesture = true
-                } else if !self.currentAllowedDirections.contains(.leftCenter) && translation.x < 0.0 {
+                } else if !self.currentAllowedDirections.contains(.leftCenter) && translation.x <= -horizontalDirectionSlop {
                     self.state = .failed
-                } else if !self.currentAllowedDirections.contains(.rightCenter) && translation.x > 0.0 {
+                } else if !self.currentAllowedDirections.contains(.rightCenter) && translation.x >= horizontalDirectionSlop {
                     self.state = .failed
                 } else {
                     let totalMovement = sqrt(absTranslationX * absTranslationX + absTranslationY * absTranslationY)
-                    if totalMovement > 10.0 {
-                        // Force dominant direction after 10pt movement
-                        if absTranslationX >= absTranslationY {
+
+                    // Give vertical scrolling an early axis lock, then require a deliberate
+                    // horizontal movement before taking ownership of the gesture.
+                    if absTranslationY >= 6.0 && absTranslationY > absTranslationX * 1.1 {
+                        self.state = .failed
+                    } else if totalMovement >= self.horizontalActivationDistance {
+                        if absTranslationX >= absTranslationY * self.horizontalDirectionLockRatio {
                             self.validatedGesture = true
                             fireBegan = true
                         } else {
                             self.state = .failed
                         }
-                    } else if absTranslationY > 2.0 && absTranslationY > absTranslationX * 2.0 {
-                        self.state = .failed
-                    } else if absTranslationX > 2.0 && absTranslationY * 2.0 < absTranslationX {
-                        self.validatedGesture = true
-                        fireBegan = true
                     }
                 }
             }

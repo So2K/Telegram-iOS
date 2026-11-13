@@ -187,3 +187,63 @@ public func hasCommentButton(item: ChatMessageItem) -> Bool {
     }
     return false
 }
+
+// SuperGram: `ChatMessageShareButton` is not only the share / repost button. The very same node renders the
+// Comments button of a channel post, the "go to message" button of pinned-message lists, hashtag search results,
+// Saved Messages / Replies and monoforums, and the close + report buttons of an ad. Only the last `else` branch of
+// `ChatMessageShareButton.update` draws the plain share arrow, and only that arrow is hidden by "sgShowShareButton".
+//
+// This predicate therefore mirrors `ChatMessageShareButton.update`'s icon selection one branch at a time: it returns
+// true whenever that method would pick anything other than `chatFreeShareButtonIcon`. Keep the two in sync — a
+// branch missing here silently deletes a navigation affordance, and a branch too many leaves the arrow on screen.
+// (The `hasTranslation` and `isSummarize` branches are deliberately absent: the quick-translate and summarize
+// buttons are separate `ChatMessageShareButton` instances gated by their own flags, never by `needsShareButton`.)
+/// - Parameter commentsDisabled: must match the `disableComments:` value the caller passes to
+///   `ChatMessageShareButton.update`. When comments are disabled there, the node cannot render the Comments
+///   variant (the bubble draws its own "N Comments" footer instead), so that branch must not keep the button alive.
+public func superGramShareButtonActsAsNavigation(item: ChatMessageItem, commentsDisabled: Bool = false) -> Bool {
+    let message = item.content.firstMessage
+
+    // Ads: the node is the "close this ad" button, plus the "report" button underneath when the ad can be reported.
+    if message.adAttribute != nil {
+        return true
+    }
+
+    if let subject = item.associatedData.subject {
+        // Public post / hashtag search results: "go to the original message".
+        if case let .customChatContents(contents) = subject, case .hashTagSearch = contents.kind {
+            return true
+        }
+        // The pinned message list: "go to the pinned message".
+        if case .pinnedMessages = subject {
+            return true
+        }
+    }
+
+    if let channel = message.peers[message.id.peerId] as? TelegramChannel {
+        if case .broadcast = channel.info {
+            // `ChatMessageShareButton.update` clears `isReplies` for the root message of a reply thread, so the
+            // node would fall through to the plain share arrow there even though the attribute is present.
+            var isReplyThreadTopMessage = false
+            if case let .replyThread(replyThreadMessage) = item.chatLocation, replyThreadMessage.effectiveTopId == message.id {
+                isReplyThreadTopMessage = true
+            }
+            if !commentsDisabled && !isReplyThreadTopMessage {
+                for attribute in message.attributes {
+                    if let _ = attribute as? ReplyThreadMessageAttribute {
+                        return true
+                    }
+                }
+            }
+        } else if channel.isMonoForum, case .peer = item.chatLocation {
+            return true
+        }
+    }
+
+    // Saved Messages, Replies and verification codes: "go to the original message".
+    if message.id.peerId.isRepliesOrSavedMessages(accountPeerId: item.context.account.peerId) {
+        return true
+    }
+
+    return false
+}

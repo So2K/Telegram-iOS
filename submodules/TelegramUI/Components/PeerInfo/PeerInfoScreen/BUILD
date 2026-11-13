@@ -175,6 +175,10 @@ swift_library(
         "//submodules/TelegramUI/Components/AlertComponent/AlertTransferHeaderComponent",
         "//submodules/TelegramUI/Components/HorizontalTabsComponent",
         "//submodules/TelegramUI/Components/PeerInfo/AccountPeerContextItem",
+        # SuperGram
+        "//Swiftgram/SGSettingsUI:SGSettingsUI",
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
+        "//Swiftgram/SGStrings:SGStrings",
     ],
     visibility = [
         "//visibility:public",

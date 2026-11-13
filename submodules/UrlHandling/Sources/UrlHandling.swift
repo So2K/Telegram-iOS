@@ -466,7 +466,10 @@ public func parseInternalUrl(sharedContext: SharedAccountContext, context: Accou
                             }
                         }
                     }
-                } else if pathComponents[0].hasPrefix(phonebookUsernamePathPrefix), let idValue = Int64(String(pathComponents[0][pathComponents[0].index(pathComponents[0].startIndex, offsetBy: phonebookUsernamePathPrefix.count)...])) {
+                } else if pathComponents[0].hasPrefix(phonebookUsernamePathPrefix), let idValue = Int64(String(pathComponents[0][pathComponents[0].index(pathComponents[0].startIndex, offsetBy: phonebookUsernamePathPrefix.count)...])), idValue > 0, idValue <= 0x00ffffffffffffff {
+                    // SuperGram: non-positive ids and ids exceeding Postbox's 56-bit storage
+                    // must not be turned into a peer id (same guard as
+                    // parseAppSpecificContactReference in DeviceContactData / IntentContacts, #2011).
                     return .peerId(EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(idValue)))
                 } else if pathComponents[0].hasPrefix("$") || pathComponents[0].hasPrefix("%24") {
                     var component = pathComponents[0].replacingOccurrences(of: "%24", with: "$")

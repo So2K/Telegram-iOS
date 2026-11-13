@@ -187,6 +187,10 @@ extension ChatControllerImpl {
                 }
 
                 for bot in attachMenuBots.reversed() {
+                    // SuperGram: no Wallet tab in the attachment menu, except inside the Wallet bot's own chat
+                    if bot.peer.id != peer.id, bot.peer.addressName?.lowercased() == "wallet" {
+                        continue
+                    }
                     var peerType = peerType
                     if bot.peer.id == peer.id {
                         peerType.insert(.sameBot)

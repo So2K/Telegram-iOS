@@ -203,15 +203,22 @@ final class PasskeysScreenComponent: Component {
             guard let component = self.component else {
                 return
             }
+#if compiler(>=6.2)
             guard let passkey = self.passkeysData?.first(where: { $0.id == id }) else {
                 return
             }
+#else
+            guard self.passkeysData?.contains(where: { $0.id == id }) == true else {
+                return
+            }
+#endif
             let _ = component.context.engine.auth.deletePasskey(id: id).startStandalone()
             
             self.passkeysData?.removeAll(where: { $0.id == id })
             component.passkeysDataUpdated(self.passkeysData ?? [])
             self.state?.updated(transition: .spring(duration: 0.4))
             
+#if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 Task { @MainActor in
                     let updater = ASCredentialUpdater()
@@ -232,6 +239,7 @@ final class PasskeysScreenComponent: Component {
                     }
                 }
             }
+#endif
         }
         
         func update(component: PasskeysScreenComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<ViewControllerComponentContainer.Environment>, transition: ComponentTransition) -> CGSize {

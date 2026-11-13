@@ -856,6 +856,9 @@ struct ctr_state {
     NSMutableArray<MTTcpSendData *> *_pendingDataQueue;
     NSMutableData *_receivedDataBuffer;
     MTTcpReceiveData *_pendingReceiveData;
+
+    // MARK: Swiftgram
+    bool _forceLocalDNS;
 }
 
 @property (nonatomic) int64_t packetHeadDecodeToken;
@@ -947,6 +950,15 @@ struct ctr_state {
         
         _pendingDataQueue = [[NSMutableArray alloc] init];
         _receivedDataBuffer = [[NSMutableData alloc] init];
+
+        // MARK: Swiftgram
+        // SuperGram (SGM-F7 / SGP-02): when enabled, proxy and MTProto hostnames are resolved with the
+        // system resolver instead of trying Google DoH first (which stalls for up to 10 s and leaks the
+        // proxy hostname wherever Google is blocked). MtProtoKit cannot depend on SGSimpleSettings, so the
+        // raw key is read here with the same default (false) — see SGSimpleSettings.Keys.localDNSForProxyHost.
+        // Read per connection rather than cached: connections are created rarely, and this way a change
+        // takes effect for every new connection without an app restart.
+        _forceLocalDNS = [[[NSUserDefaults standardUserDefaults] objectForKey:@"localDNSForProxyHost"] boolValue];
     }
     return self;
 }
@@ -1017,7 +1029,8 @@ struct ctr_state {
                 
                 if (isHostname) {
                     int32_t port = _socksPort;
-                    resolveSignal = [[MTDNS resolveHostnameUniversal:_socksIp port:port] map:^id(NSString *resolvedIp) {
+                    // MARK: Swiftgram
+                    resolveSignal = [(_forceLocalDNS ? [MTDNS resolveHostnameNative:_socksIp port:port] : [MTDNS resolveHostnameUniversal:_socksIp port:port]) map:^id(NSString *resolvedIp) {
                         return [[MTTcpConnectionData alloc] initWithIp:resolvedIp port:port isSocks:true];
                     }];
                 } else {
@@ -1035,7 +1048,8 @@ struct ctr_state {
                 
                 if (isHostname) {
                     int32_t port = _mtpPort;
-                    resolveSignal = [[MTDNS resolveHostnameUniversal:_mtpIp port:port] map:^id(NSString *resolvedIp) {
+                    // MARK: Swiftgram
+                    resolveSignal = [(_forceLocalDNS ? [MTDNS resolveHostnameNative:_mtpIp port:port] : [MTDNS resolveHostnameUniversal:_mtpIp port:port]) map:^id(NSString *resolvedIp) {
                         return [[MTTcpConnectionData alloc] initWithIp:resolvedIp port:port isSocks:false];
                     }];
                 } else {

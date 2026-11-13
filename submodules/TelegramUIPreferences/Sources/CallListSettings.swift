@@ -3,10 +3,13 @@ import TelegramCore
 import SwiftSignalKit
 
 public struct CallListSettings: Codable, Equatable {
+    // MARK: Swiftgram
+    public var showContactsTab: Bool
     public var _showTab: Bool?
-    
+
     public static var defaultSettings: CallListSettings {
-        return CallListSettings(showTab: nil)
+        // SuperGram: Contacts and Calls tabs are off by default (both stay reachable from Settings)
+        return CallListSettings(showContactsTab: false, showTab: false)
     }
     
     public var showTab: Bool {
@@ -21,21 +24,26 @@ public struct CallListSettings: Codable, Equatable {
         }
     }
     
-    public init(showTab: Bool?) {
+    public init(showContactsTab: Bool = true, showTab: Bool?) {
+        self.showContactsTab = showContactsTab
         self._showTab = showTab
     }
-    
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: StringCodingKey.self)
-
+        // MARK: Swiftgram
+        // SuperGram: decodeIfPresent (Swiftgram uses decode), so settings stored before this key existed still decode
+        // and keep the user's Calls tab choice.
+        self.showContactsTab = ((try container.decodeIfPresent(Int32.self, forKey: "showContactsTab")) ?? 1) != 0
         if let value = try container.decodeIfPresent(Int32.self, forKey: "showTab") {
             self._showTab = value != 0
         }
     }
-    
+
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StringCodingKey.self)
-
+        // MARK: Swiftgram
+        try container.encode((self.showContactsTab ? 1 : 0) as Int32, forKey: "showContactsTab")
         if let showTab = self._showTab {
             try container.encode((showTab ? 1 : 0) as Int32, forKey: "showTab")
         } else {
@@ -44,11 +52,16 @@ public struct CallListSettings: Codable, Equatable {
     }
     
     public static func ==(lhs: CallListSettings, rhs: CallListSettings) -> Bool {
-        return lhs._showTab == rhs._showTab
+        return lhs.showContactsTab == rhs.showContactsTab && lhs._showTab == rhs._showTab
     }
-    
+
     public func withUpdatedShowTab(_ showTab: Bool) -> CallListSettings {
-        return CallListSettings(showTab: showTab)
+        return CallListSettings(showContactsTab: self.showContactsTab, showTab: showTab)
+    }
+
+    // MARK: Swiftgram
+    public func withUpdatedShowContactsTab(_ showContactsTab: Bool) -> CallListSettings {
+        return CallListSettings(showContactsTab: showContactsTab, showTab: self._showTab)
     }
 }
 

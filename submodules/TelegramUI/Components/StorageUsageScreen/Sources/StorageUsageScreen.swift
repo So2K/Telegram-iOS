@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -1969,7 +1971,11 @@ final class StorageUsageScreenComponent: Component {
                             guard let self, let component = self.component else {
                                 return
                             }
-                            let value = max(5, value)
+                            // MARK: Swiftgram
+                            // SuperGram (SGP-04): the stock floor of 5 GB silently overrode the "1 GB" / "2 GB"
+                            // marks the slider already offered on smaller disks. Clamp to the smallest value the
+                            // slider can actually produce instead.
+                            let value = max(minimumCacheSizeValue, value)
                             let _ = updateCacheStorageSettingsInteractively(accountManager: component.context.sharedContext.accountManager, { current in
                                 var current = current
                                 current.defaultCacheStorageLimitGigabytes = value
@@ -3216,6 +3222,12 @@ final class StorageUsageScreenComponent: Component {
                         7 * 24 * 60 * 60,
                         1 * 24 * 60 * 60
                     ]
+                }
+                // MARK: Swiftgram
+                // SuperGram (SGM-F15 / CRIT-13): "1 hour" is an extra option, never a default. A 1-hour retention
+                // also evicts the .partial files of downloads in flight, so a half-watched video restarts from zero.
+                if SGSimpleSettings.shared.sgAggressiveCachePresets {
+                    presetValues.append(1 * 60 * 60)
                 }
                 
                 if currentValue != 0 && !presetValues.contains(currentValue) {

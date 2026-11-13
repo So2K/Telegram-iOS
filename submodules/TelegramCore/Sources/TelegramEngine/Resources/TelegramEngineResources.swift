@@ -39,8 +39,8 @@ public extension MediaResourceUserContentType {
 }
 
 public extension MediaResourceFetchParameters {
-    init(tag: MediaResourceFetchTag?, info: MediaResourceFetchInfo?, location: MediaResourceStorageLocation?, contentType: MediaResourceUserContentType, isRandomAccessAllowed: Bool) {
-        self.init(tag: tag, info: info, location: location, contentType: contentType.rawValue, isRandomAccessAllowed: isRandomAccessAllowed)
+    init(tag: MediaResourceFetchTag?, info: MediaResourceFetchInfo?, location: MediaResourceStorageLocation?, contentType: MediaResourceUserContentType, isRandomAccessAllowed: Bool, isInteractive: Bool = false) {
+        self.init(tag: tag, info: info, location: location, contentType: contentType.rawValue, isRandomAccessAllowed: isRandomAccessAllowed, isInteractive: isInteractive)
     }
 }
 
@@ -402,6 +402,10 @@ public extension TelegramEngine {
                     switch error {
                     case .generic:
                         return .generic
+                    case .cancelled:
+                        // SuperGram: "another owner cancelled this shared resource" only matters to the fetch
+                        // bookkeeping (it must not count as a failure there); engine consumers treat it as generic.
+                        return .generic
                     }
                 }
             }
@@ -426,11 +430,13 @@ public extension TelegramEngine {
             userLocation: MediaResourceUserLocation,
             userContentType: MediaResourceUserContentType
         ) -> Signal<FetchResourceSourceType, FetchResourceError> {
+            // SuperGram: callers are user-facing (save to camera roll, document/gallery open, transcription)
             return fetchedMediaResource(
                 mediaBox: self.account.postbox.mediaBox,
                 userLocation: userLocation,
                 userContentType: userContentType,
-                reference: reference
+                reference: reference,
+                isInteractive: true
             )
         }
 

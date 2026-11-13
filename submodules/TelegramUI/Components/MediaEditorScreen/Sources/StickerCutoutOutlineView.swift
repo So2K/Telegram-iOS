@@ -381,26 +381,26 @@ private extension CGPath {
                 }
                 let element = nextElementPointer.pointee
                 let userInfoPointer = userInfo.assumingMemoryBound(to: UserInfo.self)
-                let userInfo = userInfoPointer.pointee
+                let pathInfo = userInfoPointer.pointee
                 
-                if !userInfo.passedFirst {
+                if !pathInfo.passedFirst {
                     if case .closeSubpath = element.type {
-                        userInfo.passedFirst = true
+                        pathInfo.passedFirst = true
                     }
                 } else {
                     switch element.type {
                     case .moveToPoint:
-                        userInfo.outputPath.move(to: element.points[0])
+                        pathInfo.outputPath.move(to: element.points[0])
                     case .addLineToPoint:
-                        userInfo.outputPath.addLine(to: element.points[0])
+                        pathInfo.outputPath.addLine(to: element.points[0])
                     case .addQuadCurveToPoint:
-                        userInfo.outputPath.addQuadCurve(to: element.points[1], control: element.points[0])
+                        pathInfo.outputPath.addQuadCurve(to: element.points[1], control: element.points[0])
                     case .addCurveToPoint:
-                        userInfo.outputPath.addCurve(to: element.points[2], control1: element.points[0], control2: element.points[1])
+                        pathInfo.outputPath.addCurve(to: element.points[2], control1: element.points[0], control2: element.points[1])
                     case .closeSubpath:
-                        userInfo.outputPath.closeSubpath()
+                        pathInfo.outputPath.closeSubpath()
                     @unknown default:
-                        userInfo.outputPath.closeSubpath()
+                        pathInfo.outputPath.closeSubpath()
                     }
                 }
             }

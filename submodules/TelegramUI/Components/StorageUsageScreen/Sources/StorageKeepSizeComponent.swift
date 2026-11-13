@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -30,18 +32,33 @@ private func totalDiskSpace() -> Int64 {
     }
 }
 
+// MARK: Swiftgram
+// SuperGram (SGM-F15 / SGP-04 / CRIT-13): a 1 GB cap is offered as an extra option, never as a default — an
+// aggressive cap evicts partially downloaded videos, so playback restarts from zero (CRIT-13).
+//
+// Swiftgram prepends 1 to the first three rows but then hardcodes 5 titles and `valueCount: 5`. The fourth row
+// (disk <= 24 GB) already starts at 1 and stays four entries long, so index 4 runs past its end and crashes.
+// Both counts are derived from `maximumCacheSizeValues.count` below instead of being hardcoded, which is also
+// what makes it safe to leave this array at its stock length when the option is switched off.
+//
+// Read once, at first use of the screen: the toggle is marked "restart required".
 private let maximumCacheSizeValues: [Int32] = {
+    let aggressivePresets = SGSimpleSettings.shared.sgAggressiveCachePresets
     let diskSpace = totalDiskSpace()
     if diskSpace > 100 * 1024 * 1024 * 1024 {
-        return [5, 20, 50, Int32.max]
+        return aggressivePresets ? [1, 5, 20, 50, Int32.max] : [5, 20, 50, Int32.max]
     } else if diskSpace > 50 * 1024 * 1024 * 1024 {
-        return [5, 16, 32, Int32.max]
+        return aggressivePresets ? [1, 5, 16, 32, Int32.max] : [5, 16, 32, Int32.max]
     } else if diskSpace > 24 * 1024 * 1024 * 1024 {
-        return [2, 8, 16, Int32.max]
+        return aggressivePresets ? [1, 2, 8, 16, Int32.max] : [2, 8, 16, Int32.max]
     } else {
         return [1, 4, 8, Int32.max]
     }
 }()
+
+/// Smallest cap the slider can produce. `StorageUsageScreen` clamps the chosen value to this instead of the
+/// stock hardcoded 5 GB, which made the "1 GB" and "2 GB" marks on smaller disks silently store 5 GB (SGP-04).
+let minimumCacheSizeValue: Int32 = maximumCacheSizeValues.first ?? 1
 
 final class StorageKeepSizeComponent: Component {
     let theme: PresentationTheme
@@ -83,7 +100,8 @@ final class StorageKeepSizeComponent: Component {
         private weak var state: EmptyComponentState?
         
         override init(frame: CGRect) {
-            self.titles = (0 ..< 4).map { _ in ComponentView<Empty>() }
+            // MARK: Swiftgram
+            self.titles = (0 ..< maximumCacheSizeValues.count).map { _ in ComponentView<Empty>() }
             self.slider = ComponentView<Empty>()
             
             super.init(frame: frame)
@@ -142,7 +160,7 @@ final class StorageKeepSizeComponent: Component {
                 component: AnyComponent(
                     SliderComponent(
                         content: .discrete(.init(
-                            valueCount: 4,
+                            valueCount: maximumCacheSizeValues.count, // MARK: Swiftgram
                             value: maximumCacheSizeValues.firstIndex(where: { $0 == component.value }) ?? 0,
                             markPositions: true,
                             valueUpdated: { value in

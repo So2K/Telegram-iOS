@@ -7,6 +7,59 @@ import UIKitRuntimeUtils
 import CoreImage
 import AppBundle
 
+#if compiler(>=6.2)
+private let glassBackgroundSupportsNativeGlass = true
+#else
+private let glassBackgroundSupportsNativeGlass = false
+
+private final class UIGlassEffect: UIVisualEffect {
+    enum Style {
+        case regular
+        case clear
+    }
+
+    var tintColor: UIColor?
+    var isInteractive: Bool = false
+
+    init(style: Style) {
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+private final class UIGlassContainerEffect: UIVisualEffect {
+    var spacing: CGFloat = 0.0
+
+    override init() {
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+private enum UIViewCornerConfiguration {
+    enum Radius {
+        case fixed(CGFloat)
+    }
+
+    case corners(topLeftRadius: Radius, topRightRadius: Radius, bottomLeftRadius: Radius, bottomRightRadius: Radius)
+}
+
+private extension UIView {
+    var cornerConfiguration: UIViewCornerConfiguration? {
+        get {
+            return nil
+        } set {
+        }
+    }
+}
+#endif
+
 private final class ContentContainer: UIView {
     private let maskContentView: UIView
     
@@ -422,7 +475,7 @@ public class GlassBackgroundView: UIView {
                 transition.setCornerRadius(layer: self.view.layer, cornerRadius: cornerRadius)
             case let .customRoundedRect(cornerRadii):
                 transition.setCornerRadius(layer: self.view.layer, cornerRadius: 0.0)
-                if #available(iOS 26.0, *) {
+                if glassBackgroundSupportsNativeGlass, #available(iOS 26.0, *) {
                     transition.animateView {
                         self.view.cornerConfiguration = .corners(
                             topLeftRadius: .fixed(cornerRadii.topLeft),
@@ -493,9 +546,13 @@ public class GlassBackgroundView: UIView {
     public private(set) var params: Params?
         
     public static var useCustomGlassImpl: Bool = false
+    public static var forceMatteGlassImpl: Bool = true
+    public static var usesCustomGlassImpl: Bool {
+        return self.forceMatteGlassImpl || self.useCustomGlassImpl
+    }
     
     public override init(frame: CGRect) {
-        if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
+        if glassBackgroundSupportsNativeGlass, #available(iOS 26.0, *), !GlassBackgroundView.usesCustomGlassImpl {
             self.legacyView = nil
             self.legacyHighlightContainerView = nil
             self.legacyHighlightClippingContext = nil
@@ -607,7 +664,7 @@ public class GlassBackgroundView: UIView {
     func update(size: CGSize, shape: Shape, isDark: Bool, tintColor: TintColor, isInteractive: Bool = false, isVisible: Bool = true, transition: ComponentTransition) {
         
         if let glassHighlightRecognizer = self.glassHighlightRecognizer {
-            glassHighlightRecognizer.isEnabled = isInteractive
+            glassHighlightRecognizer.isEnabled = false
         }
         
         if let nativeView = self.nativeView, let nativeViewClippingContext = self.nativeViewClippingContext, (nativeView.bounds.size != size || nativeViewClippingContext.shape != shape || (nativeView.overrideUserInterfaceStyle == .dark) != isDark) {
@@ -709,22 +766,22 @@ public class GlassBackgroundView: UIView {
                 let borderWidthFactor: CGFloat
                 switch tintColor.kind {
                 case .panel:
-                    borderWidthFactor = 1.0
+                    borderWidthFactor = 0.0
                     if isDark {
-                        fillColor = UIColor(white: 1.0, alpha: 1.0).mixedWith(.black, alpha: 1.0 - 0.11).withAlphaComponent(0.85)
+                        fillColor = UIColor(white: 0.075, alpha: 0.92)
                     } else {
-                        fillColor = UIColor(white: 1.0, alpha: 0.7)
+                        fillColor = UIColor(white: 0.97, alpha: 0.92)
                     }
                 case .clear:
-                    borderWidthFactor = 2.0
-                    fillColor = UIColor(white: 1.0, alpha: 0.0)
+                    borderWidthFactor = 0.0
+                    fillColor = isDark ? UIColor(white: 0.04, alpha: 0.62) : UIColor(white: 1.0, alpha: 0.68)
                 case let .custom(style, color):
                     fillColor = color
                     switch style {
                     case .clear:
-                        borderWidthFactor = 2.0
+                        borderWidthFactor = 0.0
                     case .default:
-                        borderWidthFactor = 1.0
+                        borderWidthFactor = 0.0
                     }
                 }
                 switch shape {
@@ -739,7 +796,7 @@ public class GlassBackgroundView: UIView {
                 transition.setAlpha(view: foregroundView, alpha: isVisible ? 1.0 : 0.0)
             } else {
                 if let nativeParamsView = self.nativeParamsView, let nativeView = self.nativeView {
-                    if #available(iOS 26.0, *) {
+                    if glassBackgroundSupportsNativeGlass, #available(iOS 26.0, *) {
                         var glassEffect: UIGlassEffect?
                         
                         if isVisible {
@@ -855,7 +912,7 @@ public final class GlassBackgroundContainerView: UIView {
     }
     
     public init(spacing: CGFloat = 7.0) {
-        if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
+        if glassBackgroundSupportsNativeGlass, #available(iOS 26.0, *), !GlassBackgroundView.usesCustomGlassImpl {
             let effect = UIGlassContainerEffect()
             effect.spacing = spacing
             let nativeView = UIVisualEffectView(effect: effect)
@@ -1450,9 +1507,9 @@ public extension GlassBackgroundView {
                 let colors: [CGColor] = [maxColor.cgColor, maxColor.cgColor, minColor.cgColor, minColor.cgColor, maxColor.cgColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                }
             }
             
             context.resetClip()
@@ -1467,9 +1524,9 @@ public extension GlassBackgroundView {
                 let colors: [CGColor] = [maxColor.cgColor, minColor.cgColor, minColor.cgColor, maxColor.cgColor, maxColor.cgColor]
                 
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations)!
-                
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                }
             }
         })!.stretchableImage(withLeftCapWidth: Int(size.width * 0.5), topCapHeight: Int(size.height * 0.5))
     }
@@ -1680,7 +1737,7 @@ public final class GlassContextExtractableContainer: UIView, ContextExtractableC
                 tintColor: normalParams.tintColor,
                 isInteractive: normalParams.isInteractive,
                 isVisible: normalParams.isVisible,
-                transition: mappedTransition,
+                transition: mappedTransition
             )
         case let .extracted(size, cornerRadius, extractionState):
             switch extractionState {

@@ -20,8 +20,9 @@ import ComponentFlow
 import AudioTranscriptionButtonComponent
 import AudioWaveformComponent
 import ShimmerEffect
-import ConvertOpusToAAC
 import LocalAudioTranscription
+import TelegramUIPreferences
+import SuperGramLocalTranscription
 import TextSelectionNode
 import AudioTranscriptionPendingIndicatorComponent
 import UndoUI
@@ -171,18 +172,35 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
     public var visibility: Bool = false {
         didSet {
             guard self.visibility != oldValue else { return }
-            
+
             if !self.visibility {
                 self.playbackAudioLevelNode?.stopAnimating()
             }
+            self.superGramUpdateStallWatchdog()
         }
     }
-    
+
     private let fetchControls = Atomic<FetchControls?>(value: nil)
     private var resourceStatus: FileMediaResourceStatus?
     private var actualFetchStatus: EngineMediaResourceStatus?
     private let fetchDisposable = MetaDisposable()
-    
+
+    // SuperGram (FIX-MEDIA-UI): stalled-download watchdog, see superGramNoteFetchStatus
+    private var superGramStallWatchdogTimer: SwiftSignalKit.Timer?
+    private var superGramStallMediaKey: String?
+    private var superGramStallProgress: Float?
+    private var superGramStallTimestamp: Double = 0.0
+    private var superGramStallRetryCount: Int = 0
+    // VER-UI-SELFHEAL: self-heal attempts for the current media that a progress advance does not forgive.
+    private var superGramStallTotalRetryCount: Int = 0
+    // VER-UI-SELFHEAL: set once the reported progress has actually advanced for the current media, i.e. bytes
+    // reached the disk while this node was watching. See `superGramEffectiveStallTimeout`.
+    private var superGramStallHasSeenProgress: Bool = false
+    // VER-UI-SELFHEAL: bumped whenever a pending self-heal restart must be abandoned — the user cancelled the
+    // download, or the node was re-bound to different media. Without it the 200 ms deferral below could revive a
+    // download the user had just cancelled, or (on a recycled node) start one for a message that never asked.
+    private var superGramStallRestartGeneration: Int = 0
+
     public var toggleSelection: (Bool) -> Void = { _ in }
     public var activateLocalContent: () -> Void = { }
     public var requestUpdateLayout: (Bool) -> Void = { _ in }
@@ -278,14 +296,178 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
         self.fetchDisposable.dispose()
         self.audioLevelEventsDisposable.dispose()
         self.transcribeDisposable?.dispose()
+        self.superGramStallWatchdogTimer?.invalidate()
     }
-    
+
     override public func didLoad() {
         let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(self.fileTap(_:)))
         self.view.addGestureRecognizer(tapRecognizer)
         self.tapRecognizer = tapRecognizer
     }
-    
+
+    // MARK: - SuperGram (FIX-MEDIA-UI): stalled-download watchdog
+    //
+    // Same problem as in ChatMessageInteractiveMediaNode: a download can stop making progress while the resource
+    // status stays `.Fetching`, so the file row keeps a spinner forever. While the row is visible and the reported
+    // progress has not moved for `superGramStallTimeout`, re-issue the fetch, at most `superGramStallMaxRetries`
+    // times per media. Only `.Fetching` is watched: a download the user cancelled lands on `.Remote`/`.Paused` and
+    // is never restarted behind their back. Uploads are excluded.
+    //
+    // VER-UI-SELFHEAL: the re-issue is not free. `fetchDisposable.set(nil)` drops this node's reference to the
+    // `FetchManager` entry, and when it is the last one (the usual case for a file row nobody is prefetching) the
+    // entry is removed and its running fetch disposed — every part in flight is discarded and the entry's retry
+    // backoff and zero-progress abandonment counters start over. So the window depends on what we know:
+    //
+    //   * nothing has ever arrived (`superGramStallTimeout`) — the stuck-fetch case this exists for, with nothing
+    //     in flight to lose;
+    //   * bytes have arrived while we were watching (`superGramStallProgressedTimeout`) — the transfer works and
+    //     the gaps are just part boundaries (parts run up to 512 KB, so on a weak link a gap of tens of seconds
+    //     is normal). Restarting there would discard the part in flight over and over, which is how a
+    //     slow-but-working download is turned into one that never finishes.
+    private static let superGramStallTimeout: Double = 20.0
+    private static let superGramStallProgressedTimeout: Double = 90.0
+    private static let superGramStallCheckInterval: Double = 5.0
+    private static let superGramStallMaxRetries: Int = 2
+    // VER-UI-SELFHEAL: `superGramStallRetryCount` is now forgiven whenever bytes arrive, so on its own it no
+    // longer bounds anything for a download that advances a little and then wedges again. This one is not
+    // forgiven: it stops the re-issues so that `FetchManagerCategoryContext`'s own backoff and zero-progress
+    // abandonment can run to completion — abandonment is what reports `.Remote` and turns the spinner into the
+    // "tap to retry" arrow, and every re-issue that destroys the entry restarts that bookkeeping. An explicit
+    // retry and a re-bind clear it.
+    private static let superGramStallMaxTotalRetries: Int = 4
+
+    private func superGramCurrentMediaKey() -> String? {
+        guard let message = self.message else {
+            return nil
+        }
+        if let mediaId = self.file?.id {
+            return "\(message.stableId)|\(mediaId.namespace):\(mediaId.id)"
+        } else {
+            return "\(message.stableId)"
+        }
+    }
+
+    private func superGramNoteFetchStatus(_ status: EngineMediaResource.FetchStatus) {
+        let mediaKey = self.superGramCurrentMediaKey()
+        if self.superGramStallMediaKey != mediaKey {
+            self.superGramStallMediaKey = mediaKey
+            self.superGramStallRetryCount = 0
+            self.superGramStallTotalRetryCount = 0
+            self.superGramStallProgress = nil
+            self.superGramStallHasSeenProgress = false
+            self.superGramStallTimestamp = CACurrentMediaTime()
+        }
+
+        switch status {
+        case let .Fetching(_, progress):
+            if self.superGramStallProgress != progress {
+                if self.superGramStallProgress != nil {
+                    // VER-UI-SELFHEAL: bytes landed on disk while we were watching — the transfer is alive, so
+                    // it gets the long stall window and its spent attempts back.
+                    self.superGramStallHasSeenProgress = true
+                    self.superGramStallRetryCount = 0
+                }
+                self.superGramStallProgress = progress
+                self.superGramStallTimestamp = CACurrentMediaTime()
+            }
+        case .Paused, .Remote:
+            // `superGramStallHasSeenProgress` is deliberately kept: it records that this media's transfer has
+            // delivered bytes while this node watched, which stays true across the brief `.Remote` a re-issue
+            // passes through.
+            self.superGramStallProgress = nil
+            self.superGramStallTimestamp = CACurrentMediaTime()
+        case .Local:
+            self.superGramStallProgress = nil
+            self.superGramStallHasSeenProgress = false
+            self.superGramStallTimestamp = CACurrentMediaTime()
+            self.superGramStallRetryCount = 0
+            self.superGramStallTotalRetryCount = 0
+        }
+
+        self.superGramUpdateStallWatchdog()
+    }
+
+    // See the constants above.
+    private func superGramEffectiveStallTimeout() -> Double {
+        if self.superGramStallHasSeenProgress {
+            return ChatMessageInteractiveFileNode.superGramStallProgressedTimeout
+        } else {
+            return ChatMessageInteractiveFileNode.superGramStallTimeout
+        }
+    }
+
+    private func superGramCanWatchStall() -> Bool {
+        guard let resourceStatus = self.resourceStatus, case .Fetching = resourceStatus.fetchStatus else {
+            return false
+        }
+        guard let message = self.message, !message.flags.isSending, !message.flags.contains(.Unsent) else {
+            return false
+        }
+        guard self.arguments?.attributes.updatingMedia == nil else {
+            return false
+        }
+        guard self.visibility else {
+            return false
+        }
+        guard self.superGramStallTotalRetryCount < ChatMessageInteractiveFileNode.superGramStallMaxTotalRetries else {
+            return false
+        }
+        return self.superGramStallRetryCount < ChatMessageInteractiveFileNode.superGramStallMaxRetries
+    }
+
+    private func superGramUpdateStallWatchdog() {
+        if self.superGramCanWatchStall() {
+            if self.superGramStallWatchdogTimer == nil {
+                let timer = SwiftSignalKit.Timer(timeout: ChatMessageInteractiveFileNode.superGramStallCheckInterval, repeat: true, completion: { [weak self] in
+                    self?.superGramCheckStall()
+                }, queue: Queue.mainQueue())
+                self.superGramStallWatchdogTimer = timer
+                timer.start()
+            }
+        } else if let timer = self.superGramStallWatchdogTimer {
+            timer.invalidate()
+            self.superGramStallWatchdogTimer = nil
+        }
+    }
+
+    private func superGramCheckStall() {
+        guard self.superGramCanWatchStall() else {
+            self.superGramUpdateStallWatchdog()
+            return
+        }
+        if CACurrentMediaTime() - self.superGramStallTimestamp < self.superGramEffectiveStallTimeout() {
+            return
+        }
+
+        self.superGramStallRetryCount += 1
+        self.superGramStallTotalRetryCount += 1
+        self.superGramStallTimestamp = CACurrentMediaTime()
+
+        // VER-UI-SELFHEAL: captured by value, so that a user cancel or a re-bind to different media during the
+        // 200 ms deferral abandons this restart instead of reviving a download the user just stopped — or
+        // starting one for whichever message the recycled node now shows.
+        let generation = self.superGramStallRestartGeneration
+        let mediaKey = self.superGramCurrentMediaKey()
+
+        self.fetchDisposable.set(nil)
+        Queue.mainQueue().after(0.2, { [weak self] in
+            guard let self else {
+                return
+            }
+            guard self.superGramStallRestartGeneration == generation, self.superGramCurrentMediaKey() == mediaKey else {
+                return
+            }
+            if let resourceStatus = self.resourceStatus, case .Local = resourceStatus.fetchStatus {
+                return
+            }
+            if let fetch = self.fetchControls.with({ return $0?.fetch }) {
+                fetch(false)
+            }
+        })
+
+        self.superGramUpdateStallWatchdog()
+    }
+
     @objc private func cacheProgressPressed() {
         guard let resourceStatus = self.resourceStatus else {
             return
@@ -295,7 +477,16 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                 if let cancel = self.fetchControls.with({ return $0?.cancel }) {
                     cancel()
                 }
+                // SuperGram (FIX-MEDIA-UI): never revive a download the user just cancelled — including via a
+                // self-heal restart that is already scheduled (VER-UI-SELFHEAL).
+                self.superGramStallTimestamp = CACurrentMediaTime()
+                self.superGramStallRestartGeneration += 1
+                self.superGramUpdateStallWatchdog()
             case .Remote, .Paused:
+                // VER-UI-SELFHEAL: an explicit retry gives the watchdog its attempts back.
+                self.superGramStallRetryCount = 0
+                self.superGramStallTotalRetryCount = 0
+                self.superGramStallTimestamp = CACurrentMediaTime()
                 if let fetch = self.fetchControls.with({ return $0?.fetch }) {
                     fetch(true)
                 }
@@ -321,7 +512,16 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                         if let cancel = self.fetchControls.with({ return $0?.cancel }) {
                             cancel()
                         }
+                        // SuperGram (FIX-MEDIA-UI): never revive a download the user just cancelled — including
+                        // via a self-heal restart that is already scheduled (VER-UI-SELFHEAL).
+                        self.superGramStallTimestamp = CACurrentMediaTime()
+                        self.superGramStallRestartGeneration += 1
+                        self.superGramUpdateStallWatchdog()
                     case .Remote, .Paused:
+                        // VER-UI-SELFHEAL: an explicit retry gives the watchdog its attempts back.
+                        self.superGramStallRetryCount = 0
+                        self.superGramStallTotalRetryCount = 0
+                        self.superGramStallTimestamp = CACurrentMediaTime()
                         if let fetch = self.fetchControls.with({ return $0?.fetch }) {
                             fetch(true)
                         }
@@ -351,16 +551,22 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
         guard let arguments = self.arguments, let context = self.context, let message = self.message else {
             return
         }
-        
-        if !context.isPremium, case .inProgress = self.audioTranscriptionState {
+
+        if case .inProgress = self.audioTranscriptionState {
             return
         }
-        
+
         let presentationData = context.sharedContext.currentPresentationData.with { $0 }
+        // SuperGram: the same policy drives the button in layout and this tap handler
+        let transcriptionPolicy = SuperGramTranscriptionPolicy(context: context, message: message, isPremium: arguments.associatedData.isPremium, providedByGroupBoost: arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost)
+        let useLocalTranscription = transcriptionPolicy.useLocalTranscription
+        if message.id.peerId.namespace == Namespaces.Peer.SecretChat && !useLocalTranscription {
+            return
+        }
         let premiumConfiguration = PremiumConfiguration.with(appConfiguration: arguments.context.currentAppConfiguration.with { $0 })
-        
+
         let transcriptionText = self.forcedAudioTranscriptionText ?? transcribedText(message: EngineMessage(message))
-        if transcriptionText == nil && !arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
+        if !useLocalTranscription && transcriptionText == nil && !arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
             if premiumConfiguration.audioTransciptionTrialCount > 0 {
                 if !arguments.associatedData.isPremium {
                     if self.presentAudioTranscriptionTooltip(finished: false) {
@@ -417,63 +623,14 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
         if shouldBeginTranscription {
             if self.transcribeDisposable == nil {
                 self.audioTranscriptionState = .inProgress
-                self.requestUpdateLayout(true)
-                
-                if context.sharedContext.immediateExperimentalUISettings.localTranscription {
-                    let appLocale = presentationData.strings.baseLanguageCode
-                    
-                    let signal: Signal<LocallyTranscribedAudio?, NoError> = context.engine.data.get(TelegramEngine.EngineData.Item.Messages.Message(id: message.id))
-                    |> mapToSignal { message -> Signal<String?, NoError> in
-                        guard let message = message else {
-                            return .single(nil)
-                        }
-                        guard let file = message.media.first(where: { $0 is TelegramMediaFile }) as? TelegramMediaFile else {
-                            return .single(nil)
-                        }
-                        return context.engine.resources.data(id: EngineMediaResource.Id(file.resource.id))
-                        |> take(1)
-                        |> mapToSignal { data -> Signal<String?, NoError> in
-                            if !data.isComplete {
-                                return .single(nil)
-                            }
-                            return .single(data.path)
-                        }
-                    }
-                    |> mapToSignal { result -> Signal<String?, NoError> in
-                        guard let result = result else {
-                            return .single(nil)
-                        }
-                        return convertOpusToAAC(sourcePath: result, allocateTempFile: {
-                            return EngineTempBox.shared.tempFile(fileName: "audio.m4a").path
-                        })
-                    }
-                    |> mapToSignal { result -> Signal<LocallyTranscribedAudio?, NoError> in
-                        guard let result = result else {
-                            return .single(nil)
-                        }
-                        return transcribeAudio(path: result, appLocale: appLocale)
-                    }
-                    
-                    self.transcribeDisposable = (signal
-                    |> deliverOnMainQueue).startStrict(next: { [weak self] result in
-                        guard let strongSelf = self, let arguments = strongSelf.arguments else {
-                            return
-                        }
-                        
-                        if let result = result {
-                            let _ = arguments.context.engine.messages.storeLocallyTranscribedAudio(messageId: arguments.message.id, text: result.text, isFinal: result.isFinal, error: nil).startStandalone()
-                        } else {
-                            strongSelf.audioTranscriptionState = .collapsed
-                            strongSelf.requestUpdateLayout(true)
-                        }
-                    }, completed: { [weak self] in
-                        guard let strongSelf = self else {
-                            return
-                        }
-                        strongSelf.transcribeDisposable?.dispose()
-                        strongSelf.transcribeDisposable = nil
-                    })
+
+                if useLocalTranscription {
+                    // SuperGram: fetch -> convert -> Apple Speech -> store, shared with round videos
+                    self.startLocalTranscription(context: context, message: message, file: arguments.file)
+                    self.requestUpdateLayout(true)
                 } else {
+                    self.requestUpdateLayout(true)
+
                     self.transcribeDisposable = (context.engine.messages.transcribeAudio(messageId: message.id)
                     |> deliverOnMainQueue).startStrict(next: { [weak self] result in
                         guard let strongSelf = self else {
@@ -507,7 +664,42 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
             }
         }
     }
-    
+
+    private func startLocalTranscription(context: AccountContext, message: EngineRawMessage, file: TelegramMediaFile) {
+        let disposable = MetaDisposable()
+        self.transcribeDisposable = disposable
+        disposable.set((SuperGramLocalTranscriptionManager.shared.transcribe(context: context, message: message, file: file)
+        |> deliverOnMainQueue).startStrict(next: { [weak self, weak disposable] outcome in
+            guard let self else {
+                return
+            }
+            if let disposable {
+                disposable.dispose()
+                if let current = self.transcribeDisposable, current === disposable {
+                    self.transcribeDisposable = nil
+                }
+            }
+
+            switch outcome {
+            case .success, .failure(.noSpeech):
+                // The stored attribute expands the in-progress transcription on the next layout
+                break
+            case let .failure(error):
+                // Nothing was stored: end the in-progress state so that a tap retries
+                if case .inProgress = self.audioTranscriptionState {
+                    self.audioTranscriptionState = .collapsed
+                    self.requestUpdateLayout(true)
+                    self.updateTranscriptionExpanded?(self.audioTranscriptionState)
+                }
+                if let arguments = self.arguments {
+                    superGramPresentLocalTranscriptionError(context: context, error: error, present: { controller in
+                        arguments.controllerInteraction.presentControllerInCurrent(controller, nil)
+                    })
+                }
+            }
+        }))
+    }
+
     private func presentAudioTranscriptionTooltip(finished: Bool) -> Bool {
         guard let arguments = self.arguments, !arguments.associatedData.isPremium else {
             return false
@@ -572,7 +764,10 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
         let currentMessage = self.message
         let audioTranscriptionState = self.audioTranscriptionState
         let forcedAudioTranscriptionText = self.forcedAudioTranscriptionText
-        
+        // SuperGram: mirrors ChatMessageInteractiveInstantVideoNode — used below to leave a stale
+        // `.inProgress` state when no transcription is running for this node any more
+        let hasRunningTranscribeRequest = self.transcribeDisposable != nil
+
         return { arguments in
             return (CGFloat.greatestFiniteMagnitude, { constrainedSize in
                 let titleFont = Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 16.0 / 17.0))
@@ -767,11 +962,13 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                 var updatedAudioTranscriptionState: AudioTranscriptionButtonComponent.TranscriptionState?
                 
                 var displayTranscribe = false
+                // SuperGram: same policy as transcribe() (local for non-Premium, secret chats only on-device)
+                let transcriptionPolicy = SuperGramTranscriptionPolicy(context: arguments.context, message: arguments.message, isPremium: arguments.associatedData.isPremium, providedByGroupBoost: arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost)
                 if Namespaces.Message.allNonRegular.contains(arguments.message.id.namespace) {
                     displayTranscribe = false
-                } else if arguments.message.id.peerId.namespace != Namespaces.Peer.SecretChat && !isViewOnceMessage && !arguments.presentationData.isPreview {
+                } else if transcriptionPolicy.isTranscriptionAllowed && !isViewOnceMessage && !arguments.presentationData.isPreview {
                     let premiumConfiguration = PremiumConfiguration.with(appConfiguration: arguments.context.currentAppConfiguration.with { $0 })
-                    if arguments.associatedData.isPremium || arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
+                    if transcriptionPolicy.useLocalTranscription || arguments.associatedData.isPremium || arguments.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
                         displayTranscribe = true
                     } else if premiumConfiguration.audioTransciptionTrialCount > 0 {
                         if arguments.incoming {
@@ -788,19 +985,29 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                     }
                 }
                 
-                let transcribedText = forcedAudioTranscriptionText ?? transcribedText(message: EngineMessage(arguments.message))
-                
+                var transcribedText = forcedAudioTranscriptionText ?? transcribedText(message: EngineMessage(arguments.message))
+                let isLocallyTranscribing = SuperGramLocalTranscriptionManager.shared.isTranscribing(context: arguments.context, messageId: arguments.message.id)
+                if case .error = transcribedText, isLocallyTranscribing {
+                    // SuperGram: don't flash the previous error while a local retry is running
+                    transcribedText = nil
+                }
+
                 switch audioTranscriptionState {
                 case .inProgress:
                     if transcribedText != nil {
                         updatedAudioTranscriptionState = .expanded
+                    } else if transcriptionPolicy.useLocalTranscription && !isLocallyTranscribing && !hasRunningTranscribeRequest {
+                        // SuperGram: nothing is running any more (node recycled, job gave up) — never spin forever.
+                        // `transcribe()` returns early while the state is `.inProgress`, so a stale spinner would
+                        // also make the button permanently dead.
+                        updatedAudioTranscriptionState = .collapsed
                     }
                 default:
                     break
                 }
-                
+
                 let currentTime = Int32(Date().timeIntervalSince1970)
-                if transcribedText == nil, let cooldownUntilTime = arguments.associatedData.audioTranscriptionTrial.cooldownUntilTime, cooldownUntilTime > currentTime {
+                if !transcriptionPolicy.useLocalTranscription, transcribedText == nil, let cooldownUntilTime = arguments.associatedData.audioTranscriptionTrial.cooldownUntilTime, cooldownUntilTime > currentTime {
                     updatedAudioTranscriptionState = .locked
                 }
                 
@@ -1434,6 +1641,7 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                                             let firstTime = strongSelf.resourceStatus == nil
                                             strongSelf.resourceStatus = status
                                             strongSelf.actualFetchStatus = actualFetchStatus
+                                            strongSelf.superGramNoteFetchStatus(status.fetchStatus)
                                             strongSelf.updateStatus(animated: !synchronousLoads || !firstTime)
                                         }
                                     }
@@ -1477,6 +1685,16 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
                             
                             if let updatedFetchControls = updatedFetchControls {
                                 let _ = strongSelf.fetchControls.swap(updatedFetchControls)
+                                // SuperGram (FIX-MEDIA-UI): the media behind this node changed
+                                strongSelf.superGramStallMediaKey = nil
+                                strongSelf.superGramStallProgress = nil
+                                strongSelf.superGramStallHasSeenProgress = false
+                                strongSelf.superGramStallRetryCount = 0
+                                strongSelf.superGramStallTotalRetryCount = 0
+                                // VER-UI-SELFHEAL: a self-heal restart scheduled for the previous media must not
+                                // land on this one.
+                                strongSelf.superGramStallRestartGeneration += 1
+                                strongSelf.superGramStallTimestamp = CACurrentMediaTime()
                                 if arguments.automaticDownload {
                                     updatedFetchControls.fetch(false)
                                 }
@@ -1592,6 +1810,10 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
     }
     
     private func updateStatus(animated: Bool) {
+        // SuperGram (FIX-MEDIA-UI): single funnel for "the presented state changed", so the stalled-download
+        // watchdog also picks up changes that do not come from the status signal.
+        self.superGramUpdateStallWatchdog()
+
         guard let resourceStatus = self.resourceStatus else {
             return
         }
@@ -2035,7 +2257,8 @@ public final class ChatMessageInteractiveFileNode: ASDisplayNode {
     
     public func updateIsExtractedToContextPreview(_ value: Bool) {
         if value {
-            if self.textSelectionNode == nil, self.textClippingNode.supernode != nil, let item = self.arguments, !item.associatedData.isCopyProtectionEnabled && !item.message.isCopyProtected(), let rootNode = item.controllerInteraction.chatControllerNode() {
+            // SuperGram (PROT-6): caption text selection in protected chats (never secret chats or secret media); Quote stays disabled below.
+            if self.textSelectionNode == nil, self.textClippingNode.supernode != nil, let item = self.arguments, ((!item.associatedData.isCopyProtectionEnabled && !item.message.isCopyProtected()) || (TextSelectionSuperGramProtection.allowCopyOfProtectedContent && item.message.id.peerId.namespace != Namespaces.Peer.SecretChat && !item.message.containsSecretMedia)), let rootNode = item.controllerInteraction.chatControllerNode() {
                 let selectionColor: UIColor
                 let knobColor: UIColor
                 if item.message.effectivelyIncoming(item.context.account.peerId) {

@@ -73,6 +73,8 @@ private var sharedLogger: Logger?
 private let binaryEventMarker: UInt64 = 0xcadebabef00dcafe
 
 public final class Logger {
+    private static let fallback = Logger(rootPath: "", basePath: "", logToFile: false, logToConsole: false)
+
     private let queue = Queue(name: "org.telegram.Telegram.log", qos: .utility)
     private let maxLength: Int = 2 * 1024 * 1024
     private let maxShortLength: Int = 1 * 1024 * 1024
@@ -85,26 +87,45 @@ public final class Logger {
     
     public var logToFile: Bool = true {
         didSet {
-            let oldEnabled = self.logToConsole || oldValue
-            let newEnabled = self.logToConsole || self.logToFile
-            if oldEnabled != newEnabled {
-                NetworkSetLoggingEnabled(newEnabled)
+            if oldValue != self.logToFile {
+                self.updateNetworkLoggingEnabled()
             }
         }
     }
     public var logToConsole: Bool = true {
         didSet {
-            let oldEnabled = self.logToFile || oldValue
-            let newEnabled = self.logToFile || self.logToConsole
-            if oldEnabled != newEnabled {
-                NetworkSetLoggingEnabled(newEnabled)
+            if oldValue != self.logToConsole {
+                self.updateNetworkLoggingEnabled()
+            }
+        }
+    }
+    // SuperGram: full MTProto payload dumps (and the per-message MTProto critlog records) are expensive,
+    // so file logging alone does not enable them; they are written to the log file only when network
+    // logging ("sgNetworkLogging") is enabled as well, or while console logging is on.
+    public var logNetwork: Bool = false {
+        didSet {
+            if oldValue != self.logNetwork {
+                self.updateNetworkLoggingEnabled()
             }
         }
     }
     public var redactSensitiveData: Bool = true
-    
+
+    public var isNetworkLoggingEnabled: Bool {
+        return self.logToConsole || (self.logToFile && self.logNetwork)
+    }
+
+    private func updateNetworkLoggingEnabled() {
+        // SuperGram: only the shared logger owns the process-wide MTProto logging switch; temporary loggers
+        // (fallback, log export) must not toggle it.
+        if sharedLogger === self {
+            NetworkSetLoggingEnabled(self.isNetworkLoggingEnabled)
+        }
+    }
+
     public static func setSharedLogger(_ logger: Logger) {
         sharedLogger = logger
+        NetworkSetLoggingEnabled(logger.isNetworkLoggingEnabled)
         setPostboxLogger({ s in
             Logger.shared.log("Postbox", s)
             Logger.shared.shortLog("Postbox", s)
@@ -114,20 +135,20 @@ public final class Logger {
     }
     
     public static var shared: Logger {
-        if let sharedLogger = sharedLogger {
-            return sharedLogger
-        } else {
-            assertionFailure()
-            let tempLogger = Logger(rootPath: "", basePath: "")
-            tempLogger.logToFile = false
-            tempLogger.logToConsole = false
-            return tempLogger
-        }
+        return sharedLogger ?? self.fallback
     }
     
-    public init(rootPath: String, basePath: String) {
+    // SuperGram: the defaults used to be `logToFile: true, logToConsole: true`, so every caller that did not pass
+    // them explicitly — the Share, Siri, WidgetKit and NotificationContent extensions — logged unconditionally into
+    // the shared app-group logs directory AND (because `setSharedLogger` derives the MTProto switch from
+    // logToConsole) turned on full MTProto payload dumps inside those processes. None of them ever consulted the
+    // "sgFileLogging" switch, so they kept writing even in a build where the user had logging off. Logging is now
+    // opt-in: the app passes the effective switches in AppDelegate, everything else stays silent.
+    public init(rootPath: String, basePath: String, logToFile: Bool = false, logToConsole: Bool = false) {
         self.rootPath = rootPath
         self.basePath = basePath
+        self.logToFile = logToFile
+        self.logToConsole = logToConsole
     }
     
     public func sync() {
@@ -234,7 +255,11 @@ public final class Logger {
                     if let data = try? Data(contentsOf: URL(fileURLWithPath: filePath), options: .mappedRead) {
                         let dataLength = data.count
                         data.withUnsafeBytes { rawBytes -> Void in
-                            let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: Int8.self)
+                            // SuperGram: an empty file has no base address; the previous force unwrap trapped.
+                            guard let baseAddress = rawBytes.baseAddress else {
+                                return
+                            }
+                            let bytes = baseAddress.assumingMemoryBound(to: Int8.self)
 
                             var offset = 0
                             while offset < dataLength {
@@ -379,7 +404,11 @@ public final class Logger {
                 if let currentFile = currentFile {
                     if let data = content.data(using: .utf8) {
                         data.withUnsafeBytes { rawBytes -> Void in
-                            let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                            // SuperGram: empty content has no base address; the previous force unwrap trapped.
+                            guard let baseAddress = rawBytes.baseAddress else {
+                                return
+                            }
+                            let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
 
                             let _ = currentFile.write(bytes, count: data.count)
                         }
@@ -397,8 +426,16 @@ public final class Logger {
     }
     
     public func shortLog(_ tag: String, _ what: @autoclosure () -> String) {
+        // SuperGram: the short ("critlog") log wrote every Postbox/Api/MTProto record straight to disk even when
+        // file logging was off, so a build with logging disabled still produced a continuous stream of writes into
+        // logs/app-logs/critlog-*.txt (up to 20 x 1 MB, rewritten forever). That is what triggered the excessive
+        // disk-writes resource kill. It now follows the same switch as `log`.
+        if !self.logToFile {
+            return
+        }
+
         let string = what()
-        
+
         var rawTime = time_t()
         time(&rawTime)
         var timeinfo = tm()
@@ -488,7 +525,11 @@ public final class Logger {
             if let currentFile = currentFile {
                 let contentDataCount = contentData.count
                 contentData.withUnsafeBytes { rawBytes -> Void in
-                    let bytes = rawBytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                    // SuperGram: empty content has no base address; the previous force unwrap trapped.
+                    guard let baseAddress = rawBytes.baseAddress else {
+                        return
+                    }
+                    let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
                     
                     let _ = currentFile.write(bytes, count: contentDataCount)
                 }

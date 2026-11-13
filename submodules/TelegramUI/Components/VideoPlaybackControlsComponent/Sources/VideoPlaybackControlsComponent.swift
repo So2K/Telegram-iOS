@@ -4,7 +4,6 @@ import Display
 import TelegramPresentationData
 import ComponentFlow
 import GlassBackgroundComponent
-import ManagedAnimationNode
 import MultilineTextComponent
 import AppBundle
 
@@ -66,8 +65,12 @@ public final class VideoPlaybackControlsComponent: Component {
         private let leftIconView: PlaybackIconView
         private let rightButtonBackgroundView: GlassBackgroundView
         private let rightIconView: PlaybackIconView
-        private let centerButtonBackgroundView: GlassBackgroundView
-        private var centerButtonIconNode: PlayPauseIconNode?
+        private let centerButtonView: UIView
+        private let centerButtonIconView: PlayPauseGlyphView
+        private let leftSeekFeedbackView: UIView
+        private let leftSeekFeedbackIconView: PlaybackIconView
+        private let rightSeekFeedbackView: UIView
+        private let rightSeekFeedbackIconView: PlaybackIconView
         
         private var component: VideoPlaybackControlsComponent?
         private weak var state: EmptyComponentState?
@@ -85,7 +88,15 @@ public final class VideoPlaybackControlsComponent: Component {
             self.rightIconView.isUserInteractionEnabled = false
             self.rightButtonBackgroundView.contentView.addSubview(self.rightIconView)
             
-            self.centerButtonBackgroundView = GlassBackgroundView()
+            self.centerButtonView = UIView()
+            self.centerButtonIconView = PlayPauseGlyphView()
+            self.centerButtonIconView.isUserInteractionEnabled = false
+            self.centerButtonView.addSubview(self.centerButtonIconView)
+
+            self.leftSeekFeedbackView = UIView()
+            self.leftSeekFeedbackIconView = PlaybackIconView(isForward: false)
+            self.rightSeekFeedbackView = UIView()
+            self.rightSeekFeedbackIconView = PlaybackIconView(isForward: true)
             
             super.init(frame: frame)
             
@@ -93,11 +104,21 @@ public final class VideoPlaybackControlsComponent: Component {
             
             self.backgroundContainer.contentView.addSubview(self.leftButtonBackgroundView)
             self.backgroundContainer.contentView.addSubview(self.rightButtonBackgroundView)
-            self.backgroundContainer.contentView.addSubview(self.centerButtonBackgroundView)
-            
+            self.backgroundContainer.contentView.addSubview(self.centerButtonView)
+
+            for (feedbackView, iconView) in [(self.leftSeekFeedbackView, self.leftSeekFeedbackIconView), (self.rightSeekFeedbackView, self.rightSeekFeedbackIconView)] {
+                feedbackView.alpha = 0.0
+                feedbackView.isUserInteractionEnabled = false
+                feedbackView.backgroundColor = UIColor(white: 0.0, alpha: 0.42)
+                feedbackView.layer.masksToBounds = true
+                iconView.isUserInteractionEnabled = false
+                feedbackView.addSubview(iconView)
+                self.addSubview(feedbackView)
+            }
+
             self.leftButtonBackgroundView.contentView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onLeftTapGesture(_:))))
             self.rightButtonBackgroundView.contentView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onRightTapGesture(_:))))
-            self.centerButtonBackgroundView.contentView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onTapGesture(_:))))
+            self.centerButtonView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.onTapGesture(_:))))
         }
         
         required public init?(coder: NSCoder) {
@@ -112,6 +133,7 @@ public final class VideoPlaybackControlsComponent: Component {
                 return
             }
             if case .ended = gesture.state {
+                self.animateSeekFeedback(isForward: false)
                 component.seek(false)
             }
         }
@@ -121,6 +143,7 @@ public final class VideoPlaybackControlsComponent: Component {
                 return
             }
             if case .ended = gesture.state {
+                self.animateSeekFeedback(isForward: true)
                 component.seek(true)
             }
         }
@@ -143,6 +166,23 @@ public final class VideoPlaybackControlsComponent: Component {
             }
             return result
         }
+
+        public func animateSeekFeedback(isForward: Bool) {
+            let feedbackView = isForward ? self.rightSeekFeedbackView : self.leftSeekFeedbackView
+            feedbackView.layer.removeAllAnimations()
+            feedbackView.alpha = 0.0
+            feedbackView.transform = CGAffineTransform(scaleX: 0.78, y: 0.78)
+
+            UIView.animate(withDuration: 0.1, delay: 0.0, options: [.allowUserInteraction, .curveEaseOut], animations: {
+                feedbackView.alpha = 1.0
+                feedbackView.transform = .identity
+            }, completion: { _ in
+                UIView.animate(withDuration: 0.12, delay: 0.16, options: [.allowUserInteraction, .curveEaseIn], animations: {
+                    feedbackView.alpha = 0.0
+                    feedbackView.transform = CGAffineTransform(scaleX: 1.08, y: 1.08)
+                }, completion: nil)
+            })
+        }
         
         func update(component: VideoPlaybackControlsComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
             let isVisibleChanged = self.component?.isVisible != component.isVisible
@@ -152,7 +192,7 @@ public final class VideoPlaybackControlsComponent: Component {
             
             self.isUserInteractionEnabled = component.isVisible
             
-            let containerInset: CGFloat = 32.0
+            let containerInset: CGFloat = 18.0
             
             let size = CGSize(width: component.layoutParams.sideButtonSize * 2.0 + component.layoutParams.centerButtonSize + component.layoutParams.spacing * 2.0, height: component.layoutParams.centerButtonSize)
             
@@ -186,30 +226,24 @@ public final class VideoPlaybackControlsComponent: Component {
             transition.setAlpha(view: self.rightIconView, alpha: areSideButtonsVisible ? 1.0 : 0.0)
             transition.setBlur(layer: self.rightIconView.layer, radius: areSideButtonsVisible ? 0.0 : 10.0)
             self.rightButtonBackgroundView.isUserInteractionEnabled = areSideButtonsVisible
-            
-            transition.setFrame(view: self.centerButtonBackgroundView, frame: centerButtonFrame)
-            self.centerButtonBackgroundView.update(size: centerButtonFrame.size, cornerRadius: centerButtonFrame.height * 0.5, isDark: true, tintColor: buttonsTintColor, isInteractive: true, isVisible: component.isVisible, transition: transition)
-            
-            let centerButtonIconNode: PlayPauseIconNode
-            let centerIconFactor: CGFloat = 0.9
-            let centerButtonIconSize = CGSize(width: centerButtonFrame.width * centerIconFactor, height: centerButtonFrame.height * centerIconFactor)
-            if let current = self.centerButtonIconNode, current.size == centerButtonIconSize {
-                centerButtonIconNode = current
-            } else {
-                centerButtonIconNode = PlayPauseIconNode(size: centerButtonIconSize)
-                if let current = self.centerButtonIconNode {
-                    centerButtonIconNode.frame = current.frame
-                    current.view.removeFromSuperview()
-                }
-                self.centerButtonIconNode = centerButtonIconNode
-                centerButtonIconNode.isUserInteractionEnabled = false
-                self.centerButtonBackgroundView.contentView.addSubview(centerButtonIconNode.view)
-                centerButtonIconNode.enqueueState(component.isPlaying ? .pause : .play, animated: false)
+
+            for (feedbackView, iconView, frame) in [(self.leftSeekFeedbackView, self.leftSeekFeedbackIconView, leftButtonFrame), (self.rightSeekFeedbackView, self.rightSeekFeedbackIconView, rightButtonFrame)] {
+                feedbackView.frame = frame
+                feedbackView.layer.cornerRadius = frame.height * 0.5
+                iconView.frame = CGRect(origin: CGPoint(), size: frame.size)
+                iconView.update(size: frame.size)
             }
-            transition.setFrame(view: centerButtonIconNode.view, frame: centerButtonIconSize.centered(in: CGRect(origin: CGPoint(), size: centerButtonFrame.size)).offsetBy(dx: component.isPlaying ? 0.0 : 5.0, dy: 0.0))
-            centerButtonIconNode.enqueueState(component.isPlaying ? .pause : .play, animated: !transition.animation.isImmediate && component.isVisible && !isVisibleChanged)
-            transition.setAlpha(view: centerButtonIconNode.view, alpha: component.isVisible ? 1.0 : 0.0)
-            transition.setBlur(layer: centerButtonIconNode.layer, radius: component.isVisible ? 0.0 : 10.0)
+
+            transition.setFrame(view: self.centerButtonView, frame: centerButtonFrame)
+            self.centerButtonView.isUserInteractionEnabled = component.isVisible
+            transition.setAlpha(view: self.centerButtonView, alpha: component.isVisible ? 1.0 : 0.0)
+
+            let centerButtonIconSize = CGSize(width: 24.0, height: 24.0)
+            transition.setFrame(
+                view: self.centerButtonIconView,
+                frame: centerButtonIconSize.centered(in: CGRect(origin: CGPoint(), size: centerButtonFrame.size)).offsetBy(dx: component.isPlaying ? 0.0 : 1.0, dy: 0.0)
+            )
+            self.centerButtonIconView.update(isPlaying: component.isPlaying)
             
             return size
         }
@@ -224,56 +258,45 @@ public final class VideoPlaybackControlsComponent: Component {
     }
 }
 
-private enum PlayPauseIconNodeState: Equatable {
-    case play
-    case pause
-}
+private final class PlayPauseGlyphView: UIView {
+    private var isPlaying = false
 
-private final class PlayPauseIconNode: ManagedAnimationNode {
-    let size: CGSize
-    
-    private let duration: Double = 0.35
-    private var iconState: PlayPauseIconNodeState = .pause
-    
-    override init(size: CGSize) {
-        self.size = size
-        
-        super.init(size: size)
-        
-        self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 41, endFrame: 41), duration: 0.01))
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.contentMode = .redraw
     }
-    
-    func enqueueState(_ state: PlayPauseIconNodeState, animated: Bool) {
-        guard self.iconState != state else {
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(isPlaying: Bool) {
+        guard self.isPlaying != isPlaying else {
             return
         }
-        
-        let previousState = self.iconState
-        self.iconState = state
-        
-        switch previousState {
-            case .pause:
-                switch state {
-                    case .play:
-                        if animated {
-                            self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 41, endFrame: 83), duration: self.duration))
-                        } else {
-                            self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 0, endFrame: 0), duration: 0.01))
-                        }
-                    case .pause:
-                        break
-                }
-            case .play:
-                switch state {
-                    case .pause:
-                        if animated {
-                            self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 0, endFrame: 41), duration: self.duration))
-                        } else {
-                            self.trackTo(item: ManagedAnimationItem(source: .local("anim_playpause"), frames: .range(startFrame: 41, endFrame: 41), duration: 0.01))
-                        }
-                    case .play:
-                        break
-                }
+        self.isPlaying = isPlaying
+        self.setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        UIColor.white.setFill()
+
+        if self.isPlaying {
+            let barSize = CGSize(width: 4.0, height: 14.0)
+            let gap: CGFloat = 4.0
+            let totalWidth = barSize.width * 2.0 + gap
+            let origin = CGPoint(x: floor((rect.width - totalWidth) * 0.5), y: floor((rect.height - barSize.height) * 0.5))
+            UIBezierPath(roundedRect: CGRect(origin: origin, size: barSize), cornerRadius: 2.0).fill()
+            UIBezierPath(roundedRect: CGRect(origin: CGPoint(x: origin.x + barSize.width + gap, y: origin.y), size: barSize), cornerRadius: 2.0).fill()
+        } else {
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 7.0, y: 4.5))
+            path.addLine(to: CGPoint(x: 19.0, y: 12.0))
+            path.addLine(to: CGPoint(x: 7.0, y: 19.5))
+            path.close()
+            path.fill()
         }
     }
 }
@@ -324,14 +347,14 @@ private final class PlaybackIconView: HighlightTrackingButton {
     
     func update(size: CGSize) {
         if let image = self.backgroundIconView.image {
-            let factor: CGFloat = 1.4
+            let factor: CGFloat = 1.1
             self.backgroundIconView.frame = CGSize(width: floor(image.size.width * factor), height: floor(image.size.height * factor)).centered(in: CGRect(origin: CGPoint(), size: size))
         }
         
         let textSize = self.text.update(
             transition: .immediate,
             component: AnyComponent(MultilineTextComponent(
-                text: .plain(NSAttributedString(string: "15", font: Font.with(size: 16.0, design: .round, weight: .semibold, traits: []), textColor: .white))
+                text: .plain(NSAttributedString(string: "5", font: Font.with(size: 14.0, design: .round, weight: .semibold, traits: []), textColor: .white))
             )),
             environment: {},
             containerSize: size

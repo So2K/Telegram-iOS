@@ -629,7 +629,8 @@ private func dataAndStorageControllerEntries(context: AccountContext, state: Dat
     let dataSaving = effectiveDataSaving(for: data.voiceCallSettings, autodownloadSettings: data.autodownloadSettings)
     entries.append(.useLessVoiceData(presentationData.theme, presentationData.strings.ChatSettings_UseLessDataForCalls, dataSaving != .never))
     entries.append(.useLessVoiceDataInfo(presentationData.theme, presentationData.strings.CallSettings_UseLessDataLongDescription))
-    
+
+    // SuperGram: transcription and performance toggles moved to the SuperGram settings screen (SGSettingsUI).
     entries.append(.otherHeader(presentationData.theme, presentationData.strings.ChatSettings_Other))
     if #available(iOSApplicationExtension 13.2, iOS 13.2, *) {
         entries.append(.shareSheet(presentationData.theme, presentationData.strings.ChatSettings_IntentsSettings))

@@ -533,6 +533,7 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                 var subtitleLayoutAndApply: (TextNodeLayout, (TextNodeWithEntities.Arguments?) -> TextNodeWithEntities)?
                 var textLayoutAndApply: (TextNodeLayout, (TextNodeWithEntities.Arguments?) -> TextNodeWithEntities)?
                 var titleBadgeLayoutAndApply: (TextNodeLayout, () -> TextNode)?
+                let titleColor: UIColor = isAd ? mainColor : messageTheme.primaryTextColor
                 
                 var remainingCutoutHeight: CGFloat = 0.0
                 var cutoutWidth: CGFloat = 0.0
@@ -549,12 +550,12 @@ public final class ChatMessageAttachedContentNode: ASDisplayNode {
                                 cutout = TextNodeCutout(topRight: CGSize(width: cutoutWidth, height: remainingCutoutHeight))
                             }
                             
-                            let titleString = NSAttributedString(string: title, font: titleFont, textColor: mainColor)
+                            let titleString = NSAttributedString(string: title, font: titleFont, textColor: titleColor)
                             let titleLayoutAndApplyValue = makeTitleLayout(TextNodeLayoutArguments(attributedString: titleString, backgroundColor: nil, maximumNumberOfLines: 2, truncationType: .end, constrainedSize: CGSize(width: maxContentsWidth, height: 10000.0), alignment: .natural, lineSpacing: textLineSpacing, cutout: cutout, insets: UIEdgeInsets()))
                             titleLayoutAndApply = titleLayoutAndApplyValue
                             
                             if let titleBadge {
-                                let titleBadgeString = NSAttributedString(string: titleBadge, font: badgeFont, textColor: mainColor)
+                                let titleBadgeString = NSAttributedString(string: titleBadge, font: badgeFont, textColor: titleColor)
                                 titleBadgeLayoutAndApply = makeTitleBadgeLayout(TextNodeLayoutArguments(attributedString: titleBadgeString, maximumNumberOfLines: 1, truncationType: .end, constrainedSize: CGSize(width: maxContentsWidth, height: 10000.0)))
                             }
                             

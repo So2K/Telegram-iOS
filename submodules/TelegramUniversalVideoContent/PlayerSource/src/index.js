@@ -155,11 +155,12 @@ export class HlsPlayerInstance {
         this.hls = new Hls({
             startLevel: 0,
             testBandwidth: false,
-            debug: params['debug'] || true,
+            // SuperGram: debug logging was forced on (`|| true`); buffers were 60 s ahead / 30 s behind.
+            debug: !!params['debug'],
             autoStartLoad: false,
-            backBufferLength: 30,
-            maxBufferLength: 60,
-            maxMaxBufferLength: 60,
+            backBufferLength: 10,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 30,
             maxFragLookUpTolerance: 0.001,
             nudgeMaxRetry: 10000
         });
@@ -254,9 +255,7 @@ export class HlsPlayerInstance {
     
         if (isPlaying) {
             if (this.currentTimeUpdateTimeout == null) {
-                this.currentTimeUpdateTimeout = setTimeout(() => {
-                    this.refreshPlayerCurrentTime();
-                }, 200);
+                this.schedulePlayerCurrentTimeUpdate();
             }
         } else {
             if(this.currentTimeUpdateTimeout != null){
@@ -279,9 +278,19 @@ export class HlsPlayerInstance {
         postPlayerEvent(this.id, 'playerCurrentTime', {
             'value': this.video.currentTime
         });
+    }
+
+    // SuperGram: refreshPlayerCurrentTime used to reschedule itself unconditionally, so every status refresh
+    // (play, pause, seeking, waiting, level switch) started one more endless 5 Hz timer chain that outlived
+    // the instance. Keep a single chain that stops when paused or destroyed.
+    schedulePlayerCurrentTimeUpdate() {
         this.currentTimeUpdateTimeout = setTimeout(() => {
-            this.refreshPlayerCurrentTime()
-        }, 200);
+            this.currentTimeUpdateTimeout = null;
+            if (window.hlsPlayer_instances[this.id] === this && !this.video.paused) {
+                this.refreshPlayerCurrentTime();
+                this.schedulePlayerCurrentTimeUpdate();
+            }
+        }, 1000);
     }
 }
 

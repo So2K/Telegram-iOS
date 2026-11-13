@@ -58,6 +58,15 @@ private func avatarGalleryEntryWithVideoRepresentations(_ entry: AvatarGalleryEn
     }
 }
 
+// SuperGram (KB-19): everything from the peer view that fetchedAvatarGalleryEntries actually depends on,
+// so that identical peer-view emissions can be collapsed before they turn into a network request.
+private struct AvatarGalleryFetchParameters: Equatable {
+    let peer: EnginePeer
+    let firstEntry: AvatarGalleryEntry
+    let secondEntry: TelegramMediaImage?
+    let lastEntry: TelegramMediaImage?
+}
+
 public func peerInfoProfilePhotos(context: AccountContext, peerId: EnginePeer.Id) -> Signal<Any, NoError> {
     return context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
     |> mapToSignal { peer -> Signal<[AvatarGalleryEntry]?, NoError> in
@@ -71,7 +80,7 @@ public func peerInfoProfilePhotos(context: AccountContext, peerId: EnginePeer.Id
         if let entries = entries {
             if var firstEntry = entries.first {
                 return context.account.postbox.peerView(id: peerId)
-                |> mapToSignal { peerView -> Signal<(Bool, [AvatarGalleryEntry])?, NoError>in
+                |> map { peerView -> AvatarGalleryFetchParameters? in
                     if let peer = peerViewMainPeer(peerView) {
                         var secondEntry: TelegramMediaImage?
                         var lastEntry: TelegramMediaImage?
@@ -94,11 +103,25 @@ public func peerInfoProfilePhotos(context: AccountContext, peerId: EnginePeer.Id
                                 }
                             }
                         }
-                        return fetchedAvatarGalleryEntries(engine: context.engine, account: context.account, peer: EnginePeer(peer), firstEntry: firstEntry, secondEntry: secondEntry, lastEntry: lastEntry)
-                        |> map(Optional.init)
+                        return AvatarGalleryFetchParameters(peer: EnginePeer(peer), firstEntry: firstEntry, secondEntry: secondEntry, lastEntry: lastEntry)
                     } else {
+                        return nil
+                    }
+                }
+                // SuperGram (KB-19): the peer view emits on every unrelated change to the peer or its cached
+                // data, and each emission used to restart fetchedAvatarGalleryEntries - which is a network
+                // request (photos.getUserPhotos, or messages.search(ChatPhotos) for groups and channels).
+                // QA logs showed the same two users being refetched every few seconds for minutes on end,
+                // and sixteen ChatPhotos searches inside one second. Only the four values below reach the
+                // request, so dropping emissions that leave all four unchanged removes the loop without
+                // changing what is fetched.
+                |> distinctUntilChanged
+                |> mapToSignal { parameters -> Signal<(Bool, [AvatarGalleryEntry])?, NoError> in
+                    guard let parameters = parameters else {
                         return .single(nil)
                     }
+                    return fetchedAvatarGalleryEntries(engine: context.engine, account: context.account, peer: parameters.peer, firstEntry: parameters.firstEntry, secondEntry: parameters.secondEntry, lastEntry: parameters.lastEntry)
+                    |> map(Optional.init)
                 }
             } else {
                 return .single((true, []))

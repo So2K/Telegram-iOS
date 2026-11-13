@@ -8,6 +8,7 @@ import RangeSet
 private typealias SignalKitTimer = SwiftSignalKit.Timer
 
 private final class MultipartDownloadState {
+    private let isEncrypted: Bool
     let aesKey: Data
     var aesIv: Data
     let decryptedSize: Int64?
@@ -15,6 +16,7 @@ private final class MultipartDownloadState {
     var currentSize: Int64 = 0
     
     init(encryptionKey: SecretFileEncryptionKey?, decryptedSize: Int64?) {
+        self.isEncrypted = encryptionKey != nil
         if let encryptionKey = encryptionKey {
             self.aesKey = encryptionKey.aesKey
             self.aesIv = encryptionKey.aesIv
@@ -24,13 +26,27 @@ private final class MultipartDownloadState {
         }
         self.decryptedSize = decryptedSize
     }
+
+    func canTransform(offset: Int64, data: Data) -> Bool {
+        guard self.isEncrypted else { return true }
+        guard let decryptedSize = self.decryptedSize else { return false }
+        return self.aesKey.count == 32 && self.aesIv.count == 32 && decryptedSize >= 0
+            && offset >= 0 && offset <= decryptedSize
+            && (data.isEmpty ? offset == decryptedSize : offset < decryptedSize)
+            && offset <= Int64.max - Int64(data.count) && data.count % 16 == 0
+    }
+
+    func canAcceptPart(offset: Int64, requestedLength: Int64, data: Data) -> Bool {
+        guard self.isEncrypted else { return true }
+        guard self.canTransform(offset: offset, data: data), Int64(data.count) <= requestedLength,
+              let decryptedSize = self.decryptedSize else { return false }
+        return Int64(data.count) == requestedLength || Int64(data.count) >= decryptedSize - offset
+    }
     
     func transform(offset: Int64, data: Data) -> Data? {
-        if self.aesKey.count != 0 {
-            guard let decryptedSize = self.decryptedSize else {
-                return nil
-            }
-            guard data.count % 16 == 0 else {
+        if self.isEncrypted {
+            guard self.canTransform(offset: offset, data: data), offset == self.currentSize,
+                  let decryptedSize = self.decryptedSize else {
                 return nil
             }
             if data.isEmpty {
@@ -38,10 +54,6 @@ private final class MultipartDownloadState {
             }
             var decryptedData = data
             let decryptedDataCount = decryptedData.count
-            assert(offset == self.currentSize)
-            guard offset == self.currentSize else {
-                return nil
-            }
             var didDecrypt = false
             decryptedData.withUnsafeMutableBytes { rawBytes -> Void in
                 guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
@@ -58,9 +70,7 @@ private final class MultipartDownloadState {
             guard didDecrypt else {
                 return nil
             }
-            if self.currentSize + Int64(decryptedData.count) > decryptedSize {
-                decryptedData.count = Int(decryptedSize - self.currentSize)
-            }
+            decryptedData.count = Int(min(Int64(decryptedData.count), decryptedSize - self.currentSize))
             self.currentSize += Int64(decryptedData.count)
             return decryptedData
         } else {
@@ -452,7 +462,8 @@ private enum MultipartFetchSource {
                             } else {
                                 var partIv = iv
                                 let partIvCount = partIv.count
-                                guard partIvCount >= 4 else {
+                                guard partIvCount == 16, key.count == 32,
+                                      offset >= 0, offset % 16 == 0, offset / 16 <= Int64(UInt32.max) else {
                                     return .fail(.generic)
                                 }
                                 var didSetIvOffset = false
@@ -460,7 +471,7 @@ private enum MultipartFetchSource {
                                     guard let bytes = rawBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                                         return
                                     }
-                                    var ivOffset: Int32 = Int32(clamping: (offset / 16)).bigEndian
+                                    var ivOffset: UInt32 = UInt32(offset / 16).bigEndian
                                     memcpy(bytes.advanced(by: partIvCount - 4), &ivOffset, 4)
                                     didSetIvOffset = true
                                 }
@@ -602,10 +613,10 @@ private final class MultipartFetchManager {
             }
         } else if let size = size {
             if size <= 512 * 1024 {
-                self.defaultPartSize = 16 * 1024
-                self.parallelParts = 4 * 4
+                self.defaultPartSize = 64 * 1024
+                self.parallelParts = 4
             } else {
-                self.defaultPartSize = 512 * 1024
+                self.defaultPartSize = 256 * 1024
                 self.parallelParts = 8
             }
         } else {
@@ -915,6 +926,11 @@ private final class MultipartFetchManager {
             let effectiveDatacenterId = self.source.effectiveDatacenterId
             partDisposable.set(part.start(next: { [weak self] data, info in
                 guard let strongSelf = self else {
+                    return
+                }
+
+                guard strongSelf.state.canAcceptPart(offset: downloadRange.lowerBound, requestedLength: Int64(downloadRange.count), data: data) else {
+                    strongSelf.finishWithError(.generic)
                     return
                 }
                 

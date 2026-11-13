@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -52,7 +55,20 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
     private let fetchDisposable = MetaDisposable()
     
     private var suggestedPostInfoNode: ChatMessageSuggestedPostInfoNode?
-    
+
+    // MARK: Swiftgram
+    /// Sticker display scale (`SGSimpleSettings.shared.stickerSize` / 100). Swiftgram assigns this from
+    /// `ChatMessageItemImpl.configure`; SuperGram reads it here so that file stays untouched.
+    /// Clamped to 0.2 — the settings slider goes down to 0 %, and a zero-sized sticker breaks the layout math.
+    ///
+    /// Computed rather than stored: a stored initial value is captured once per node instance, so after the
+    /// slider moves the nodes already built keep the old scale while newly built ones use the new one, and the
+    /// same chat ends up with two sticker sizes. `asyncLayout` reads this once per pass and captures the value
+    /// for the matching apply, so a single layout can never mix two scales.
+    public var sizeCoefficient: Float {
+        return max(0.2, min(1.0, Float(SGSimpleSettings.shared.stickerSize) / 100.0))
+    }
+
     private var viaBotNode: TextNode?
     private let dateAndStatusNode: ChatMessageDateAndStatusNode
     private var threadInfoNode: ChatMessageThreadInfoNode?
@@ -420,7 +436,11 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
     }
     
     override public func asyncLayout() -> (_ item: ChatMessageItem, _ params: ListViewItemLayoutParams, _ mergedTop: ChatMessageMerge, _ mergedBottom: ChatMessageMerge, _ dateHeaderAtBottom: ChatMessageHeaderSpec) -> (ListViewItemNodeLayout, (ListViewItemUpdateAnimation, ListViewItemApply, Bool) -> Void) {
-        let displaySize = CGSize(width: 184.0, height: 184.0)
+        // MARK: Swiftgram
+        // Read once: two reads could straddle a settings change and produce a non-square sticker.
+        let sizeCoefficient = CGFloat(self.sizeCoefficient)
+        let displaySize = CGSize(width: 184.0 * sizeCoefficient, height: 184.0 * sizeCoefficient)
+        let hideDateAndStatus = !SGSimpleSettings.shared.stickerTimestamp
         let telegramFile = self.telegramFile
         let layoutConstants = self.layoutConstants
         let imageLayout = self.imageNode.asyncLayout()
@@ -798,6 +818,14 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
                 }
             }
 
+            // SuperGram: hide only the plain share / repost button (the node also renders Comments / navigation).
+            // This node has no bubble, so there is no separate "N Comments" footer: the share button node *is* the
+            // Comments button of a sticker posted to a channel. It is updated without `disableComments:`, so the
+            // default `commentsDisabled: false` here is the matching value.
+            if !superGramShowsMessageShareButton && !superGramShareButtonActsAsNavigation(item: item) {
+                needsShareButton = false
+            }
+
             var updatedShareButtonNode: ChatMessageShareButton?
             if needsShareButton {
                 if let currentShareButtonNode = currentShareButtonNode {
@@ -1100,8 +1128,12 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
                     
                     animation.animator.updateFrame(layer: strongSelf.dateAndStatusNode.layer, frame: dateAndStatusFrame, completion: nil)
                     dateAndStatusApply(animation)
+                    // MARK: Swiftgram
+                    // `stickerTimestamp` off hides the time/status pill drawn over the sticker.
                     if case .customChatContents = item.associatedData.subject {
                         strongSelf.dateAndStatusNode.isHidden = true
+                    } else {
+                        strongSelf.dateAndStatusNode.isHidden = hideDateAndStatus
                     }
                     
                     if let updatedShareButtonNode = updatedShareButtonNode {
@@ -2249,8 +2281,16 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
     }
     
     override public func makeContentSnapshot() -> (UIImage, CGRect)? {
-        UIGraphicsBeginImageContextWithOptions(self.imageNode.view.bounds.size, false, 0.0)
-        let context = UIGraphicsGetCurrentContext()!
+        let size = self.imageNode.view.bounds.size
+        // SuperGram: a zero-sized node (or a failed context) used to trap on UIGraphicsGetCurrentContext().
+        guard size.width > 0.0, size.height > 0.0 else {
+            return nil
+        }
+        UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
+        guard let context = UIGraphicsGetCurrentContext() else {
+            UIGraphicsEndImageContext()
+            return nil
+        }
         
         context.translateBy(x: -self.imageNode.frame.minX, y: -self.imageNode.frame.minY)
         self.contextSourceNode.contentNode.view.layer.render(in: context)

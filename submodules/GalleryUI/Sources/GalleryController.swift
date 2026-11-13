@@ -291,7 +291,8 @@ public func galleryItemForEntry(
     
     if let image = media as? TelegramMediaImage {
         if let file = image.video {
-            let captureProtected = message.isCopyProtected() || message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected
+            // SuperGram (PROT-2): copy protection honours sgAllowScreenCaptureProtected; secret, view-once and paid media stay protected.
+            let captureProtected = SuperGramContentProtection.shouldDisableScreenCapture(isSecret: message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil, isCopyProtected: message.isCopyProtected() || peerIsCopyProtected)
             
             var originData = GalleryItemOriginData(title: message.effectiveAuthor.flatMap(EnginePeer.init)?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder), timestamp: message.timestamp)
             if Namespaces.Message.allNonRegular.contains(message.id.namespace) {
@@ -299,7 +300,7 @@ public func galleryItemForEntry(
             }
             
             let content = NativeVideoContent(id: .message(message.stableId, file.fileId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: file), imageReference: mediaImage.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), streamVideo: .conservative, loopVideo: loopVideos, tempFilePath: tempFilePath, captureProtected: captureProtected, storeAfterDownload: generateStoreAfterDownload?(message, file))
-            
+
             var (text, entities) = galleryMessageCaptionText(message, mediaSubject: entry.mediaSubject)
             if entry.mediaSubject == nil {
                 if let translateToLanguage, !text.isEmpty {
@@ -348,7 +349,8 @@ public func galleryItemForEntry(
     } else if let file = media as? TelegramMediaFile {
         if file.isVideo {
             let content: UniversalVideoContent
-            let captureProtected = message.isCopyProtected() || message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected
+            // SuperGram (PROT-2): copy protection honours sgAllowScreenCaptureProtected; secret, view-once and paid media stay protected.
+            let captureProtected = SuperGramContentProtection.shouldDisableScreenCapture(isSecret: message.containsSecretMedia || message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil, isCopyProtected: message.isCopyProtected() || peerIsCopyProtected)
             if file.isAnimated {
                 content = NativeVideoContent(id: .message(message.stableId, file.fileId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: file), imageReference: mediaImage.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), loopVideo: true, enableSound: false, tempFilePath: tempFilePath, captureProtected: captureProtected, storeAfterDownload: generateStoreAfterDownload?(message, file))
             } else {
@@ -365,7 +367,24 @@ public func galleryItemForEntry(
                             }
                         }
                     }
-                    
+
+                    // SuperGram: an original that is already on disk plays from local bytes instead of re-fetching HLS
+                    // quality alternates over the network.
+                    //
+                    // A cached *head* on its own is deliberately not enough. Every 2 MB TimeBasedVideoPreload, every
+                    // cancelled download and every earlier streaming session leaves one behind, and switching to the
+                    // original because of it means streaming the full-size original (often several times the size of
+                    // the quality variant hls.js would have picked) — which on a slow link is exactly the "it just
+                    // loads forever" symptom. Require the original to be complete, or at least half present.
+                    //
+                    // The probes are filesystem calls on the calling (main) thread and a shared-media gallery builds
+                    // dozens of items in one pass, so they go through the shared, briefly memoized helper.
+                    if isHLS && SuperGramMediaStreamingSettings.preferDownloadedOriginal {
+                        if superGramPrefersDownloadedOriginal(mediaBox: context.account.postbox.mediaBox, resource: file.resource, size: file.size, requirement: .completeOrHalfPresent) {
+                            isHLS = false
+                        }
+                    }
+
                     if isHLS {
                         content = HLSVideoContent(id: .message(message.stableId, file.fileId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: file), streamVideo: streamVideos, loopVideo: loopVideos, autoFetchFullSizeThumbnail: true, codecConfiguration: HLSCodecConfiguration(context: context))
                     } else {
@@ -478,11 +497,11 @@ public func galleryItemForEntry(
         var content: UniversalVideoContent?
         switch websiteType(of: webpageContent.websiteName) {
         case .instagram where webpageContent.file != nil && webpageContent.image != nil && webpageContent.file!.isVideo:
-            content = NativeVideoContent(id: .message(message.stableId, webpageContent.file?.id ?? webpage.webpageId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: webpageContent.file!), imageReference: webpageContent.image.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), streamVideo: .conservative, enableSound: true, captureProtected: message.isCopyProtected() || message.containsSecretMedia || peerIsCopyProtected, storeAfterDownload: nil)
+            content = NativeVideoContent(id: .message(message.stableId, webpageContent.file?.id ?? webpage.webpageId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: webpageContent.file!), imageReference: webpageContent.image.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), streamVideo: .conservative, enableSound: true, captureProtected: SuperGramContentProtection.shouldDisableScreenCapture(isSecret: message.containsSecretMedia, isCopyProtected: message.isCopyProtected() || peerIsCopyProtected), storeAfterDownload: nil)
         default:
             if let embedUrl = webpageContent.embedUrl, let image = webpageContent.image {
                 if let file = webpageContent.file, file.isVideo {
-                    content = NativeVideoContent(id: .message(message.stableId, file.fileId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: file), imageReference: mediaImage.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), streamVideo: .conservative, loopVideo: loopVideos, tempFilePath: tempFilePath, captureProtected: message.isCopyProtected() || message.containsSecretMedia || peerIsCopyProtected, storeAfterDownload: generateStoreAfterDownload?(message, file))
+                    content = NativeVideoContent(id: .message(message.stableId, file.fileId), userLocation: .peer(message.id.peerId), fileReference: .message(message: MessageReference(message), media: file), imageReference: mediaImage.flatMap({ ImageMediaReference.message(message: MessageReference(message), media: $0) }), streamVideo: .conservative, loopVideo: loopVideos, tempFilePath: tempFilePath, captureProtected: SuperGramContentProtection.shouldDisableScreenCapture(isSecret: message.containsSecretMedia, isCopyProtected: message.isCopyProtected() || peerIsCopyProtected), storeAfterDownload: generateStoreAfterDownload?(message, file))
                 } else if URL(string: embedUrl)?.pathExtension == "mp4" {
                     content = SystemVideoContent(userLocation: .peer(message.id.peerId), url: embedUrl, imageReference: .webPage(webPage: WebpageReference(webpage), media: image), dimensions: webpageContent.embedSize?.cgSize ?? CGSize(width: 640.0, height: 640.0), duration: webpageContent.duration.flatMap(Double.init) ?? 0.0)
                 }

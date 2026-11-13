@@ -381,6 +381,12 @@ final class CameraOutput: NSObject {
                 AVVideoWidthKey: Int(dimensions.width),
                 AVVideoHeightKey: Int(dimensions.height)
             ]
+            // MARK: Swiftgram
+            // SuperGram: Swiftgram forces .back from the startTelescopeWithRearCam setting; sync with the actual camera position instead,
+            // which also stays correct when the camera was flipped before recording started. markPositionChange keeps it updated afterwards.
+            if let position {
+                self.currentPosition = position
+            }
         } else {
             let codecType: AVVideoCodecType = hasHEVCHardwareEncoder ? .hevc : .h264
             if orientation == .landscapeLeft || orientation == .landscapeRight {

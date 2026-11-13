@@ -980,9 +980,11 @@ public final class StoryItemSetViewListComponent: Component {
                 let link = MarkdownAttributeSet(font: Font.semibold(fontSize), textColor: component.theme.list.itemAccentColor)
                 let attributes = MarkdownAttributes(body: body, bold: bold, link: link, linkAttribute: { _ in return ("URL", "") })
                 
+                // SuperGram: the full list after expiry is withheld by the server; show the plain note instead of the Premium upsell
+                let displayPremiumUpsell = !component.hasPremium && !SuperGramStoryGates.hidePremiumUpsell
                 let text: String
                 let fullWidth: Bool
-                if component.hasPremium {
+                if !displayPremiumUpsell {
                     text = component.strings.Story_ViewList_NotFullyRecorded
                     fullWidth = true
                 } else {
@@ -997,14 +999,14 @@ public final class StoryItemSetViewListComponent: Component {
                         maximumNumberOfLines: 0,
                         lineSpacing: 0.2,
                         highlightColor: component.theme.list.itemAccentColor.withMultipliedAlpha(0.5),
-                        highlightAction: component.hasPremium ? nil : { attributes in
+                        highlightAction: !displayPremiumUpsell ? nil : { attributes in
                             if let _ = attributes[NSAttributedString.Key(rawValue: "URL")] {
                                 return NSAttributedString.Key(rawValue: "URL")
                             } else {
                                 return nil
                             }
                         },
-                        tapAction: component.hasPremium ? nil : { [weak self] _, _ in
+                        tapAction: !displayPremiumUpsell ? nil : { [weak self] _, _ in
                             guard let self, let component = self.component else {
                                 return
                             }
@@ -1077,7 +1079,8 @@ public final class StoryItemSetViewListComponent: Component {
                 
                 var emptyButtonTransition = transition
                 let emptyButton: ComponentView<Empty>?
-                if self.query == nil, !component.hasPremium && !component.peerId.isGroupOrChannel, let views = component.storyItem.views, views.seenCount != 0 {
+                // SuperGram: no "Upgrade to Premium" button in the empty views list
+                if self.query == nil, !component.hasPremium && !SuperGramStoryGates.hidePremiumUpsell && !component.peerId.isGroupOrChannel, let views = component.storyItem.views, views.seenCount != 0 {
                     if let current = self.emptyButton {
                         emptyButton = current
                     } else {

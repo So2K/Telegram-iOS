@@ -73,6 +73,8 @@ final class ChatPinnedMessageTitlePanelNode: ChatTitleAccessoryPanelNode {
     private var previousMediaReference: AnyMediaReference?
     private var currentTranslateToLanguage: (fromLang: String, toLang: String)?
     private let translationDisposable = MetaDisposable()
+    private var translationRequestGeneration: Int = 0
+    private var translationRequestMessageId: EngineMessage.Id?
     
     private var isReplyThread: Bool = false
     
@@ -291,7 +293,8 @@ final class ChatPinnedMessageTitlePanelNode: ChatTitleAccessoryPanelNode {
         }
         self.isReplyThread = isReplyThread
         
-        self.captureProtected = interfaceState.copyProtectionEnabled || interfaceState.myCopyProtectionEnabled
+        // SuperGram: copy protection honours sgAllowScreenCaptureProtected.
+        self.captureProtected = sgShouldDisableScreenCapture(isSecret: false, isCopyProtected: interfaceState.copyProtectionEnabled || interfaceState.myCopyProtectionEnabled)
         
         self.contextContainer.isGestureEnabled = !isReplyThread
         
@@ -505,10 +508,33 @@ final class ChatPinnedMessageTitlePanelNode: ChatTitleAccessoryPanelNode {
             currentTranslateToLanguageUpdated = true
         }
         
+        let translationMessageId = interfaceState.pinnedMessage?.message.id
+        if currentTranslateToLanguageUpdated || self.translationRequestMessageId != translationMessageId {
+            self.translationRequestGeneration += 1
+            self.translationRequestMessageId = translationMessageId
+            self.translationDisposable.set(nil)
+        }
+        if translateToLanguage == nil || translationMessageId == nil {
+            self.translationDisposable.set(nil)
+        }
         if currentTranslateToLanguageUpdated || messageUpdated, let message = interfaceState.pinnedMessage?.message {
             if let translation = message.attributes.first(where: { $0 is TranslationMessageAttribute }) as? TranslationMessageAttribute, translation.toLang == translateToLanguage?.toLang {
+                self.translationRequestGeneration += 1
+                self.translationDisposable.set(nil)
             } else if let translateToLanguage {
-                self.translationDisposable.set(translateMessageIds(context: self.context, messageIds: [message.id], fromLang: translateToLanguage.fromLang, toLang: translateToLanguage.toLang).startStrict())
+                self.translationRequestGeneration += 1
+                let generation = self.translationRequestGeneration
+                let messageId = message.id
+                // Install ownership before a possibly synchronous failure; currentMessage updates later.
+                let requestDisposable = MetaDisposable()
+                self.translationDisposable.set(requestDisposable)
+                requestDisposable.set(translateMessageIds(context: self.context, messageIds: [messageId], fromLang: translateToLanguage.fromLang, toLang: translateToLanguage.toLang, isCurrent: { [weak self] in
+                    guard let self else { return false }
+                    return self.translationRequestGeneration == generation
+                        && self.translationRequestMessageId == messageId
+                        && self.currentTranslateToLanguage?.fromLang == translateToLanguage.fromLang
+                        && self.currentTranslateToLanguage?.toLang == translateToLanguage.toLang
+                }).startStrict())
             }
         }
         

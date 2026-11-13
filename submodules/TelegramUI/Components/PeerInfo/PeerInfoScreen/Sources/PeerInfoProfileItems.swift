@@ -16,16 +16,25 @@ import WebUI
 import AvatarNode
 import PeerNameColorItem
 import BoostLevelIconComponent
+// MARK: Swiftgram
+import SGSimpleSettings
 
 private let enabledPublicBioEntities: EnabledEntityTypes = [.allUrl, .mention, .hashtag]
 private let enabledPrivateBioEntities: EnabledEntityTypes = [.internalUrl, .mention, .hashtag]
 
+// The order of these cases is the order the sections are laid out in. Raw values are never persisted.
 enum InfoSection: Int, CaseIterable {
     case unofficial
     case groupLocation
     case calls
     case personalChannel
     case peerInfo
+    // MARK: Swiftgram
+    // SuperGram (W2A-18): id / dc / creation / joined / registration dates. These belong *below* the stock profile
+    // information, not above it — as the second case they pushed `id:` and `dc:` to the very top of every profile,
+    // ahead of the phone number, username and bio. Only this case moved; every other section kept its position
+    // relative to the others.
+    case superGram
     case balances
     case permissions
     case peerInfoTrailing
@@ -45,12 +54,13 @@ func infoItems(
     callMessages: [EngineMessage],
     chatLocation: ChatLocation,
     isOpenedFromChat: Bool,
-    isMyProfile: Bool
+    isMyProfile: Bool,
+    superGramExtras: PeerInfoSuperGramExtras = PeerInfoSuperGramExtras()
 ) -> [(AnyHashable, [PeerInfoScreenItem])] {
     guard let data = data else {
         return []
     }
-    
+
     var currentPeerInfoSection: InfoSection = .peerInfo
         
     var items: [InfoSection: [PeerInfoScreenItem]] = [:]
@@ -137,7 +147,7 @@ func infoItems(
             }))
         }
         
-        if let phone = user.phone {
+        if let phone = user.phone, !(SGSimpleSettings.shared.hidePhoneInSettings && isMyProfile) { // MARK: Swiftgram
             let formattedPhone = formatPhoneNumber(context: context, number: phone)
             let label: String
             if formattedPhone.hasPrefix("+888 ") {
@@ -200,13 +210,14 @@ func infoItems(
                     birthdayAction = { node, _ in
                         birthdayContextAction(node, nil, nil)
                     }
-                } else if hasBirthdayToday && cachedData.disallowedGifts != TelegramDisallowedGifts.All {
+                } else if !superGramHidePremiumUpsell && hasBirthdayToday && cachedData.disallowedGifts != TelegramDisallowedGifts.All {
+                    // SuperGram: tapping a contact's birthday row no longer opens the gift shop (UPS-09)
                     birthdayAction = { _, _ in
                         interaction.openPremiumGift()
                     }
                 }
-                
-                items[currentPeerInfoSection]!.append(PeerInfoScreenLabeledValueItem(id: ItemBirthdate, context: context, label: hasBirthdayToday ? presentationData.strings.UserInfo_BirthdayToday : presentationData.strings.UserInfo_Birthday, text: stringForCompactBirthday(birthday, strings: presentationData.strings, showAge: true), textColor: .primary, leftIcon: hasBirthdayToday ? .birthday : nil, icon: hasBirthdayToday ? .premiumGift : nil, action: birthdayAction, longTapAction: nil, iconAction: {
+
+                items[currentPeerInfoSection]!.append(PeerInfoScreenLabeledValueItem(id: ItemBirthdate, context: context, label: hasBirthdayToday ? presentationData.strings.UserInfo_BirthdayToday : presentationData.strings.UserInfo_Birthday, text: stringForCompactBirthday(birthday, strings: presentationData.strings, showAge: true), textColor: .primary, leftIcon: hasBirthdayToday ? .birthday : nil, icon: hasBirthdayToday && !superGramHidePremiumUpsell ? .premiumGift : nil, action: birthdayAction, longTapAction: nil, iconAction: {
                     interaction.openPremiumGift()
                 }, contextAction: birthdayContextAction, requestLayout: { _ in
                 }))
@@ -871,7 +882,10 @@ func infoItems(
             }))
         }
     }
-    
+
+    // MARK: Swiftgram
+    items[.superGram]!.append(contentsOf: superGramProfileItems(data: data, extras: superGramExtras, context: context, presentationData: presentationData, interaction: interaction))
+
     var result: [(AnyHashable, [PeerInfoScreenItem])] = []
     for section in InfoSection.allCases {
         if let sectionItems = items[section], !sectionItems.isEmpty {

@@ -1,0 +1,382 @@
+"Settings.ContentSettings" = "Настройки контента";
+
+"Settings.Tabs.Header" = "ВКЛАДКИ";
+"Settings.Tabs.HideTabBar" = "Скрыть панель вкладок";
+"Settings.Tabs.ShowContacts" = "Вкладка «Контакты»";
+"Settings.Tabs.ShowNames" = "Имена вкладок";
+"Settings.Tabs.SearchButton" = "Кнопка поиска";
+"Settings.Tabs.WideTabBar" = "Широкая панель";
+"Settings.Tabs.WideTabBar.Notice" = "Сохраняет полную ширину панели вкладок, когда некоторые вкладки скрыты.";
+
+"Settings.Folders.BottomTab" = "Папки снизу";
+"Settings.Folders.BottomTabStyle" = "Стиль папок внизу";
+
+/* Do not translate */
+"Settings.Folders.BottomTabStyle.ios" = "iOS";
+/* Do not translate */
+"Settings.Folders.BottomTabStyle.telegram" = "Telegram";
+/* Example: Hide "All Chats" */
+"Settings.Folders.AllChatsHidden" = "Скрыть \"%@\"";
+"Settings.Folders.RememberLast" = "Открывать последнюю папку";
+"Settings.Folders.RememberLast.Notice" = "SuperGram откроет последнюю использованную папку после перезапуска или переключения учетной записи";
+
+"Settings.Folders.CompactNames" = "Уменьшенные расстояния";
+"Settings.Folders.AllChatsTitle" = "Название \"Все чаты\"";
+"Settings.Folders.AllChatsTitle.short" = "Короткое";
+"Settings.Folders.AllChatsTitle.long" = "Длинное";
+/* Default behaviour for All Chats Folder Title. "All Chats" title: Default */
+"Settings.Folders.AllChatsTitle.none" = "По умолчанию";
+
+
+"Settings.ChatList.Header" = "СПИСОК ЧАТОВ";
+"Settings.CompactChatList" = "Компактный список чатов";
+"Settings.CompactMessagePreview" = "Компактное превью сообщений";
+"Settings.Profiles.Header" = "ПРОФИЛИ";
+
+"Settings.Stories.Hide" = "Скрыть истории";
+"Settings.Stories.WarnBeforeView" = "Спросить перед просмотром";
+"Settings.Stories.DisableSwipeToRecord" = "Отключить свайп для записи";
+
+"Settings.Translation.QuickTranslateButton" = "Кнопка быстрого перевода";
+"Settings.Translation.Backend" = "Сервис";
+/* Do not translate */
+"Settings.Translation.Backend.default" = "Telegram";
+/* Do not translate */
+"Settings.Translation.Backend.gtranslate" = "GTranslate";
+"Settings.Translation.Backend.system" = "Система";
+"Settings.Translation.Backend.Notice" = "SuperGram будет использовать %@, если выбранный сервис перевода недоступен.";
+
+"Settings.Transcription.Header" = "ГОЛОС В ТЕКСТ";
+"Settings.Transcription.Backend" = "Сервис";
+/* Do not translate */
+"Settings.Transcription.Backend.default" = "Telegram";
+/* Do not translate */
+"Settings.Transcription.Backend.apple" = "Apple";
+"Settings.Transcription.Backend.Notice" = "SuperGram будет использовать %@, если выбранный сервис транскрипции недоступен.";
+
+"Stories.Warning.Author" = "Автор";
+"Stories.Warning.ViewStory" = "Просмотреть историю?";
+/* Author will be able to see that you viewed their Story */
+"Stories.Warning.Notice" = "%@ СМОЖЕТ УВИДЕТЬ, что вы просмотрели историю.";
+"Stories.Warning.NoticeStealth" = "%@ не сможет увидеть, что вы просмотрели историю.";
+
+"Settings.Photo.Quality.Notice" = "Качество исходящих фото и фото-историй";
+"Settings.Photo.SendLarge" = "Отправлять большие фото";
+"Settings.Photo.SendLarge.Notice" = "Увеличить лимит сторон для сжатых фото до 2560пкс";
+
+"Settings.VideoNotes.Header" = "КРУГЛЫЕ ВИДЕО";
+"Settings.VideoNotes.StartWithRearCam" = "На заднюю камеру";
+
+"Settings.CustomColors.Header" = "ПЕРСОНАЛЬНЫЕ ЦВЕТА";
+"Settings.CustomColors.Saturation" = "НАСЫЩЕННОСТЬ";
+/* Make sure to escape Percentage sign % */
+"Settings.CustomColors.Saturation.Notice" = "Установите насыщенность на 0%%, чтобы отключить персональные цвета";
+
+"Settings.UploadsBoost" = "Ускорение загрузки";
+"Settings.DownloadsBoost" = "Ускорение скачивания";
+"Settings.DownloadsBoost.Notice" = "Увеличивает количество параллельных соединений и размер частей файлов. Если ваша сеть не может справиться с нагрузкой, попробуйте разные опции, которые подойдут для вашего соединения.";
+"Settings.DownloadsBoost.none" = "Выключено";
+"Settings.DownloadsBoost.medium" = "Средне";
+"Settings.DownloadsBoost.maximum" = "Максимум";
+
+"Settings.ShowProfileID" = "ID профилей";
+"Settings.ShowDC" = "Показать дата-центр (DC)";
+"Settings.ShowCreationDate" = "Показать дату создания чата";
+"Settings.ShowCreationDate.Notice" = "Дата создания может быть неизвестна для некоторых чатов.";
+
+"Settings.ShowRegDate" = "Показать дату регистрации";
+"Settings.ShowRegDate.Notice" = "Дата регистрации приблизительная.";
+
+"Settings.SendWithReturnKey" = "Отправка кнопкой \"Ввод\"";
+"Settings.HidePhoneInSettingsUI" = "Скрыть номер";
+"Settings.HidePhoneInSettingsUI.Notice" = "Ваш номер будет скрыт только в интерфейсе настроек. Используйте настройки Конфиденциальности, чтобы скрыть его от других.";
+
+"PasscodeSettings.AutoLock.InFiveSeconds" = "Через 5 секунд";
+
+"ProxySettings.UseSystemDNS" = "Системный DNS";
+"ProxySettings.UseSystemDNS.Notice" = "Используйте системный DNS, чтобы избежать задержки, если у вас нет доступа к DNS Google";
+
+/* Preserve markdown asterisks! Example: You **don't** need Telegram Premium! */
+"Common.NoTelegramPremiumNeeded" = "Вам **не нужен** %@!";
+"Common.RestartRequired" = "Необходим перезапуск";
+"Common.RestartNow" = "Перезапустить Сейчас";
+"Common.OpenTelegram" = "Открыть Telegram";
+"Common.UseTelegramForPremium" = "Обратите внимание, что для получения Telegram Premium, вы должны использовать официальное приложение Telegram. Как только вы получите Telegram Premium, все его функции станут доступны в SuperGram.";
+"Common.UpdateOS" = "Требуется обновление iOS";
+"Common.KnowWhatYouDo" = "Пожалуйста, меняйте эти настройки только если вы знаете, что они делают.";
+
+"Message.HoldToShowOrReport" = "Удерживайте для Показа или Жалобы.";
+
+"Auth.AccountBackupReminder" = "Убедитесь, что у вас есть запасной вариант входа: Активная SIM-карта или дополнительная сессия, чтобы не потерять доступ к аккаунту.";
+"Auth.UnofficialAppCodeTitle" = "Вы можете получить код только в официальном приложении";
+
+"Settings.SmallReactions" = "Маленькие реакции";
+"Settings.HideReactions" = "Скрыть реакции";
+
+"ContextMenu.SaveToCloud" = "Сохранить в Избранное";
+"ContextMenu.SelectFromUser" = "Выбрать от Автора";
+
+"Settings.ContextMenu" = "КОНТЕКСТНОЕ МЕНЮ";
+"Settings.ContextMenu.Notice" = "Выключенные пункты будут доступны в подменю «SuperGram».";
+
+
+"Settings.ChatSwipeOptions" = "Опции чатов при свайпе";
+"Settings.DeleteChatSwipeOption" = "Свайп для удаления чата";
+/* Re-word like this string on offical app https://translations.telegram.org/en/ios/groups_and_channels/Chat.NextChannelSameLocationSwipeProgress */
+"Settings.PullToNextChannel" = "Свайп между каналами";
+/* Re-word like this string on offical app https://translations.telegram.org/en/ios/groups_and_channels/Chat.NextUnreadTopicSwipeProgress */
+"Settings.PullToNextTopic" = "Свайп между топиками";
+"Settings.GalleryCamera" = "Камера в галерее";
+"Settings.GalleryCameraPreview" = "Превью камеры в галерее";
+/* "Send Message As..." button */
+"Settings.SendAsButton" = "Кнопка \"%@\"";
+"Settings.SnapDeletionEffect" = "Эффекты удаления сообщений";
+
+"Settings.Stickers.Size" = "РАЗМЕР";
+"Settings.Stickers.Timestamp" = "Показывать время";
+
+"Settings.RecordingButton" = "Кнопка записи голоса";
+
+"Settings.DefaultEmojisFirst" = "Сначала стандартные смайлы";
+"Settings.DefaultEmojisFirst.Notice" = "Показывать стандартные эмодзи перед Premium в эмодзи-клавиатуре";
+
+/* Date when chat was created. "created: 24 May 2016" */
+"Chat.Created" = "создан: %@";
+
+/* Date when user joined the chat. "Joined SuperGram Chat" */
+"Chat.JoinedDateTitle" = "Присоединился к %@";
+/* Date when user registered in Telegram. Will be shown like "Registered\n24 May 2016" */
+"Chat.RegDate" = "Дата регистрации";
+
+"Settings.messageDoubleTapActionOutgoingEdit" = "Редактирование двойным тапом";
+
+"Settings.wideChannelPosts" = "Широкие посты в каналах";
+"Settings.ForceEmojiTab" = "Сначала вкладка смайлов";
+
+"Settings.forceBuiltInMic" = "Микрофон устройства";
+"Settings.forceBuiltInMic.Notice" = "Если включено, то приложение будет использовать только встроенный микрофон устройства, даже если подключены наушники.";
+
+"Settings.showChannelBottomButton" = "Нижняя панель канала";
+
+"Settings.secondsInMessages" = "Секунды в Сообщениях";
+
+"Settings.CallConfirmation" = "Подтверждение вызова";
+"Settings.CallConfirmation.Notice" = "SuperGram запросит подтверждение перед совершением звонка.";
+
+/* Confirmation before making a Call */
+"CallConfirmation.Audio.Title" = "Позвонить?";
+
+/* Confirmation before making a Video Call */
+"CallConfirmation.Video.Title" = "Позвонить с видео?";
+
+"MutualContact.Label" = "взаимный контакт";
+
+"Settings.swipeForVideoPIP" = "Видео PIP свайпом";
+"Settings.swipeForVideoPIP.Notice" = "Если включено, свайп видео откроет его в режиме «Картинка в картинке».";
+
+
+/* MARK: SuperGram settings screen */
+"SuperGram.Media.Header" = "МЕДИА И СТРИМИНГ";
+"SuperGram.Media.StreamAllVideos" = "Потоковое воспроизведение видео";
+"SuperGram.Media.StreamAllVideos.Notice" = "Любое видео начинает воспроизводиться во время загрузки, даже если оно отправлено без поддержки стриминга. Секретные чаты не затрагиваются.";
+"SuperGram.Media.PreferDownloadedOriginal" = "Предпочитать скачанный оригинал";
+"SuperGram.Media.PreferDownloadedOriginal.Notice" = "Воспроизводить уже скачанный (или частично скачанный) оригинал вместо переключения на адаптивное качество HLS.";
+"SuperGram.Media.InlineAutoplayVideos" = "Автовоспроизведение видео в чатах";
+"SuperGram.Media.InlineAutoplayVideos.Notice" = "Автоматически воспроизводить видео и GIF в списке сообщений. Одновременно играют только несколько ближайших к центру экрана, а при нагреве устройства — ещё меньше. Если выключить, экономятся память, трафик и батарея.";
+
+"SuperGram.Downloads.Header" = "ЗАГРУЗКИ";
+"SuperGram.Downloads.Speed" = "Скорость загрузки";
+"SuperGram.Downloads.Speed.Standard" = "Стандартная";
+"SuperGram.Downloads.Speed.Fast" = "Быстрая";
+"SuperGram.Downloads.Speed.Maximum" = "Максимальная";
+"SuperGram.Downloads.Background" = "Загружать в фоне";
+"SuperGram.Downloads.Speed.Notice" = "Быстрая и максимальная скорость используют более крупные части и больше параллельных запросов для файлов, которые вы скачиваете, и видео, которые смотрите. Максимальная расходует больше памяти и батареи. С загрузкой в фоне файлы докачиваются после сворачивания приложения.";
+"SuperGram.Downloads.Limiter" = "Ограничивать параллельные загрузки";
+"SuperGram.Downloads.Limiter.Notice" = "Приложение не тормозит, когда одновременно скачивается много больших файлов. То, что вы смотрите или открыли сами, всегда загружается первым.";
+"SuperGram.Downloads.PauseUnderPressure" = "Пауза при нагрузке на устройство";
+"SuperGram.Downloads.PauseUnderPressure.Notice" = "Фоновые загрузки и предзагрузка приостанавливаются, когда мало памяти, устройство перегревается или включён режим энергосбережения.";
+
+"SuperGram.Downloads.Diagnostics" = "Диагностика загрузок";
+"SuperGram.Downloads.Diagnostics.RowNotice" = "Показывает, чем занят загрузчик прямо сейчас. Откройте, если медиа не грузится, и пришлите нам отчёт.";
+"SuperGram.Downloads.Diagnostics.Notice" = "Обновляется раз в секунду, пока экран открыт, и останавливается, как только вы с него уходите.";
+"SuperGram.Downloads.Diagnostics.State" = "СОСТОЯНИЕ";
+"SuperGram.Downloads.Diagnostics.Pressure" = "Нагрузка на загрузки";
+"SuperGram.Downloads.Diagnostics.Thermal" = "Нагрев устройства";
+"SuperGram.Downloads.Diagnostics.LowPower" = "Режим энергосбережения";
+"SuperGram.Downloads.Diagnostics.Memory" = "Нехватка памяти";
+"SuperGram.Downloads.Diagnostics.Memory.Inferred" = "вероятно (по косвенным признакам)";
+"SuperGram.Downloads.Diagnostics.SpeedMode" = "Скорость загрузки";
+"SuperGram.Downloads.Diagnostics.Limiter" = "Ограничитель параллельных";
+"SuperGram.Downloads.Diagnostics.Budget" = "БЮДЖЕТ ЗАГРУЗОК";
+"SuperGram.Downloads.Diagnostics.Budget.Interactive" = "Части для вас";
+"SuperGram.Downloads.Diagnostics.Budget.Background" = "Части в фоне";
+"SuperGram.Downloads.Diagnostics.Budget.Waiters" = "Ждут свободного слота";
+"SuperGram.Downloads.Diagnostics.FetchManager" = "ОЧЕРЕДЬ ЗАГРУЗОК";
+"SuperGram.Downloads.Diagnostics.FetchManager.Categories" = "Активные / в очереди по типам";
+"SuperGram.Downloads.Diagnostics.FetchManager.Entries" = "Загрузки, начатые вами";
+"SuperGram.Downloads.Diagnostics.Fetches" = "МЕДИА В РАБОТЕ";
+"SuperGram.Downloads.Diagnostics.Fetches.Empty" = "Ничего не загружается";
+"SuperGram.Downloads.Diagnostics.Fetch.Parts" = "частей";
+"SuperGram.Downloads.Diagnostics.Fetch.Waiting" = "ждёт слот";
+"SuperGram.Downloads.Diagnostics.Fetch.NoProgress" = "без движения";
+"SuperGram.Downloads.Diagnostics.Stalled" = "ЗАВИСЛО";
+"SuperGram.Downloads.Diagnostics.Unavailable" = "нет данных в этой сборке";
+"SuperGram.Downloads.Diagnostics.On" = "вкл";
+"SuperGram.Downloads.Diagnostics.Off" = "выкл";
+"SuperGram.Downloads.Diagnostics.Copy" = "Скопировать отчёт";
+"SuperGram.Downloads.Diagnostics.Copied" = "Отчёт скопирован";
+"SuperGram.Downloads.Diagnostics.Reset" = "Сбросить зависшие загрузки";
+"SuperGram.Downloads.Diagnostics.Reset.Notice" = "Сбрасывает все загрузки, которые не двигаются больше минуты. Уже скачанное не теряется, и большинство загрузок продолжатся сами — если какая-то не продолжилась, пролистайте от её сообщения и обратно.";
+"SuperGram.Downloads.Diagnostics.Reset.None" = "Зависших загрузок нет";
+"SuperGram.Downloads.Diagnostics.Reset.Done" = "Сброшено загрузок: %@";
+
+"SuperGram.Transcription.Header" = "РАСШИФРОВКА ГОЛОСОВЫХ";
+"SuperGram.Transcription.Local" = "Бесплатная расшифровка голосовых";
+"SuperGram.Transcription.ShowButton" = "Показывать кнопку расшифровки";
+"SuperGram.Transcription.OnDeviceOnly" = "Только офлайн (менее точно)";
+"SuperGram.Transcription.Language" = "Язык голосовых";
+"SuperGram.Transcription.Notice" = "Голосовые сообщения и кружки распознаются средствами iOS, результат хранится только на этом устройстве. Telegram Premium не нужен. Если выключить «Только офлайн», iOS может использовать онлайн-сервис Apple. «Только офлайн» также включает расшифровку в секретных чатах — там звук не должен покидать устройство, поэтому самоуничтожающиеся и одноразовые сообщения не расшифровываются никогда.";
+"SuperGram.Transcription.Language.auto" = "Автоматически";
+"SuperGram.Transcription.Language.ru-RU" = "Русский";
+"SuperGram.Transcription.Language.en-US" = "Английский";
+"SuperGram.Transcription.Language.kk-KZ" = "Казахский";
+"SuperGram.Transcription.Language.uk-UA" = "Украинский";
+"SuperGram.Transcription.Language.de-DE" = "Немецкий";
+"SuperGram.Transcription.Language.es-ES" = "Испанский";
+
+"SuperGram.ProtectedContent.Header" = "ЗАЩИЩЁННЫЙ КОНТЕНТ";
+"SuperGram.ProtectedContent.AllowSave" = "Разрешить сохранение и копирование";
+"SuperGram.ProtectedContent.AllowScreenCapture" = "Разрешить скриншоты";
+"SuperGram.ProtectedContent.Notice" = "Действует в каналах, группах, личных чатах и историях, где запрещено сохранение, включая отправку документов в другие приложения и автосохранение медиа в Фото. Секретные чаты и одноразовые медиа всегда остаются защищёнными. Пересылка по-прежнему ограничена Telegram. Изменение скриншотов применяется к экранам, открытым после переключения.";
+"SuperGram.ProtectedContent.StoryHD" = "HD-истории без Premium";
+"SuperGram.ProtectedContent.StoryHD.Notice" = "Воспроизводить истории в лучшем доступном качестве.";
+
+"SuperGram.Sending.Header" = "ОТПРАВКА";
+"SuperGram.Sending.TelescopeButton" = "Отправка видео кружком";
+"SuperGram.Sending.TelescopeButton.Notice" = "Добавляет в редактор медиа кнопку, которая отправляет видео из галереи как видеосообщение-кружок (до 60 секунд). «На заднюю камеру» открывает камеру кружков на задней камере вместо фронтальной.";
+
+/* W2-CONTEXT */
+"SuperGram.Context.SelectionBar.Header" = "ПАНЕЛЬ ВЫДЕЛЕНИЯ";
+"SuperGram.Context.SelectionBar.SaveToCloud" = "Кнопка «Сохранить в Избранное»";
+"SuperGram.Context.SelectionBar.ForwardHideNames" = "Кнопка «Переслать без имён»";
+"SuperGram.Context.SelectionBar.Notice" = "Дополнительные кнопки на панели, которая появляется при выделении сообщений. Обе пересылают сообщения, поэтому недоступны там, где пересылка запрещена.";
+"SuperGram.Context.MessageJson" = "JSON сообщения";
+"SuperGram.Context.MessageJson.Notice" = "Добавляет в меню сообщения пункт JSON с исходными данными сообщения. Для отладки.";
+
+/* W2-CHATUI-HISTORY */
+"SuperGram.ChatUI.History.Header" = "СООБЩЕНИЯ";
+"SuperGram.ChatUI.History.ShareButton" = "Кнопка репоста у сообщений";
+"SuperGram.ChatUI.History.Appearance.Notice" = "«Скрыть реакции» убирает кнопки реакций под сообщениями. Широкие посты занимают всю ширину экрана в каналах. Кнопка репоста у сообщений выключена по умолчанию: она находится прямо под пальцем, и по ней легко попасть случайно. Изменения применяются к чатам, открытым после этого.";
+"SuperGram.ChatUI.History.Effects.Notice" = "Отключение эффекта удаления и перехода к следующему непрочитанному каналу или топику свайпом экономит батарею и защищает от случайных переходов.";
+"SuperGram.ChatUI.History.DoubleTapOutgoing" = "Двойной тап по своему сообщению";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Reaction" = "Быстрая реакция";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Edit" = "Редактирование";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.None" = "Ничего";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Notice" = "В режиме «Редактирование» двойной тап открывает ваше сообщение для правки. На сообщения, которые нельзя изменить, ставится быстрая реакция.";
+"SuperGram.ChatUI.History.MessageFilter" = "Фильтр сообщений";
+"SuperGram.ChatUI.History.MessageFilter.Off" = "Выкл.";
+"SuperGram.ChatUI.History.MessageFilter.Notice" = "Входящие сообщения, содержащие одно из слов фильтра, затемняются. Ничего не скрывается и не удаляется.";
+"SuperGram.ChatUI.History.MessageFilter.Placeholder" = "Одно слово или фраза на строку";
+"SuperGram.ChatUI.History.MessageFilter.EditorNotice" = "Введите по одному слову или фразе на строку. Регистр букв не учитывается. Изменения применяются к сообщениям, показанным после сохранения.";
+
+"SuperGram.App.Header" = "ПРИЛОЖЕНИЕ";
+"SuperGram.App.BackgroundKeepAlive" = "Соединение в фоне";
+"SuperGram.App.BackgroundKeepAlive.Notice" = "Использует беззвучную аудиодорожку, чтобы получать сообщения и показывать локальные уведомления в фоне. Останавливается после периода без новых сообщений или доступа к сети, в том числе при зарядке. Энергосбережение или сильный нагрев сокращает время простоя; при критическом нагреве этот резервный режим уведомлений приостанавливается. Активные скачивания, аудио и звонки используют отдельное управление фоновой работой. Это может увеличивать расход батареи. iOS всё равно может приостановить приложение, поэтому этот режим не заменяет push-уведомления.";
+"SuperGram.App.PerformanceMode" = "Режим производительности";
+"SuperGram.App.PlayVideoInBackground" = "Видео в фоне";
+"SuperGram.App.PerformanceMode.Notice" = "Режим производительности отключает зацикленные анимированные эмодзи и эффекты прозрачности для экономии батареи.";
+"SuperGram.App.DisableReadMetrics" = "Не отправлять статистику чтения";
+"SuperGram.App.DisableReadMetrics.Notice" = "Каналы получают статистику о том, сколько времени просматриваются посты. Если включено, SuperGram её не отправляет.";
+"SuperGram.App.Diagnostics.Header" = "ДИАГНОСТИКА";
+"SuperGram.App.FileLogging" = "Сохранять логи приложения";
+"SuperGram.App.NetworkLogging" = "Сетевые логи";
+"SuperGram.App.Logging.Notice" = "Логи помогают диагностировать проблемы, но занимают место и расходуют батарею. Изменения применяются после перезапуска.";
+
+/* W2-GHOST */
+"SuperGram.Ghost.Header" = "РЕЖИМ ПРИЗРАКА";
+"SuperGram.Ghost.SkipReadReceipts" = "Не отправлять прочтения";
+"SuperGram.Ghost.SkipReadReceipts.Notice" = "Открытые сообщения остаются непрочитанными для отправителя и в вашем списке чатов, воспроизведённые голосовые и кружки — непрослушанными, реакции — непросмотренными. Ответ, реакция или «Пометить прочитанным» по-прежнему выдают вас. Секретные чаты и самоуничтожающиеся медиа не затрагиваются.";
+"SuperGram.Ghost.StoryGhostMode" = "Призрачный просмотр историй";
+"SuperGram.Ghost.StoryGhostMode.Notice" = "Просмотренные истории отмечаются только на этом устройстве, автор не получает ваш просмотр. Если позже с выключенной опцией посмотреть более новую историю того же человека, прежние просмотры тоже будут отправлены. Реакции и ответы выдают вас.";
+"SuperGram.Ghost.Stories.Header" = "ИСТОРИИ";
+"SuperGram.Ghost.RepostToStory" = "«Репост в историю» в меню «Поделиться»";
+"SuperGram.Ghost.WarnOnStoriesOpen.Notice" = "«Спросить перед просмотром» показывает подтверждение перед воспроизведением чужой истории, чтобы просмотр не отправился случайно. «Репост в историю» добавляет строку истории в меню «Поделиться»; выключите её, чтобы случайно не опубликовать свою историю.";
+"SuperGram.Ghost.ShowJoinedDate" = "Показать дату вступления";
+"SuperGram.Ghost.Profiles.Notice" = "Нажмите на ID, чтобы скопировать его. Для даты создания каналов и групп и даты вступления участника в группу, из которой открыт профиль, нужен один дополнительный запрос при открытии профиля; дата вступления запрашивается заново при каждом открытии, поэтому по умолчанию она выключена. Дата регистрации приблизительная и известна не для всех пользователей.";
+"SuperGram.Ghost.Calls.Header" = "ЗВОНКИ";
+
+/* W2-TRANSLATE */
+"SuperGram.Translate.Header" = "ПЕРЕВОД";
+"SuperGram.Translate.ChatsWithoutPremium" = "Перевод чатов без Premium";
+"SuperGram.Translate.Service" = "Сервис перевода";
+"SuperGram.Translate.Service.Telegram" = "Telegram";
+"SuperGram.Translate.Service.OnDevice" = "На устройстве";
+"SuperGram.Translate.Notice" = "Чаты переводит Telegram. Для аккаунтов без Premium сервер может отказать в переводе целого чата — SuperGram сообщит об этом. Сообщения никогда не отправляются в Google или другие сторонние сервисы.";
+"SuperGram.Translate.Notice.OnDevice" = "Telegram переводит на своих серверах и может отказать в переводе целого чата для аккаунтов без Premium. «На устройстве» использует Apple Translation на этом iPhone (языки может потребоваться скачать). Сообщения никогда не отправляются в Google или другие сторонние сервисы.";
+"SuperGram.Translate.QuickTranslateButton" = "Кнопка быстрого перевода";
+"SuperGram.Translate.OutgoingTranslation" = "Перевод перед отправкой";
+"SuperGram.Translate.Messages.Notice" = "Кнопка быстрого перевода появляется рядом с входящими сообщениями на других языках. «Перевод перед отправкой» добавляет пункт «Перевести на…» в меню, которое открывается долгим нажатием на кнопку отправки.";
+"SuperGram.Translate.OnDeviceMenuItem" = "Переводить на устройстве";
+"SuperGram.Translate.Failure.Server" = "Telegram не смог перевести этот чат. Попробуйте позже.";
+"SuperGram.Translate.Failure.ServerNonPremium" = "Telegram отказал в переводе этого чата. Перевод целых чатов может быть доступен только аккаунтам с Premium.";
+"SuperGram.Translate.Failure.ServerNonPremium.OnDevice" = "Telegram отказал в переводе этого чата. Перевод целых чатов может быть доступен только аккаунтам с Premium. Можно переводить на этом iPhone.";
+"SuperGram.Translate.Failure.Unavailable" = "Перевод Telegram недоступен для вашего аккаунта или региона.";
+"SuperGram.Translate.Failure.Unavailable.OnDevice" = "Перевод Telegram недоступен для вашего аккаунта или региона. Можно переводить на этом iPhone.";
+"SuperGram.Translate.Failure.LimitExceeded" = "Слишком много запросов на перевод. Попробуйте через несколько минут.";
+"SuperGram.Translate.Failure.OnDevice" = "Не удалось перевести на устройстве. Язык может не поддерживаться, или его загрузка была отменена.";
+"SuperGram.Translate.Failure.UseOnDevice" = "На устройстве";
+"SuperGram.Translate.Failure.Outgoing" = "Не удалось перевести сообщение.";
+"SuperGram.Translate.Failure.TextTooLong" = "Сообщение слишком длинное для перевода.";
+
+/* W2-CHATLIST */
+"SuperGram.ChatList.HideTabBar.Notice" = "Когда панель вкладок скрыта, Настройки открываются кнопкой в правом верхнем углу списка чатов. Панель вкладок появляется во время редактирования списка чатов.";
+"SuperGram.ChatList.HideStories.Notice" = "«Скрыть истории» убирает истории над списком чатов и кнопку новой истории, а также отключает предзагрузку медиа историй.";
+
+/* W2-NET */
+"SuperGram.Network.Browser.Header" = "ССЫЛКИ";
+"SuperGram.Network.InAppSafari" = "Открывать ссылки во встроенном Safari";
+"SuperGram.Network.InAppSafari.Notice" = "Ссылки, которые открылись бы во внешнем браузере, открываются в окне Safari внутри SuperGram — с вашими куки и настройками Режима чтения. Ссылки, которые и так открываются во встроенном браузере Telegram, не затрагиваются.";
+"SuperGram.Network.Photo.Header" = "КАЧЕСТВО ОТПРАВЛЯЕМЫХ ФОТО";
+"SuperGram.Network.Camera.Header" = "МЕНЮ ВЛОЖЕНИЙ";
+"SuperGram.Network.Camera.Notice" = "Живая плитка камеры в меню вложений держит сессию захвата всё время, пока меню открыто. Отключение плитки — или только её превью — экономит батарею при долгой работе.";
+"SuperGram.Network.Connection.Header" = "СОЕДИНЕНИЕ";
+"SuperGram.Network.Storage.Header" = "ХРАНИЛИЩЕ";
+"SuperGram.Network.CachePresets" = "Агрессивные пресеты кэша";
+"SuperGram.Network.CachePresets.Notice" = "Добавляет лимит кэша 1 ГБ и вариант «Хранить медиа: 1 час» в «Данные и память». Это только варианты, сами по себе они не применяются. Если их выбрать, частично скачанные видео удаляются, и начатое видео может начаться заново. Требуется перезапуск.";
+"SuperGram.Network.Other.Header" = "ПРОЧЕЕ";
+"SuperGram.Network.MusicRateButton" = "Скорость для всей музыки";
+"SuperGram.Network.MutePresets" = "Больше вариантов отключения звука";
+"SuperGram.Network.SessionIP" = "Показывать IP активных сессий";
+"SuperGram.Network.SessionIP.Notice" = "«Скорость для всей музыки» показывает кнопку скорости в плеере и для коротких треков. «Больше вариантов отключения звука» добавляет 4 часа, 8 часов и 1 день. «Показывать IP активных сессий» выводит IP-адрес ваших сессий Telegram, который Telegram обычно скрывает.";
+
+/* W2-CHATUI-INPUT */
+"SuperGram.ChatUI.Input.Header" = "ПАНЕЛЬ ВВОДА";
+"SuperGram.ChatUI.Input.RecordingTooltip" = "Подсказка «Удерживайте для записи»";
+"SuperGram.ChatUI.Input.Buttons.Notice" = "Без кнопки записи голоса кнопка отправки видна всегда, но голосовые сообщения и видеосообщения из чата записать уже нельзя. Остальные переключатели только скрывают кнопки.";
+"SuperGram.ChatUI.Input.SendWithReturnKey.Notice" = "Кнопка «Ввод» на клавиатуре отправляет сообщение и больше не переносит строку. Включите «Панель форматирования» ниже, чтобы получить кнопку переноса строки. Действует в чатах, открытых после изменения.";
+"SuperGram.ChatUI.Input.Toolbar" = "Панель форматирования";
+"SuperGram.ChatUI.Input.Toolbar.Notice" = "Ряд кнопок форматирования над клавиатурой: жирный, курсив, подчёркивание, зачёркивание, моноширинный, блок кода, цитата, спойлер, ссылка, дата и перенос строки. Если ничего не выделено, кнопка форматирует слово перед курсором. Действует в чатах, открытых после изменения.";
+"SuperGram.ChatUI.Input.ChannelPanel.Notice" = "Нижняя панель канала содержит «Подписаться», «Выключить звук» и «Включить звук». Её отключение даёт больше места для чтения в каналах, на которые вы уже подписаны; при поиске и выделении сообщений панель остаётся.";
+"SuperGram.ChatUI.Input.Keyboard.Header" = "КЛАВИАТУРА СМАЙЛОВ";
+"SuperGram.ChatUI.Input.Keyboard.Notice" = "«Сначала вкладка смайлов» всегда открывает медиаклавиатуру на смайлах и убирает кнопку стикеров из панели ввода. «Сначала стандартные смайлы» ставит обычный набор смайлов перед пользовательскими и премиум-наборами.";
+"SuperGram.ChatUI.Input.Stickers.Header" = "СТИКЕРЫ";
+/* Make sure to escape Percentage sign %% */
+"SuperGram.ChatUI.Input.Stickers.Notice" = "Размер масштабирует стикеры, анимированные эмодзи и кубики в чате — вплоть до 20%% от обычного размера. «Показывать время» рисует время и статус доставки поверх стикера.";
+
+/* SuperGram: chat history */
+"SuperGram.History.Title" = "История";
+"SuperGram.History.Empty" = "Здесь появятся чаты и каналы, которые вы открывали, — чтобы вернуться в них ровно туда, где остановились.";
+"SuperGram.History.Footer" = "Нажмите на чат, чтобы открыть его на том месте, где вы остановились. Смахните влево, чтобы убрать из истории.";
+"SuperGram.History.Clear" = "Очистить";
+"SuperGram.History.ClearTitle" = "Очистить историю";
+"SuperGram.History.ClearText" = "Убрать все чаты из истории? Сами чаты не изменятся.";
+"SuperGram.History.Remove" = "Убрать";
+"SuperGram.History.JustNow" = "только что";
+"SuperGram.History.PositionSaved" = "место сохранено";
+"SuperGram.History.ShowAll" = "Показать всё";
+"SuperGram.History.Setting" = "Кнопка «История» в списке чатов";
+"SuperGram.History.Setting.Notice" = "Заменяет кнопки новой истории и нового сообщения: «Изменить» переезжает направо, а слева появляется «История» — недавно открытые чаты, которые открываются на том месте, где вы остановились. Долгое нажатие — последние чаты.";
+"SuperGram.Navigation.KeepStack" = "Не сбрасывать цепочку экранов";
+"SuperGram.Navigation.KeepStack.Notice" = "Чат, открытый из канала, комментариев или профиля, открывается поверх, а не выкидывает в список чатов, — «Назад» возвращает по шагам. Хранятся 12 последних экранов.";
+"SuperGram.ChatUI.DoubleTapSelectsText" = "Двойной тап выделяет текст";
+"SuperGram.ChatUI.DoubleTapSelectsText.Notice" = "Двойной тап по сообщению выделяет слово под пальцем — можно сразу скопировать или процитировать. Реакции — по долгому нажатию.";

@@ -61,6 +61,8 @@ swift_library(
         "//submodules/TelegramUI/Components/EmojiTextAttachmentView",
         "//submodules/TelegramUI/Components/PeerInfo/CollectionTabItemComponent",
         "//submodules/TelegramUI/Components/EdgeEffect",
+        "//submodules/SaveToCameraRoll",
+        "//submodules/TelegramUI/Components/SaveProgressScreen",
     ],
     visibility = [
         "//visibility:public",

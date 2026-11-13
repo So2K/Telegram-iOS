@@ -950,7 +950,9 @@ public class VideoMessageCameraScreen: ViewController {
             self.previewContainerView.addSubview(self.previewContainerContentView)
                         
             let isDualCameraEnabled = Camera.isDualCameraSupported(forRoundVideo: true)
-            let isFrontPosition = "".isEmpty
+            // MARK: Swiftgram
+            // SuperGram: Swiftgram key read directly from UserDefaults (default false)
+            let isFrontPosition = !(UserDefaults.standard.object(forKey: "startTelescopeWithRearCam") as? Bool ?? false)
             
             self.mainPreviewView = CameraSimplePreviewView(frame: .zero, main: true, roundVideo: true)
             self.additionalPreviewView = CameraSimplePreviewView(frame: .zero, main: false, roundVideo: true)

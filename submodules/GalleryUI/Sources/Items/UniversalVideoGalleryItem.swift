@@ -169,6 +169,7 @@ public class UniversalVideoGalleryItem: GalleryItem {
 
 private let pictureInPictureImage = UIImage(bundleImageName: "Media Gallery/PictureInPictureIcon")?.precomposed()
 private let pictureInPictureButtonImage = generateTintedImage(image: UIImage(bundleImageName: "Media Gallery/PictureInPictureButton"), color: .white)
+private let superGramPictureInPictureEnabled = false
 private let moreButtonImage = generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/More"), color: .white)
 
 private let placeholderFont = Font.regular(16.0)
@@ -248,7 +249,16 @@ private final class UniversalVideoGalleryItemOverlayNode: GalleryOverlayContentN
             return
         }
         self.message = message
-        
+
+        // SuperGram: sponsored content is disabled at the data layer; don't allocate a dead ad context (queue + promise) per opened video
+        guard telegramSponsoredContentEnabled else {
+            self.adContext = nil
+            self.adDisposable.set(nil)
+            self.adState = nil
+            self.adSchedule = []
+            return
+        }
+
         let adContext = context.engine.messages.adMessages(peerId: message.id.peerId, messageId: message.id)
         self.adContext = adContext
         self.adDisposable.set((adContext.state
@@ -950,13 +960,18 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     private var dismissOnOrientationChange = false
     private var keepSoundOnDismiss = false
     private var hasPictureInPicture = false
+    private var isAnimatedVideo = false
     private var displayStickersButton: Bool = false
     private var settingsButtonState: ChatItemGalleryFooterContentNode.SettingsButtonState?
 
     private var pictureInPictureButton: UIBarButtonItem?
     
     private var requiresDownload = false
-    
+    // SuperGram: true while the central status ring is drawn as a cancel cross, so `statusButtonPressed` knows the
+    // button means "stop this download" rather than "play". With sgStreamAllVideos almost every video is considered
+    // streamable (`requiresDownload == false`), which upstream only ever meant "there is nothing to cancel".
+    private var statusRingIsCancel = false
+
     private(set) var item: UniversalVideoGalleryItem?
     private var playbackRate: Double?
     private var videoQuality: UniversalVideoContentVideoQuality = .auto
@@ -1008,7 +1023,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     private var didAutoplayLivePhotoOnce = false
     private var isLivePhotoPlaybackActive = false
     private var isLivePhotoGestureActive = false
-    
+    private var didEnterBackgroundObserver: NSObjectProtocol?
+    private var lastSeekRequest: (timestamp: Double, requestTime: Double, seekId: Int)?
+
     init(context: AccountContext, presentationData: PresentationData, performAction: @escaping (GalleryControllerInteractionTapAction) -> Void, openActionOptions: @escaping (GalleryControllerInteractionTapAction, Message) -> Void, present: @escaping (ViewController, Any?) -> Void) {
         self.context = context
         self.presentationData = presentationData
@@ -1033,6 +1050,10 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
         self.moreBarButton.setContent(.more(optionsCircleImage(dark: false)))
         
         super.init()
+
+        self.didEnterBackgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main, using: { [weak self] _ in
+            self?.pauseVideoForBackgroundIfNeeded()
+        })
 
         self.clipsToBounds = true
         
@@ -1078,28 +1099,10 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
             }
         }
         self.footerContentNode.seekBackward = { [weak self] delta in
-            if let strongSelf = self, let videoNode = strongSelf.videoNode {
-                let _ = (videoNode.status |> take(1)).start(next: { [weak videoNode] status in
-                    if let strongVideoNode = videoNode, let timestamp = status?.timestamp {
-                        strongVideoNode.seek(max(0.0, timestamp - delta))
-                    }
-                })
-            }
+            let _ = self?.seekVideo(by: -delta)
         }
         self.footerContentNode.seekForward = { [weak self] delta in
-            if let strongSelf = self, let videoNode = strongSelf.videoNode {
-                let _ = (videoNode.status |> take(1)).start(next: { [weak videoNode] status in
-                    if let strongVideoNode = videoNode, let timestamp = status?.timestamp, let duration = status?.duration {
-                        let nextTimestamp = timestamp + delta
-                        if nextTimestamp > duration {
-                            strongVideoNode.seek(0.0)
-                            strongVideoNode.play()
-                        } else {
-                            strongVideoNode.seek(min(duration, timestamp + delta))
-                        }
-                    }
-                })
-            }
+            let _ = self?.seekVideo(by: delta)
         }
         
         self.footerContentNode.setPlayRate = { [weak self] rate in
@@ -1197,6 +1200,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     deinit {
+        if let didEnterBackgroundObserver = self.didEnterBackgroundObserver {
+            NotificationCenter.default.removeObserver(didEnterBackgroundObserver)
+        }
         self.statusDisposable.dispose()
         self.moreButtonStateDisposable.dispose()
         self.mediaPlaybackStateDisposable.dispose()
@@ -1217,6 +1223,91 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
         }
         return false
     }
+
+    override var handlesDoubleTapAtEdges: Bool {
+        return self.canDoubleTapSeek
+    }
+
+    // SuperGram: double-tap seek only when the footer shows playback controls. Animated videos, iframe/platform embeds
+    // (disabled player controls) and not-yet-started or not-downloaded videos get .info/.fetch and keep zoom/edge behavior.
+    // The footer "seekable" flag is only a >= 30 s hint for the seek buttons, so it is not required here.
+    private var canDoubleTapSeek: Bool {
+        if self.isLivePhoto || self.isAnimatedVideo {
+            return false
+        }
+        if case .playback = self.footerContentNode.content {
+            return true
+        }
+        return false
+    }
+
+    private func seekVideo(by delta: Double) -> Bool {
+        guard !self.isAnimatedVideo, let videoNode = self.videoNode, let status = self.playerStatusValue, status.timestamp.isFinite, status.duration.isFinite, status.duration > 0.25 else {
+            return false
+        }
+
+        let currentTime = CACurrentMediaTime()
+        var isPlaying = false
+        switch status.status {
+        case .playing:
+            isPlaying = true
+        case let .buffering(_, whilePlaying, _, _):
+            isPlaying = whilePlaying
+        case .paused:
+            break
+        }
+
+        // SuperGram: the legacy player only emits status on ticks/state changes, so extrapolate the playhead while playing.
+        // Rapid repeated seeks start from the previous target until the player reports a new seek.
+        var currentTimestamp = status.timestamp
+        if let lastSeekRequest = self.lastSeekRequest, lastSeekRequest.seekId == status.seekId, currentTime - lastSeekRequest.requestTime < 1.0 {
+            currentTimestamp = lastSeekRequest.timestamp
+            if isPlaying {
+                currentTimestamp += max(0.0, currentTime - lastSeekRequest.requestTime) * status.baseRate
+            }
+        } else if case .playing = status.status, status.generationTimestamp > 0.0 {
+            currentTimestamp += max(0.0, currentTime - status.generationTimestamp) * status.baseRate
+        }
+        currentTimestamp = min(max(0.0, currentTimestamp), status.duration)
+
+        var targetTimestamp = max(0.0, currentTimestamp + delta)
+        if delta > 0.0 {
+            targetTimestamp = min(targetTimestamp, max(0.0, status.duration - 0.2))
+        }
+        self.lastSeekRequest = (timestamp: targetTimestamp, requestTime: currentTime, seekId: status.seekId)
+        videoNode.seek(targetTimestamp)
+        return true
+    }
+
+    private func pauseVideoForBackgroundIfNeeded() {
+        guard !self.context.sharedContext.currentMediaDisplaySettings.with({ $0.playVideoInBackground }) else {
+            return
+        }
+        // SuperGram: `didPause` is the flag that replaces the fetch footer and hides the status button, so only an
+        // item that was really playing may set it — marking idle neighbour or not-yet-downloaded nodes as paused
+        // broke their footer after any app switch. The pause itself stays unconditional (as upstream): a video that
+        // was started a moment ago and has not emitted its first status yet must not keep playing, with sound, in
+        // the background.
+        var wasPlaying = false
+        if let status = self.playerStatusValue {
+            switch status.status {
+            case .playing:
+                wasPlaying = true
+            case let .buffering(_, whilePlaying, _, _):
+                wasPlaying = whilePlaying
+            case .paused:
+                wasPlaying = false
+            }
+        }
+        if wasPlaying && self.isCentral == true {
+            self.didPause = true
+        }
+        self.resetLivePhotoPlayback()
+        self.videoNode?.pause()
+        if #available(iOS 15.0, *), let nativePictureInPictureContent = self.nativePictureInPictureContent as? NativePictureInPictureContentImpl {
+            nativePictureInPictureContent.stop()
+        }
+    }
     
     override func contentDoubleTapAction(location: CGPoint) -> Bool {
         if case let .message(message, _) = self.item?.contentInfo, let _ = message.adAttribute {
@@ -1224,16 +1315,19 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
             return true
         }
         
-        if case let .playback(_, seekable) = self.footerContentNode.content, seekable {
-            if location.x >= self.bounds.width * 0.3 {
-                self.footerContentNode.seekForward?(15.0)
-            } else {
-                self.footerContentNode.seekBackward?(15.0)
-            }
-            return true
+        if self.isLivePhoto {
+            return false
         }
-        
-        return false
+        guard self.canDoubleTapSeek else {
+            return false
+        }
+
+        let isForward = location.x >= self.bounds.width * 0.5
+        guard self.seekVideo(by: isForward ? 5.0 : -5.0) else {
+            return false
+        }
+        (self.playbackControls.view as? VideoPlaybackControlsComponent.View)?.animateSeekFeedback(isForward: isForward)
+        return true
     }
     
     override func screenFrameUpdated(_ frame: CGRect) {
@@ -1242,7 +1336,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     override func containerLayoutUpdated(_ layout: ContainerViewLayout, navigationBarHeight: CGFloat, transition: ContainedViewLayoutTransition) {
-        if let _ = self.customUnembedWhenPortrait, layout.size.width < layout.size.height {
+        if superGramPictureInPictureEnabled, let _ = self.customUnembedWhenPortrait, layout.size.width < layout.size.height {
             self.expandIntoCustomPiP()
         }
         
@@ -1267,11 +1361,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
         let hideControls = self.item?.hideControls ?? true
         
         var playbackControlsIsPlaying: Bool = false
-        var playbackControlsIsSeekable: Bool = false
         var playbackControlsIsVisible: Bool = false
-        if case let .playback(paused, seekable) = self.footerContentNode.content {
+        if case let .playback(paused, _) = self.footerContentNode.content {
             playbackControlsIsVisible = true
-            playbackControlsIsSeekable = seekable
             playbackControlsIsPlaying = !paused
         }
         if !self.controlsVisibility() || hideControls {
@@ -1282,13 +1374,13 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
             transition: ComponentTransition(transition),
             component: AnyComponent(VideoPlaybackControlsComponent(
                 layoutParams: VideoPlaybackControlsComponent.LayoutParams(
-                    sideButtonSize: 64.0,
-                    centerButtonSize: 92.0,
-                    spacing: 30.0
+                    sideButtonSize: 46.0,
+                    centerButtonSize: 64.0,
+                    spacing: 18.0
                 ),
                 isVisible: playbackControlsIsVisible,
                 isPlaying: playbackControlsIsPlaying,
-                displaySeekControls: playbackControlsIsSeekable,
+                displaySeekControls: false,
                 togglePlayback: { [weak self] in
                     guard let self else {
                         return
@@ -1300,9 +1392,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                         return
                     }
                     if isForward {
-                        self.footerContentNode.seekForward?(15.0)
+                        self.footerContentNode.seekForward?(5.0)
                     } else {
-                        self.footerContentNode.seekBackward?(15.0)
+                        self.footerContentNode.seekBackward?(5.0)
                     }
                 }
             )),
@@ -1465,6 +1557,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                 disablePlayerControls = true
                 forceEnablePiP = true
             } else if let content = item.content as? HLSVideoContent {
+                isAnimated = content.fileReference.media.isAnimated
                 isAdaptive = true
                 
                 if let qualitySet = HLSQualitySet(baseFile: content.fileReference, codecConfiguration: HLSCodecConfiguration(isHardwareAv1Supported: false, isSoftwareAv1Supported: true)), let (quality, playlistFile) = qualitySet.playlistFiles.sorted(by: { $0.key < $1.key }).first, let dataFile = qualitySet.qualityFiles[quality] {
@@ -1510,6 +1603,8 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
             }
             
             let _ = isAdaptive
+            self.isAnimatedVideo = isAnimated
+            self.lastSeekRequest = nil
                
             if let videoNode = self.videoNode {
                 videoNode.canAttachContent = false
@@ -1817,15 +1912,27 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     }
                     
                     var fetching = false
+                    var statusRingIsCancel = false
                     if initialBuffering {
                         if displayProgress {
-                            strongSelf.statusNode.transitionToState(.progress(color: .white, lineWidth: nil, value: nil, cancelEnabled: false, animateRotation: true), animated: false, completion: {})
+                            // SuperGram: with sgStreamAllVideos on, `requiresDownload` is false for practically every
+                            // cloud video, so the determinate ring below is never reached and the user used to get an
+                            // indeterminate spinner with no percentage and nothing to tap. Show the real download
+                            // progress of the file the player is waiting for, with a cancel cross, while it buffers.
+                            // (HLS is excluded: there `fetchStatus` tracks the tiny master playlist, not the rendition
+                            // actually being played, so its progress would be meaningless.)
+                            var bufferingProgress: CGFloat?
+                            if !(item.content is HLSVideoContent), let fetchStatus = fetchStatus, case let .Fetching(_, progress) = fetchStatus, progress > 0.0, progress < 1.0 {
+                                bufferingProgress = CGFloat(progress)
+                                statusRingIsCancel = true
+                            }
+                            strongSelf.statusNode.transitionToState(.progress(color: .white, lineWidth: nil, value: bufferingProgress, cancelEnabled: statusRingIsCancel, animateRotation: true), animated: false, completion: {})
                         } else {
                             strongSelf.statusNode.transitionToState(.none, animated: false, completion: {})
                         }
                     } else {
                         var state: RadialStatusNodeState = .play(.white)
-                        
+
                         if let fetchStatus = fetchStatus {
                             if strongSelf.requiresDownload {
                                 switch fetchStatus {
@@ -1837,6 +1944,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                                             isPaused = true
                                         }
                                         state = .progress(color: .white, lineWidth: nil, value: CGFloat(progress), cancelEnabled: true, animateRotation: true)
+                                        statusRingIsCancel = true
                                     default:
                                         break
                                 }
@@ -1844,7 +1952,8 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                         }
                         strongSelf.statusNode.transitionToState(state, animated: false, completion: {})
                     }
-                    
+                    strongSelf.statusRingIsCancel = statusRingIsCancel
+
                     strongSelf.isPaused = isPaused
                     strongSelf.fetchStatus = fetchStatus
                     
@@ -1907,7 +2016,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                 self.displayStickersButton = true
             }
             
-            if forceEnablePiP || (!isAnimated && !disablePlayerControls && !disablePictureInPicture) {
+            if superGramPictureInPictureEnabled && (forceEnablePiP || (!isAnimated && !disablePlayerControls && !disablePictureInPicture)) {
                 /*let rightBarButtonItem = UIBarButtonItem(image: pictureInPictureButtonImage, style: .plain, target: self, action: #selector(self.pictureInPictureButtonPressed))
                 rightBarButtonItem.accessibilityLabel = self.presentationData.strings.Gallery_VoiceOver_PictureInPicture
                 self.pictureInPictureButton = rightBarButtonItem
@@ -2940,6 +3049,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     override func maybePerformActionForSwipeDismiss() -> Bool {
+        guard superGramPictureInPictureEnabled else {
+            return false
+        }
         if let data = self.context.currentAppConfiguration.with({ $0 }).data {
             if let _ = data["ios_killswitch_disable_swipe_pip"] {
                 return false
@@ -3002,7 +3114,19 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                             videoNode.playOnceWithSound(playAndRecord: false, seek: .none, actionAtEnd: self.actionAtEnd)
                         }
                     case .Fetching:
-                        self.fetchControls?.cancel()
+                        // SuperGram: for streamable content the button normally shows play/buffering, and cancelling
+                        // there would also remove the player's own full-range fetch (stalling playback). Cancel only
+                        // when the ring is actually drawn as a cancel cross — i.e. a pending download, or a streamed
+                        // video stuck buffering, where the cross is the user's only way out. In the streaming case the
+                        // player has to be paused too, otherwise it just re-requests the ranges it was waiting for.
+                        if self.requiresDownload {
+                            self.fetchControls?.cancel()
+                        } else if self.statusRingIsCancel {
+                            videoNode.pause()
+                            self.fetchControls?.cancel()
+                        } else {
+                            videoNode.playOnceWithSound(playAndRecord: false, seek: .none, actionAtEnd: self.actionAtEnd)
+                        }
                 }
             } else {
                 videoNode.playOnceWithSound(playAndRecord: false, seek: .none, actionAtEnd: self.actionAtEnd)
@@ -3097,6 +3221,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     private func setupNativePictureInPicture() {
+        guard superGramPictureInPictureEnabled else {
+            return
+        }
         guard let item = self.item, let videoNode = self.videoNode else {
             return
         }
@@ -3219,6 +3346,9 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     @objc func pictureInPictureButtonPressed() {
+        guard superGramPictureInPictureEnabled else {
+            return
+        }
         if self.nativePictureInPictureContent == nil {
             self.setupNativePictureInPicture()
         }
@@ -3684,7 +3814,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     }
                 }
             } else {
-                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {
+                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile, message.sgGalleryCanSaveContent(peerIsCopyProtected: item.peerIsCopyProtected, isSecret: item.isSecret) && message.paidContent == nil {
                     items.append(.action(ContextMenuActionItem(text: strongSelf.presentationData.strings.Gallery_MenuSaveToGallery, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Download"), color: theme.actionSheet.primaryTextColor) }, action: { c, _ in
                         guard let self else {
                             c?.dismiss(result: .default, completion: nil)
@@ -3692,19 +3822,16 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                         }
                         
                         if let content = item.content as? HLSVideoContent {
-                            guard let videoNode = self.videoNode, let qualityState = videoNode.videoQualityState(), !qualityState.available.isEmpty else {
-                                return
-                            }
-                            if qualityState.available.isEmpty {
-                                return
-                            }
-                            guard let qualitySet = HLSQualitySet(baseFile: content.fileReference, codecConfiguration: HLSCodecConfiguration(context: self.context)) else {
-                                return
-                            }
-                            
+                            // SuperGram: "Original" is always offered, also before the HLS player has reported its qualities
+                            let playerQualities = self.videoNode?.videoQualityState()?.available ?? []
+                            // SuperGram (upstream #2293): playback may pick AV1 variants (software decoder), but Photos cannot import AV1
+                            // on most devices and the save still reported success. Save choices use AV1-free variants only.
+                            let saveQualityFiles = HLSQualitySet(baseFile: content.fileReference, codecConfiguration: HLSCodecConfiguration(isHardwareAv1Supported: false, isSoftwareAv1Supported: false))?.qualityFiles ?? [:]
+                            let availableQualities = playerQualities.isEmpty ? saveQualityFiles.keys.sorted(by: >) : playerQualities
+
                             var allFiles: [FileMediaReference] = []
                             allFiles.append(content.fileReference)
-                            allFiles.append(contentsOf: qualitySet.qualityFiles.values)
+                            allFiles.append(contentsOf: saveQualityFiles.values)
                             
                             let qualitySignals = allFiles.map { file -> Signal<(fileId: MediaId, isCached: Bool), NoError> in
                                 return self.context.engine.resources.status(resource: EngineMediaResource(file.media.resource))
@@ -3788,16 +3915,11 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                                     })))
                                 }
                                 
-                                if self.context.isPremium {
-                                    addItem(nil, content.fileReference)
-                                } else {
-                                    #if DEBUG
-                                    addItem(nil, content.fileReference)
-                                    #endif
-                                }
-                                
-                                for quality in qualityState.available {
-                                    guard let qualityFile = qualitySet.qualityFiles[quality] else {
+                                // SuperGram: saving the original quality is not Premium-gated (client-only gate; upload.getFile has no premium check)
+                                addItem(nil, content.fileReference)
+
+                                for quality in availableQualities {
+                                    guard let qualityFile = saveQualityFiles[quality] else {
                                         continue
                                     }
                                     addItem(quality, qualityFile)
@@ -3858,7 +3980,7 @@ final class UniversalVideoGalleryItemNode: ZoomableContentGalleryItemNode {
                     })))
                 }
                 
-                if let (message, _, _) = strongSelf.contentInfo(), let image = message.effectiveMedia.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {
+                if let (message, _, _) = strongSelf.contentInfo(), let image = message.effectiveMedia.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, message.sgGalleryCanSaveContent(peerIsCopyProtected: item.peerIsCopyProtected, isSecret: item.isSecret) && message.paidContent == nil {
                     let context = strongSelf.context
                     var videoReference: AnyMediaReference?
                     if let video = image.video {

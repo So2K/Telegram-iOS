@@ -72,7 +72,7 @@ public final class SoftwareVideoSource {
     private var avFormatContext: FFMpegAVFormatContext?
     private let path: String
     fileprivate let fd: Int32?
-    fileprivate let size: Int32
+    fileprivate let size: Int64
     
     private let hintVP9: Bool
     private let unpremultiplyAlpha: Bool
@@ -94,7 +94,7 @@ public final class SoftwareVideoSource {
         
         var s = stat()
         stat(path, &s)
-        self.size = Int32(s.st_size)
+        self.size = Int64(s.st_size)
         
         let fd = open(path, O_RDONLY, S_IRUSR)
         if fd >= 0 {
@@ -406,7 +406,7 @@ public final class SoftwareAudioSource {
     private var avFormatContext: FFMpegAVFormatContext?
     private let path: String
     fileprivate let fd: Int32?
-    fileprivate let size: Int32
+    fileprivate let size: Int64
     
     private var hasReadToEnd: Bool = false
     
@@ -419,7 +419,7 @@ public final class SoftwareAudioSource {
         
         var s = stat()
         stat(path, &s)
-        self.size = Int32(s.st_size)
+        self.size = Int64(s.st_size)
         
         let fd = open(path, O_RDONLY, S_IRUSR)
         if fd >= 0 {
@@ -627,7 +627,7 @@ final class SoftwareVideoReader {
     private var avFormatContext: FFMpegAVFormatContext?
     private let path: String
     fileprivate let fd: Int32?
-    fileprivate let size: Int32
+    fileprivate let size: Int64
     
     private var didSendEndToEncoder: Bool = false
     private var hasReadToEnd: Bool = false
@@ -644,7 +644,7 @@ final class SoftwareVideoReader {
         
         var s = stat()
         stat(path, &s)
-        self.size = Int32(s.st_size)
+        self.size = Int64(s.st_size)
         
         let fd = open(path, O_RDONLY, S_IRUSR)
         if fd >= 0 {
@@ -866,9 +866,9 @@ public final class FFMpegMediaInfo {
 
 private final class FFMpegMediaInfoExtractContext {
     let fd: Int32
-    let size: Int
+    let size: Int64
     
-    init(fd: Int32, size: Int) {
+    init(fd: Int32, size: Int64) {
         self.fd = fd
         self.size = size
     }
@@ -907,7 +907,7 @@ public func extractFFMpegMediaInfo(path: String) -> FFMpegMediaInfo? {
     
     var s = stat()
     stat(path, &s)
-    let size = Int32(s.st_size)
+    let size = Int64(s.st_size)
     
     let fd = open(path, O_RDONLY, S_IRUSR)
     if fd < 0 {
@@ -920,7 +920,7 @@ public func extractFFMpegMediaInfo(path: String) -> FFMpegMediaInfo? {
     let avFormatContext = FFMpegAVFormatContext()
     let ioBufferSize = 64 * 1024
     
-    let context = FFMpegMediaInfoExtractContext(fd: fd, size: Int(size))
+    let context = FFMpegMediaInfoExtractContext(fd: fd, size: size)
     
     guard let avIoContext = FFMpegAVIOContext(bufferSize: Int32(ioBufferSize), opaqueContext: Unmanaged.passUnretained(context).toOpaque(), readPacket: FFMpegMediaInfoExtractContextReadPacketCallback, writePacket: nil, seek: FFMpegMediaInfoExtractContextSeekCallback, isSeekable: true) else {
         return nil

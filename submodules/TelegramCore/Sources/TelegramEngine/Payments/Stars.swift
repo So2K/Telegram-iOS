@@ -14,13 +14,13 @@ public struct StarsTopUpOption: Equatable, Codable {
         case amount
         case isExtended
     }
-    
+
     public let count: Int64
     public let storeProductId: String?
     public let currency: String
     public let amount: Int64
     public let isExtended: Bool
-    
+
     public init(count: Int64, storeProductId: String?, currency: String, amount: Int64, isExtended: Bool) {
         self.count = count
         self.storeProductId = storeProductId
@@ -334,6 +334,10 @@ public struct StarsAmount: Equatable, Comparable, Hashable, Codable, CustomStrin
         return StarsAmount(value: lhs.value + rhs.value + overflow, nanos: Int32(remainingNanos))
     }
     
+    public static func +=(lhs: inout StarsAmount, rhs: StarsAmount) {
+        lhs = lhs + rhs
+    }
+
     public static func -(lhs: StarsAmount, rhs: StarsAmount) -> StarsAmount {
         var totalNanos = Int64(lhs.nanos) - Int64(rhs.nanos)
         var totalValue = lhs.value - rhs.value

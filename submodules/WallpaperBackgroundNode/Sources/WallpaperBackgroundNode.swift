@@ -1321,11 +1321,11 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
             if gradientColors.count >= 2 {
                 self.contentNode.backgroundColor = nil
                 let image = generateImage(CGSize(width: 100.0, height: 200.0), rotatedContext: { size, context in
-                    let gradientColors = [UIColor(rgb: gradientColors[0]).cgColor, UIColor(rgb: gradientColors[1]).cgColor] as CFArray
+                    let cfGradientColors = [UIColor(rgb: gradientColors[0]).cgColor, UIColor(rgb: gradientColors[1]).cgColor] as CFArray
 
                     var locations: [CGFloat] = [0.0, 1.0]
                     let colorSpace = CGColorSpaceCreateDeviceRGB()
-                    guard let gradient = CGGradient(colorsSpace: colorSpace, colors: gradientColors, locations: &locations) else {
+                    guard let gradient = CGGradient(colorsSpace: colorSpace, colors: cfGradientColors, locations: &locations) else {
                         context.setFillColor(UIColor(rgb: gradientColors[0]).cgColor)
                         context.fill(CGRect(origin: CGPoint(), size: size))
                         return

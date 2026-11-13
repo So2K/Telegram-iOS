@@ -203,7 +203,16 @@ func presentLegacyMediaPickerGallery(
             recipientName = peer?.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
         }
     }
-    
+
+    // MARK: Swiftgram
+    // SuperGram: local gate instead of Swiftgram's server settings; hidden in file mode, outside chats and where round videos are banned
+    var canShowTelescope = !asFile && peer != nil && (UserDefaults.standard.object(forKey: "sgTelescopeButton") as? Bool ?? true)
+    if case let .channel(channel) = peer, channel.hasBannedPermission(.banSendInstantVideos) != nil {
+        canShowTelescope = false
+    } else if case let .legacyGroup(group) = peer, group.hasBannedPermission(.banSendInstantVideos) {
+        canShowTelescope = false
+    }
+
     let model = TGMediaPickerGalleryModel(
         context: legacyController.context,
         items: items,
@@ -219,6 +228,8 @@ func presentLegacyMediaPickerGallery(
         hasCamera: false,
         recipientName: recipientName,
         isScheduledMessages: isScheduledMessages,
+        canShowTelescope: canShowTelescope,
+        canSendTelescope: true,
         hasCoverButton: hasCoverButton
     )!
     model.stickersContext = paintStickersContext

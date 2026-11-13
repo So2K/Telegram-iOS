@@ -1105,9 +1105,11 @@ static const NSUInteger MTMaxUnacknowledgedMessageCount = 64;
                     if (MTLogEnabled()) {
                         NSString *messageDescription = [self outgoingMessageDescription:outgoingMessage messageId:messageId messageSeqNo:messageSeqNo authKeyId:authKey.authKeyId];
                         MTLogWithPrefix(_getLogPrefix, @"[MTProto#%p@%p preparing %@]", self, _context, messageDescription);
+
+                        // SuperGram: the per-message critlog record is network logging too; don't build and append it otherwise
+                        NSString *shortMessageDescription = [self outgoingShortMessageDescription:outgoingMessage messageId:messageId messageSeqNo:messageSeqNo];
+                        MTShortLog(@"[MTProto#%p@%p preparing %@]", self, _context, shortMessageDescription);
                     }
-                    NSString *shortMessageDescription = [self outgoingShortMessageDescription:outgoingMessage messageId:messageId messageSeqNo:messageSeqNo];
-                    MTShortLog(@"[MTProto#%p@%p preparing %@]", self, _context, shortMessageDescription);
                     
                     if (!monotonityViolated || _useUnauthorizedMode)
                     {
@@ -1503,17 +1505,18 @@ static const NSUInteger MTMaxUnacknowledgedMessageCount = 64;
     int64_t containerMessageId = [sessionInfo generateClientMessageId:NULL];
     if (containerMessageIds.count != 0) {
         [sessionInfo addContainerMessageIdMapping:containerMessageId childMessageIds:containerMessageIds];
-        
-        NSMutableString *idsString = [[NSMutableString alloc] init];
-        for (NSNumber *nMessageId in containerMessageIds) {
-            if (idsString.length != 0)
-                [idsString appendString:@","];
-            [idsString appendFormat:@"%lld", [nMessageId longLongValue]];
-        }
+
+        // SuperGram: the ids string exists only for logging; build it only when network logging is on
         if (MTLogEnabled()) {
+            NSMutableString *idsString = [[NSMutableString alloc] init];
+            for (NSNumber *nMessageId in containerMessageIds) {
+                if (idsString.length != 0)
+                    [idsString appendString:@","];
+                [idsString appendFormat:@"%lld", [nMessageId longLongValue]];
+            }
             MTLogWithPrefix(_getLogPrefix, @"    container (%" PRId64 ") of (%@), in %" PRId64 "", containerMessageId, idsString, sessionInfo.sessionId);
+            MTShortLog(@"    container (%" PRId64 ") of (%@), in %" PRId64 "", containerMessageId, idsString, sessionInfo.sessionId);
         }
-        MTShortLog(@"    container (%" PRId64 ") of (%@), in %" PRId64 "", containerMessageId, idsString, sessionInfo.sessionId);
     }
     
     [decryptedOs writeInt64:salt];
@@ -2816,6 +2819,7 @@ static bool isDataEqualToDataConstTime(NSData *data1, NSData *data2) {
     
 - (void)contextApiEnvironmentUpdated:(MTContext *)context apiEnvironment:(MTApiEnvironment *)apiEnvironment {
     [[MTProto managerQueue] dispatchOnQueue:^{
+        int32_t previousApiId = _apiEnvironment.apiId;
         NSString *previousLangPackCode = _apiEnvironment.langPackCode;
         MTSocksProxySettings *previousSocksProxySettings = _apiEnvironment.socksProxySettings;
         
@@ -2828,6 +2832,10 @@ static bool isDataEqualToDataConstTime(NSData *data1, NSData *data2) {
         }
         
         if (![_apiEnvironment.langPackCode isEqualToString:previousLangPackCode]) {
+            resetConnection = true;
+        }
+
+        if (_apiEnvironment.apiId != previousApiId) {
             resetConnection = true;
         }
         

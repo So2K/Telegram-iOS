@@ -83,7 +83,9 @@ public enum MediaPlayerStreaming {
             case .none, .conservative:
                 return (1.0, 2.0, 3.0)
             case .earlierStart:
-                return (1.0, 1.0, 2.0)
+                // SuperGram: stall must be below lowWater, otherwise every refill cycle reports .buffering
+                // and the legacy player pauses about once per second (was (1.0, 1.0, 2.0)).
+                return (0.5, 1.0, 2.5)
             case .story:
                 return (0.25, 0.5, 1.0)
         }
@@ -142,7 +144,21 @@ private final class MediaPlayerContext {
     
     private var tickTimer: SwiftSignalKit.Timer?
     private var fadeTimer: SwiftSignalKit.Timer?
-    
+
+    // SuperGram: recovery from a failed stream initialization, see handleSeekFailure(timestamp:action:).
+    private static let maxSeekRetryCount: Int = 4
+    private var seekRetryTimer: SwiftSignalKit.Timer?
+    private var seekRetryCount: Int = 0
+    private var seekRecoveryGeneration: Int = 0
+    private var seekAttemptGeneration: Int = 0
+    private var streamingRecoveryFetchDisposable: Disposable?
+    // SuperGram (GOAL-STREAMING): the last-resort arm of the recovery. The timed retries above cover "the header is
+    // not readable *yet*"; they run out after a few seconds while the plain download they started is still going.
+    // Without this, a stream that genuinely could not be initialized left the player in .seeking forever — the
+    // frozen spinner — even though the whole file was on its way. Retry once more the moment the file is complete.
+    private var streamingRecoveryCompletionDisposable: Disposable?
+    private var didArmStreamingRecoveryCompletion = false
+
     private var lastStatusUpdateTimestamp: Double?
     private let playerStatus: Promise<MediaPlayerStatus>
     private let playerStatusValue = Atomic<MediaPlayerStatus?>(value: nil)
@@ -252,7 +268,10 @@ private final class MediaPlayerContext {
         
         self.fadeTimer?.invalidate()
         self.tickTimer?.invalidate()
-        
+        self.seekRetryTimer?.invalidate()
+        self.streamingRecoveryFetchDisposable?.dispose()
+        self.streamingRecoveryCompletionDisposable?.dispose()
+
         if case let .seeking(_, _, _, disposable, _, _) = self.state {
             disposable.dispose()
         }
@@ -273,7 +292,7 @@ private final class MediaPlayerContext {
         self.seek(timestamp: timestamp, action: action)
     }
     
-    fileprivate func seek(timestamp: Double, action: MediaPlayerPlaybackAction) {
+    fileprivate func seek(timestamp: Double, action: MediaPlayerPlaybackAction, isRecovery: Bool = false) {
         assert(self.queue.isCurrent())
         
         var loadedState: MediaPlayerLoadedState?
@@ -296,6 +315,19 @@ private final class MediaPlayerContext {
         }
         
         self.tickTimer?.invalidate()
+        // SuperGram: a new seek supersedes a pending retry of a failed one.
+        self.seekRetryTimer?.invalidate()
+        self.seekRetryTimer = nil
+        // Timed and completed-download retries share one recovery budget. A fresh seek starts a new episode.
+        if !isRecovery {
+            self.seekRecoveryGeneration += 1
+            self.seekRetryCount = 0
+            self.streamingRecoveryCompletionDisposable?.dispose()
+            self.streamingRecoveryCompletionDisposable = nil
+            self.didArmStreamingRecoveryCompletion = false
+        }
+        self.seekAttemptGeneration += 1
+        let seekAttemptGeneration = self.seekAttemptGeneration
         var loadedDuration: Double?
         if let loadedState = loadedState {
             self.seekId += 1
@@ -358,22 +390,126 @@ private final class MediaPlayerContext {
         |> deliverOn(self.queue)
         
         disposable.set(seekResult.start(next: { [weak self] seekResult in
-            if let strongSelf = self {
+            if let strongSelf = self, strongSelf.seekAttemptGeneration == seekAttemptGeneration {
                 var result: MediaFrameSourceSeekResult?
                 seekResult.with { object in
                     assert(strongSelf.queue.isCurrent())
                     result = object
                 }
                 if let result = result {
+                    strongSelf.seekRetryCount = 0
+                    strongSelf.seekRetryTimer?.invalidate()
+                    strongSelf.seekRetryTimer = nil
+                    strongSelf.streamingRecoveryCompletionDisposable?.dispose()
+                    strongSelf.streamingRecoveryCompletionDisposable = nil
                     strongSelf.seekingCompleted(seekResult: result)
                 } else {
                     assertionFailure()
                 }
             }
-        }, error: { _ in
+        }, error: { [weak self] _ in
+            // SuperGram: a seek error means the demuxer could not be initialized (a header that cannot yet be parsed
+            // from the bytes on disk, a read that gave up). Upstream ignores it, which leaves the player in .seeking
+            // forever: the item shows a spinner that never resolves and nothing ever retries - the "it just loads
+            // forever" report. Make sure the file keeps downloading and retry a few times with a backoff; any data
+            // already on disk is reused, so a half-downloaded video stays watchable.
+            guard let self, self.seekAttemptGeneration == seekAttemptGeneration else {
+                return
+            }
+            self.handleSeekFailure(timestamp: timestamp, action: action)
         }))
     }
-    
+
+    private func handleSeekFailure(timestamp: Double, action: MediaPlayerPlaybackAction) {
+        assert(self.queue.isCurrent())
+
+        guard case .seeking = self.state else {
+            return
+        }
+        guard self.streamable.enabled, self.tempFilePath == nil, self.limitedFileRange == nil else {
+            return
+        }
+
+        // Whatever the player was doing with ranges, from here on the whole file is pulled the ordinary way.
+        if self.streamingRecoveryFetchDisposable == nil {
+            self.streamingRecoveryFetchDisposable = fetchedMediaResource(mediaBox: self.postbox.mediaBox, userLocation: self.userLocation, userContentType: self.userContentType, reference: self.resourceReference, statsCategory: self.video ? .video : .audio, preferBackgroundReferenceRevalidation: true).start()
+        }
+
+        // Arm one additional seek when the full recovery download finishes. Timed retries are the fast path;
+        // a completed but invalid or unsupported resource must still remain within this recovery budget.
+        let seekAttemptGeneration = self.seekAttemptGeneration
+        self.armStreamingRecoveryOnCompletion(timestamp: timestamp, action: action)
+        // An inline completed-resource observation may already have replaced this attempt.
+        guard self.seekAttemptGeneration == seekAttemptGeneration else {
+            return
+        }
+
+        if self.seekRetryCount >= MediaPlayerContext.maxSeekRetryCount {
+            return
+        }
+
+        self.seekRetryCount += 1
+        let seekRecoveryGeneration = self.seekRecoveryGeneration
+        let delay = min(8.0, 1.0 * Double(self.seekRetryCount))
+
+        self.seekRetryTimer?.invalidate()
+        let timer = SwiftSignalKit.Timer(timeout: delay, repeat: false, completion: { [weak self] in
+            guard let self else {
+                return
+            }
+            guard self.seekRecoveryGeneration == seekRecoveryGeneration,
+                  self.seekAttemptGeneration == seekAttemptGeneration,
+                  case let .seeking(_, seekingTimestamp, _, disposable, currentAction, _) = self.state,
+                  seekingTimestamp.isEqual(to: timestamp) else {
+                return
+            }
+            self.seekRetryTimer = nil
+            // seek(timestamp:action:) short-circuits when it is already seeking to this exact timestamp, so the
+            // failed attempt has to be torn down before a fresh frame source can be built.
+            disposable.dispose()
+            self.state = .empty
+            self.seek(timestamp: timestamp, action: currentAction, isRecovery: true)
+        }, queue: self.queue)
+        self.seekRetryTimer = timer
+        timer.start()
+    }
+
+    /// SuperGram (GOAL-STREAMING): wait for the recovery download to finish and then retry the seek once.
+    ///
+    /// The demuxer can legitimately fail on a partial file — a container whose moov box is not on disk yet, a
+    /// truncated header, a read that gave up — and no amount of retrying within the next few seconds will change
+    /// that. Retry once with the complete resource, which can still be invalid or unsupported.
+    /// Armed once per recovery episode; a fresh seek can arm it again if initialization fails.
+    private func armStreamingRecoveryOnCompletion(timestamp: Double, action: MediaPlayerPlaybackAction) {
+        if self.didArmStreamingRecoveryCompletion {
+            return
+        }
+        self.didArmStreamingRecoveryCompletion = true
+        let seekRecoveryGeneration = self.seekRecoveryGeneration
+
+        self.streamingRecoveryCompletionDisposable?.dispose()
+        self.streamingRecoveryCompletionDisposable = (self.postbox.mediaBox.resourceData(self.resourceReference.resource)
+        |> filter { $0.complete }
+        |> take(1)
+        |> deliverOn(self.queue)).start(next: { [weak self] _ in
+            guard let self else {
+                return
+            }
+            // Only if the player is still stuck on the seek this recovery was armed for.
+            guard self.seekRecoveryGeneration == seekRecoveryGeneration,
+                  case let .seeking(_, seekingTimestamp, _, disposable, currentAction, _) = self.state,
+                  seekingTimestamp.isEqual(to: timestamp) else {
+                return
+            }
+            self.seekRetryTimer?.invalidate()
+            self.seekRetryTimer = nil
+            // seek(timestamp:action:) short-circuits on an identical timestamp, so tear the failed attempt down first.
+            disposable.dispose()
+            self.state = .empty
+            self.seek(timestamp: timestamp, action: currentAction, isRecovery: true)
+        })
+    }
+
     fileprivate func seekingCompleted(seekResult: MediaFrameSourceSeekResult) {
         if traceEvents {
             print("seekingCompleted at \(CMTimeGetSeconds(seekResult.timestamp))")
@@ -1105,6 +1241,30 @@ public struct MediaPlayerStatus: Equatable {
         self.seekId = seekId
         self.status = status
         self.soundEnabled = soundEnabled
+    }
+}
+
+public extension MediaPlayerStatus {
+    /// SuperGram: `true` when `self` carries no new information for a consumer that already received `previous`
+    /// and extrapolates the playback position from `generationTimestamp` while `.playing`.
+    /// `maxPlayingInterval` keeps a heartbeat for consumers that need periodic position updates (for example hls.js).
+    func isNotificationEquivalent(to previous: MediaPlayerStatus, maxPlayingInterval: Double) -> Bool {
+        if self.status != previous.status || self.seekId != previous.seekId || self.baseRate != previous.baseRate || self.soundEnabled != previous.soundEnabled || self.dimensions != previous.dimensions {
+            return false
+        }
+        if abs(self.duration - previous.duration) > 0.01 {
+            return false
+        }
+        if case .playing = self.status {
+            let elapsed = self.generationTimestamp - previous.generationTimestamp
+            if elapsed < 0.0 || elapsed >= maxPlayingInterval {
+                return false
+            }
+            let predictedTimestamp = previous.timestamp + elapsed * previous.baseRate
+            return abs(predictedTimestamp - self.timestamp) < 0.15
+        } else {
+            return abs(self.timestamp - previous.timestamp) < 0.01
+        }
     }
 }
 

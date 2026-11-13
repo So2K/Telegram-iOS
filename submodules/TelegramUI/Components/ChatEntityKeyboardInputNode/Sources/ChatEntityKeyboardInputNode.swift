@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import Display
@@ -489,7 +492,8 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
     public init(context: AccountContext, currentInputData: InputData, updatedInputData: Signal<InputData, NoError>, defaultToEmojiTab: Bool, opaqueTopPanelBackground: Bool = false, useOpaqueTheme: Bool = false, interaction: ChatEntityKeyboardInputNode.Interaction?, chatPeerId: PeerId?, stateContext: StateContext?, forceHasPremium: Bool = false, displayBottomPanel: Bool = true) {
         self.context = context
         self.currentInputData = currentInputData
-        self.defaultToEmojiTab = defaultToEmojiTab
+        // MARK: Swiftgram
+        self.defaultToEmojiTab = SGSimpleSettings.shared.forceEmojiTab ? true : defaultToEmojiTab
         self.opaqueTopPanelBackground = opaqueTopPanelBackground
         self.useOpaqueTheme = useOpaqueTheme
         self.stateContext = stateContext
@@ -727,6 +731,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                         }
 
                         if file.isPremiumEmoji && !hasPremium && groupId != AnyHashable("peerSpecific") && !forceHasPremium {
+                            // SuperGram: no "subscribe to Premium" toast; only the free Saved Messages hint is offered (UPS-07)
+                            if superGramHidePremiumUpsell && chatPeerId == nil {
+                                return
+                            }
                             var animateInAsReplacement = false
                             if let currentUndoOverlayController = strongSelf.currentUndoOverlayController {
                                 currentUndoOverlayController.dismissWithCommitActionAndReplacementAnimation()
@@ -737,7 +745,7 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
 
                             premiumToastCounter += 1
-                            var suggestSavedMessages = premiumToastCounter % 2 == 0
+                            var suggestSavedMessages = premiumToastCounter % 2 == 0 || superGramHidePremiumUpsell
                             if chatPeerId == nil {
                                 suggestSavedMessages = false
                             }
@@ -822,6 +830,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                 }
 
                 if isPremiumLocked {
+                    // SuperGram: no Premium demo from locked emoji packs (UPS-07)
+                    if superGramHidePremiumUpsell {
+                        return
+                    }
                     var replaceImpl: ((ViewController) -> Void)?
                     let controller = PremiumDemoScreen(context: context, subject: .animatedEmoji, action: {
                         let controller = PremiumIntroScreen(context: context, source: .animatedEmoji)
@@ -1144,6 +1156,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                                 continue
                             }
                             existingIds.insert(itemFile.fileId)
+                            // SuperGram: locked premium emoji are not listed for non-premium users (UPS-07)
+                            if superGramHidePremiumUpsell && !forceHasPremium && itemFile.isPremiumEmoji && !context.isPremium && chatPeerId != context.account.peerId {
+                                continue
+                            }
                             let animationData = EntityKeyboardAnimationData(file: TelegramMediaFile.Accessor(itemFile))
                             let item = EmojiPagerContentComponent.Item(
                                 animationData: animationData,
@@ -1276,6 +1292,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                         })
                     } else {
                         if file.isPremiumSticker && !hasPremium {
+                            // SuperGram: no Premium intro from locked premium stickers (UPS-07)
+                            if superGramHidePremiumUpsell {
+                                return
+                            }
                             let controller = PremiumIntroScreen(context: context, source: .stickers)
                             interaction.getNavigationController()?.pushViewController(controller)
 
@@ -1339,6 +1359,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                 }
 
                 if isPremiumLocked {
+                    // SuperGram: no Premium intro from locked sticker packs (UPS-07)
+                    if superGramHidePremiumUpsell {
+                        return
+                    }
                     let controller = PremiumIntroScreen(context: context, source: .stickers)
                     interaction.getNavigationController()?.pushViewController(controller)
 
@@ -1484,6 +1508,10 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                                 continue
                             }
                             existingIds.insert(itemFile.fileId)
+                            // SuperGram: locked premium stickers are not listed for non-premium users (UPS-07)
+                            if superGramHidePremiumUpsell && !forceHasPremium && itemFile.isPremiumSticker && !context.isPremium {
+                                continue
+                            }
                             let animationData = EntityKeyboardAnimationData(file: TelegramMediaFile.Accessor(itemFile))
                             let item = EmojiPagerContentComponent.Item(
                                 animationData: animationData,
@@ -1893,6 +1921,19 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
 
         stickerContent?.inputInteractionHolder.inputInteraction = self.stickerInputInteraction
         self.currentInputData.emoji?.inputInteractionHolder.inputInteraction = self.emojiInputInteraction
+
+        // MARK: Swiftgram
+        // `defaultEmojisFirst`: standard emoji right after "recent". `withUpdatedItemGroups` keeps the same
+        // `inputInteractionHolder` instance, so the interaction assigned above still applies.
+        if SGSimpleSettings.shared.defaultEmojisFirst, let currentEmojiContent = emojiContent {
+            emojiContent = currentEmojiContent.withUpdatedItemGroups(
+                panelItemGroups: sgPatchEmojiKeyboardItems(currentEmojiContent.panelItemGroups),
+                contentItemGroups: sgPatchEmojiKeyboardItems(currentEmojiContent.contentItemGroups),
+                itemContentUniqueId: currentEmojiContent.itemContentUniqueId,
+                emptySearchResults: currentEmojiContent.emptySearchResults,
+                searchState: currentEmojiContent.searchState
+            )
+        }
 
         if let stickerInputInteraction = self.stickerInputInteraction {
             self.scrollingStickersGridPromise.set(stickerInputInteraction.scrollingStickersGridPromise.get())
@@ -2341,7 +2382,7 @@ public final class ChatEntityKeyboardInputNode: ChatInputNode {
                             case let .limitExceeded(limit, premiumLimit):
                                 let premiumConfiguration = PremiumConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
                                 let text: String
-                                if limit == premiumLimit || premiumConfiguration.isPremiumDisabled {
+                                if limit == premiumLimit || premiumConfiguration.isPremiumDisabled || superGramHidePremiumUpsell {
                                     text = presentationData.strings.Premium_MaxSavedGifsFinalText
                                 } else {
                                     text = presentationData.strings.Premium_MaxSavedGifsText("\(premiumLimit)").string
@@ -2478,6 +2519,10 @@ public final class EntityInputView: UIInputView, LegacyMessageInputPanelInputVie
                         }
 
                             if file.isPremiumEmoji && !hasPremium {
+                                // SuperGram: no "subscribe to Premium" toast for locked emoji (UPS-07)
+                                if superGramHidePremiumUpsell {
+                                    return
+                                }
                                 let presentationData = context.sharedContext.currentPresentationData.with { $0 }
                                 strongSelf.presentController?(UndoOverlayController(presentationData: presentationData, content: .sticker(context: context, file: file, loop: true, title: nil, text: presentationData.strings.EmojiInput_PremiumEmojiToast_Text, undoText: presentationData.strings.EmojiInput_PremiumEmojiToast_Action, customAction: {
                                     guard let strongSelf = self else {
@@ -2888,6 +2933,10 @@ public final class EmojiContentPeekBehaviorImpl: EmojiContentPeekBehavior {
                                 isLocked = false
                             }
                         }
+                        // SuperGram: no "unlock with Premium" peek for locked emoji (UPS-07)
+                        if isLocked && superGramHidePremiumUpsell {
+                            return nil
+                        }
 
                         if let interaction = strongSelf.interaction {
                             let sendEmoji: (TelegramMediaFile) -> Void = { file in
@@ -2918,29 +2967,32 @@ public final class EmojiContentPeekBehaviorImpl: EmojiContentPeekBehavior {
                                     f(.default)
                                 })))
 
-                                menuItems.append(.action(ContextMenuActionItem(text: presentationData.strings.EmojiPreview_SetAsStatus, icon: { theme in
-                                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Smile"), color: theme.actionSheet.primaryTextColor)
-                                }, action: { _, f in
-                                    f(.default)
+                                // SuperGram: "Set as Status" is only offered to premium users instead of opening a Premium demo (UPS-07)
+                                if hasPremium || !superGramHidePremiumUpsell {
+                                    menuItems.append(.action(ContextMenuActionItem(text: presentationData.strings.EmojiPreview_SetAsStatus, icon: { theme in
+                                        return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Smile"), color: theme.actionSheet.primaryTextColor)
+                                    }, action: { _, f in
+                                        f(.default)
 
-                                    guard let strongSelf = self else {
-                                        return
-                                    }
-
-                                    if hasPremium {
-                                        setStatus(file)
-                                    } else {
-                                        var replaceImpl: ((ViewController) -> Void)?
-                                        let controller = PremiumDemoScreen(context: context, subject: .animatedEmoji, action: {
-                                            let controller = PremiumIntroScreen(context: context, source: .animatedEmoji)
-                                            replaceImpl?(controller)
-                                        })
-                                        replaceImpl = { [weak controller] c in
-                                            controller?.replace(with: c)
+                                        guard let strongSelf = self else {
+                                            return
                                         }
-                                        strongSelf.interaction?.navigationController()?.pushViewController(controller)
-                                    }
-                                })))
+
+                                        if hasPremium {
+                                            setStatus(file)
+                                        } else {
+                                            var replaceImpl: ((ViewController) -> Void)?
+                                            let controller = PremiumDemoScreen(context: context, subject: .animatedEmoji, action: {
+                                                let controller = PremiumIntroScreen(context: context, source: .animatedEmoji)
+                                                replaceImpl?(controller)
+                                            })
+                                            replaceImpl = { [weak controller] c in
+                                                controller?.replace(with: c)
+                                            }
+                                            strongSelf.interaction?.navigationController()?.pushViewController(controller)
+                                        }
+                                    })))
+                                }
 
                                 menuItems.append(.action(ContextMenuActionItem(text: presentationData.strings.EmojiPreview_CopyEmoji, icon: { theme in
                                     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Copy"), color: theme.actionSheet.primaryTextColor)
@@ -2994,6 +3046,10 @@ public final class EmojiContentPeekBehaviorImpl: EmojiContentPeekBehavior {
 
                         let presentationData = context.sharedContext.currentPresentationData.with { $0 }
                         let isLocked = file.isPremiumSticker && !hasPremium
+                        // SuperGram: no "unlock with Premium" peek for locked stickers (UPS-07)
+                        if isLocked && !isStarred && superGramHidePremiumUpsell {
+                            return nil
+                        }
 
                         if let interaction = strongSelf.interaction {
                             let sendSticker: (FileMediaReference, Bool, Bool, String?, Bool, UIView?, CGRect?, CALayer?) -> Void = { fileReference, silentPosting, schedule, query, clearInput, sourceView, sourceRect, sourceLayer in
@@ -3045,7 +3101,7 @@ public final class EmojiContentPeekBehaviorImpl: EmojiContentPeekBehavior {
                                         case let .limitExceeded(limit, premiumLimit):
                                             let premiumConfiguration = PremiumConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
                                             let text: String
-                                            if limit == premiumLimit || premiumConfiguration.isPremiumDisabled {
+                                            if limit == premiumLimit || premiumConfiguration.isPremiumDisabled || superGramHidePremiumUpsell {
                                                 text = presentationData.strings.Premium_MaxFavedStickersFinalText
                                             } else {
                                                 text = presentationData.strings.Premium_MaxFavedStickersText("\(premiumLimit)").string

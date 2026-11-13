@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -710,9 +712,15 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                 }
             }
             
-            if useLegacyCamera {
-                let enableAnimations = self.controller?.context.sharedContext.energyUsageSettings.fullTranslucency ?? true
-  
+            // MARK: Swiftgram
+            // SuperGram (SGM-F9 / SGUI-06): the live camera tile keeps an AVCaptureSession running for as long as
+            // the attachment picker is open. `disableGalleryCamera` drops the tile entirely; `disableGalleryCameraPreview`
+            // keeps the tile but never starts the session.
+            // Swiftgram writes `... ?? true && !disableGalleryCameraPreview`, where `&&` binds tighter than `??`, so the
+            // preview flag is ignored whenever `fullTranslucency` resolves. The parentheses here are the fix.
+            if useLegacyCamera && !SGSimpleSettings.shared.disableGalleryCamera {
+                let enableAnimations = (self.controller?.context.sharedContext.energyUsageSettings.fullTranslucency ?? true) && !SGSimpleSettings.shared.disableGalleryCameraPreview
+
                 let cameraView = TGAttachmentCameraView(forSelfPortrait: false, videoModeByDefault: controller.bannedSendPhotos != nil && controller.bannedSendVideos == nil)!
                 cameraView.clipsToBounds = true
                 cameraView.removeCorners()
@@ -734,7 +742,8 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                 
                 self.gridNode.scrollView.addSubview(cameraView)
                 self.gridNode.addSubnode(self.cameraActivateAreaNode)
-            } else if useModernCamera, !Camera.isIpad {
+            } else if useModernCamera, !Camera.isIpad, !SGSimpleSettings.shared.disableGalleryCamera {
+                // MARK: Swiftgram
                 #if !targetEnvironment(simulator)
                 var cameraPosition: Camera.Position = .back
                 if case .assets(nil, .createAvatar) = controller.subject {
@@ -778,7 +787,12 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                         secondaryPreviewView: nil
                     )
                     self.modernCamera = camera
-                    camera.startCapture()
+                    // MARK: Swiftgram
+                    // SuperGram (SGM-F9): `updateIsCameraActive` would stop it again on the next visibility
+                    // update, but starting it here first still spins up the capture session for a moment.
+                    if !SGSimpleSettings.shared.disableGalleryCameraPreview {
+                        camera.startCapture()
+                    }
                 }
                 
                 if case .assets(nil, .createAvatar) = controller.subject {
@@ -896,7 +910,8 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         }
         
         func updateIsCameraActive() {
-            let isCameraActive = !self.isSuspended && !self.hasGallery && self.isCameraPreviewVisible
+            // MARK: Swiftgram
+            let isCameraActive = !self.isSuspended && !self.hasGallery && self.isCameraPreviewVisible && !SGSimpleSettings.shared.disableGalleryCameraPreview
             if let cameraView = self.cameraView {
                 if isCameraActive {
                     cameraView.resumePreview()

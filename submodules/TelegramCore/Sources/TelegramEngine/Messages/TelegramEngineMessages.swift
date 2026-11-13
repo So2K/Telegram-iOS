@@ -1589,6 +1589,11 @@ public extension TelegramEngine {
         }
         
         public func markStoryAsSeen(peerId: EnginePeer.Id, id: Int32, asPinned: Bool) -> Signal<Never, NoError> {
+            // SuperGram: ghost story viewing (sgStoryGhostMode) keeps the local seen state and sends nothing.
+            // Own stories are never reported anyway; the check is skipped for them to keep upstream behaviour.
+            if SuperGramGhostSettings.storyGhostMode && peerId != self.account.peerId {
+                return _internal_superGramMarkStoryAsSeenLocally(account: self.account, peerId: peerId, id: id, asPinned: asPinned)
+            }
             return _internal_markStoryAsSeen(account: self.account, peerId: peerId, id: id, asPinned: asPinned)
         }
         

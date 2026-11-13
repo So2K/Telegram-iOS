@@ -97,9 +97,14 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
         if readCount == 0 {
             fetchedData = Data()
         } else {
-            if let tempFilePath = context.tempFilePath, let fileData = (try? Data(contentsOf: URL(fileURLWithPath: tempFilePath), options: .mappedRead))?.subdata(in: Int(requestRange.lowerBound) ..< Int(requestRange.upperBound)) {
-                fetchedData = fileData
+            if let tempFilePath = context.tempFilePath, let tempFileData = try? Data(contentsOf: URL(fileURLWithPath: tempFilePath), options: .mappedRead) {
+                // SuperGram: the temp file can be shorter than the declared resource size; clamp instead of trapping in subdata.
+                let lowerBound = min(Int(requestRange.lowerBound), tempFileData.count)
+                let upperBound = min(Int(requestRange.upperBound), tempFileData.count)
+                fetchedData = tempFileData.subdata(in: lowerBound ..< upperBound)
             } else {
+                context.ensureStreamingFetchRange(covering: requestRange)
+
                 let semaphore = DispatchSemaphore(value: 0)
                 let _ = context.currentSemaphore.swap(semaphore)
                 var completedRequest = false
@@ -112,11 +117,44 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
                         semaphore.signal()
                     }
                 })
-                semaphore.wait()
+
+                // SuperGram: an unbounded wait here is how a stream "loads forever". The reader thread blocks until
+                // this exact block is on disk, so if the ranged fetch never lands - a FetchV2 failure is terminal and
+                // silent, a server rejects the range, the playhead window drifted, or (for a node created with
+                // fetchAutomatically == false, which the gallery can end up reusing) nothing is fetching the rest of
+                // the file at all - nothing ever wakes it up and the item spins forever.
+                // Wake up periodically instead: re-assert the playhead range, and after a short stall fall back to the
+                // plain full-file download that non-streaming playback uses. Bytes already on disk stay usable, so a
+                // half-downloaded video remains watchable; the fallback only guarantees the rest keeps arriving.
+                var waitedDuration: Double = 0.0
+                var didGiveUp = false
+                while true {
+                    if semaphore.wait(timeout: DispatchTime.now() + FFMpegMediaFrameSourceContext.streamingReadWaitStep) == .success {
+                        break
+                    }
+                    if context.closed || context.readingError {
+                        break
+                    }
+                    waitedDuration += FFMpegMediaFrameSourceContext.streamingReadWaitStep
+                    if waitedDuration >= FFMpegMediaFrameSourceContext.streamingReadFallbackDelay {
+                        context.requestStreamingFallbackFullFetch()
+                    }
+                    context.ensureStreamingFetchRange(covering: requestRange)
+                    if waitedDuration >= FFMpegMediaFrameSourceContext.streamingReadGiveUpDelay {
+                        didGiveUp = true
+                        break
+                    }
+                }
+
                 let _ = context.currentSemaphore.swap(nil)
                 disposable.dispose()
                 if !completedRequest {
-                    context.readingError = true
+                    // Giving up on a single stalled read is reported as end-of-data, not as a permanent reading
+                    // error: readingError also tears down every fetch and can never be undone, while an EOF is
+                    // cleared by the next seek, so the user can still scrub and resume once data arrives.
+                    if !didGiveUp {
+                        context.readingError = true
+                    }
                     return FFMPEG_CONSTANT_AVERROR_EOF
                 }
             }
@@ -170,11 +208,20 @@ private func readPacketCallback(userData: UnsafeMutableRawPointer?, buffer: Unsa
                     semaphore.signal()
                 }
             })
-            semaphore.wait()
+            // SuperGram (GOAL-STREAMING): non-streaming playback waits for the *whole* file. Nothing here starts
+            // that download: `initializeState` only does it when `fetchAutomatically` is true, and the inline chat
+            // node (and the round-video node) pass false. So for a half-downloaded, non-streamable video this used
+            // to be an unbounded wait on a file nobody was fetching - a spinner with no way out. Fall back to the
+            // plain full download after a short stall, and stop waiting eventually.
+            let didComplete = context.waitForCompleteFileWithFallback(semaphore: semaphore)
             let _ = context.currentSemaphore.swap(nil)
             disposable.dispose()
             if !completedRequest {
-                context.readingError = true
+                // A give-up is reported as end-of-data rather than as a permanent reading error, so the next seek
+                // can still rebuild the reader once the download has caught up (see the streaming branch above).
+                if didComplete {
+                    context.readingError = true
+                }
                 return FFMPEG_CONSTANT_AVERROR_EOF
             }
         }
@@ -233,7 +280,9 @@ private func seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whe
                         semaphore.signal()
                     }
                 })
-                semaphore.wait()
+                // SuperGram (GOAL-STREAMING): bounded, and it starts the download it is waiting for. See
+                // waitForCompleteFileWithFallback.
+                let _ = context.waitForCompleteFileWithFallback(semaphore: semaphore)
                 let _ = context.currentSemaphore.swap(nil)
                 disposable.dispose()
                 if !completedRequest {
@@ -263,18 +312,13 @@ private func seekCallback(userData: UnsafeMutableRawPointer?, offset: Int64, whe
             } else {
                 if streamable {
                     if context.tempFilePath == nil {
-                        let fetchRange: Range<Int64>?
                         if let limitedFileRange = context.limitedFileRange {
                             if context.readingOffset < limitedFileRange.upperBound {
-                                fetchRange = context.readingOffset ..< limitedFileRange.upperBound
-                            } else {
-                                fetchRange = nil
+                                let fetchRange = context.readingOffset ..< limitedFileRange.upperBound
+                                context.fetchedDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: userContentType, reference: resourceReference, range: (fetchRange, .elevated), statsCategory: statsCategory, preferBackgroundReferenceRevalidation: streamable).start())
                             }
                         } else {
-                            fetchRange = context.readingOffset ..< Int64.max
-                        }
-                        if let fetchRange {
-                            context.fetchedDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: userLocation, userContentType: userContentType, reference: resourceReference, range: (fetchRange, .elevated), statsCategory: statsCategory, preferBackgroundReferenceRevalidation: streamable).start())
+                            context.setStreamingFetchRange(offset: context.readingOffset)
                         }
                     }
                 } else if !context.requestedCompleteFetch && context.fetchAutomatically && context.limitedFileRange == nil {
@@ -312,6 +356,17 @@ final class FFMpegMediaFrameSourceContext: NSObject {
     fileprivate var readingOffset: Int64 = 0
     
     fileprivate var requestedDataOffset: Int64?
+    fileprivate var currentStreamingFetchRange: Range<Int64>?
+    fileprivate var didRequestStreamingFallbackFullFetch = false
+    // SuperGram (GOAL-STREAMING): a fetch signal can terminate with an error while the player is still reading
+    // from it - a genuine network/file-reference failure, or `MediaBox.resetResourceFetchState` (the stalled-download
+    // self-heal in ChatMessageInteractiveMediaNode), which deliberately fails every outstanding range request so
+    // that "their owners retry". Nothing here used to retry: `currentStreamingFetchRange` still claimed the range
+    // was covered, so `ensureStreamingFetchRange` stayed a no-op and the reader blocked on bytes nobody was
+    // fetching any more. These flags are written from the MediaBox queue and read on the FFmpeg thread.
+    private let streamingFetchFailed = Atomic<Bool>(value: false)
+    private let fullFetchFailed = Atomic<Bool>(value: false)
+    private var lastStreamingFetchRestartTimestamp: Double = 0.0
     fileprivate let fetchedDataDisposable = MetaDisposable()
     fileprivate let keepDataDisposable = MetaDisposable()
     fileprivate let fetchedFullDataDisposable = MetaDisposable()
@@ -410,12 +465,12 @@ final class FFMpegMediaFrameSourceContext: NSObject {
         
         if streamable {
             if self.tempFilePath == nil && limitedFileRange == nil {
-                self.fetchedDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: self.userLocation ?? .other, userContentType: self.userContentType ?? .other, reference: resourceReference, range: (0 ..< Int64.max, .elevated), statsCategory: self.statsCategory ?? .generic, preferBackgroundReferenceRevalidation: streamable).start())
+                self.setStreamingFetchRange(offset: 0)
             }
         } else if !self.requestedCompleteFetch && self.fetchAutomatically {
             self.requestedCompleteFetch = true
             if self.tempFilePath == nil {
-                self.fetchedFullDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: self.userLocation ?? .other, userContentType: self.userContentType ?? .other, reference: resourceReference, statsCategory: self.statsCategory ?? .generic, preferBackgroundReferenceRevalidation: streamable).start())
+                self.startFullFetch(range: nil)
             }
         }
         
@@ -431,7 +486,12 @@ final class FFMpegMediaFrameSourceContext: NSObject {
                     semaphore.signal()
                 }
             })
-            semaphore.wait()
+            // SuperGram (GOAL-STREAMING): a round video (isAudioVideoMessage) plays from the complete file, and the
+            // node that owns it passes fetchAutomatically: false - so this used to be able to block the FFmpeg
+            // thread forever on a file nobody was downloading. Bound the wait; do not start a download of our own,
+            // because a visible round video is attached automatically and the bubble's own auto-download setting
+            // is what decides whether it should be fetched at all.
+            let _ = self.waitForCompleteFileWithFallback(semaphore: semaphore, startFallbackFetch: false)
             let _ = self.currentSemaphore.swap(nil)
             disposable.dispose()
             
@@ -564,11 +624,143 @@ final class FFMpegMediaFrameSourceContext: NSObject {
         self.initializedState = InitializedState(avIoContext: avIoContext, avFormatContext: avFormatContext, audioStream: audioStream, videoStream: videoStream)
         
         if streamable && limitedFileRange == nil {
-            if self.tempFilePath == nil {
-                self.fetchedFullDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: self.userLocation ?? .other, userContentType: self.userContentType ?? .other, reference: resourceReference, range: (0 ..< Int64.max, .default), statsCategory: self.statsCategory ?? .generic, preferBackgroundReferenceRevalidation: streamable).start())
+            // SuperGram: the background full download is only started when the owner asked for it. Preloads
+            // (maximumFetchSize) and players with fetchAutomatically == false (inline autoplay) stream through
+            // the bounded playhead window instead of silently downloading the whole file while attached.
+            if self.tempFilePath == nil && self.fetchAutomatically && self.maximumFetchSize == nil {
+                self.startFullFetch(range: (0 ..< Int64.max, .default))
             }
             self.requestedCompleteFetch = true
         }
+    }
+
+    // SuperGram: bounded playhead window for preloads and for players that must not download the whole file.
+    fileprivate var streamingFetchWindowSize: Int64? {
+        if let maximumFetchSize = self.maximumFetchSize {
+            return Int64(maximumFetchSize) + 512 * 1024
+        } else if !self.fetchAutomatically {
+            return 8 * 1024 * 1024
+        } else {
+            return nil
+        }
+    }
+
+    fileprivate func setStreamingFetchRange(offset: Int64) {
+        guard let postbox = self.postbox, let resourceReference = self.resourceReference else {
+            return
+        }
+        let fetchRange: Range<Int64>
+        let priority: MediaBoxFetchPriority
+        if let windowSize = self.streamingFetchWindowSize {
+            fetchRange = offset ..< (offset + windowSize)
+            priority = self.maximumFetchSize != nil ? .default : .elevated
+        } else {
+            // SuperGram: never use exactly 0 ..< Int64.max here: fetchedMediaResource turns that into a full-range
+            // .default fetch, which loses the playhead priority and is removed by cancelInteractiveResourceFetch.
+            fetchRange = offset ..< (Int64.max - 1)
+            priority = .elevated
+        }
+        self.currentStreamingFetchRange = fetchRange
+        let streamingFetchFailed = self.streamingFetchFailed
+        let _ = streamingFetchFailed.swap(false)
+        self.fetchedDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: self.userLocation ?? .other, userContentType: self.userContentType ?? .other, reference: resourceReference, range: (fetchRange, priority), statsCategory: self.statsCategory ?? .generic, preferBackgroundReferenceRevalidation: true).start(error: { _ in
+            // SuperGram (GOAL-STREAMING): remember that the playhead fetch died so the reader re-issues it.
+            let _ = streamingFetchFailed.swap(true)
+        }))
+    }
+
+    fileprivate func ensureStreamingFetchRange(covering requestRange: Range<Int64>) {
+        guard self.tempFilePath == nil, self.limitedFileRange == nil else {
+            return
+        }
+        // SuperGram (GOAL-STREAMING): the playhead fetch errored out (see `streamingFetchFailed`). The bookkeeping
+        // below would happily report the range as still covered, so re-issue it instead - throttled, because a
+        // resource that fails instantly would otherwise be restarted once per read.
+        if self.streamingFetchFailed.with({ $0 }) {
+            let timestamp = CFAbsoluteTimeGetCurrent()
+            if timestamp - self.lastStreamingFetchRestartTimestamp >= FFMpegMediaFrameSourceContext.streamingReadWaitStep {
+                self.lastStreamingFetchRestartTimestamp = timestamp
+                self.setStreamingFetchRange(offset: requestRange.lowerBound)
+            }
+            return
+        }
+        if let currentStreamingFetchRange = self.currentStreamingFetchRange {
+            if let windowSize = self.streamingFetchWindowSize {
+                // Move the window once the reader gets close to its end (or jumped before it without a seek callback).
+                if requestRange.lowerBound >= currentStreamingFetchRange.lowerBound && requestRange.upperBound + min(2 * 1024 * 1024, windowSize / 4) <= currentStreamingFetchRange.upperBound {
+                    return
+                }
+            } else if requestRange.lowerBound >= currentStreamingFetchRange.lowerBound && requestRange.upperBound <= currentStreamingFetchRange.upperBound {
+                // Unbounded window: the request is already inside the range the playhead fetch asked for.
+                return
+            }
+        }
+        self.setStreamingFetchRange(offset: requestRange.lowerBound)
+    }
+
+    // SuperGram: streaming read stall handling, see readPacketCallback.
+    fileprivate static let streamingReadWaitStep: Double = 1.0
+    fileprivate static let streamingReadFallbackDelay: Double = 4.0
+    fileprivate static let streamingReadGiveUpDelay: Double = 90.0
+
+    /// Fall back to the plain, unranged full download that non-streaming playback uses. Called when a streaming read
+    /// has been blocked for `streamingReadFallbackDelay`: whatever went wrong with the ranged fetch, the file itself
+    /// keeps downloading and the blocked read resumes as soon as its block lands.
+    fileprivate func requestStreamingFallbackFullFetch() {
+        // SuperGram (GOAL-STREAMING): a full fetch that already terminated with an error is not "already running",
+        // so it must not suppress a new attempt - otherwise one transient failure (or a self-heal reset) leaves the
+        // reader with no fetch at all for the rest of the session.
+        if self.didRequestStreamingFallbackFullFetch && !self.fullFetchFailed.with({ $0 }) {
+            return
+        }
+        // Preloads are explicitly bounded by maximumFetchSize and must never pull a whole file; a limitedFileRange
+        // player (a trimmed segment) and a temp-file player have no resource to fetch either.
+        guard self.maximumFetchSize == nil, self.limitedFileRange == nil, self.tempFilePath == nil else {
+            return
+        }
+        self.startFullFetch(range: nil)
+    }
+
+    /// SuperGram (GOAL-STREAMING): bounded version of the unconditional `semaphore.wait()` the non-streaming paths
+    /// used. Same shape as the streaming read loop in `readPacketCallback`: wake up every `streamingReadWaitStep`,
+    /// bail out when the context is gone, start the plain full download after `streamingReadFallbackDelay` (that is
+    /// the whole point - these paths wait for a *complete* file and may have no fetch behind them at all), and stop
+    /// waiting after `streamingReadGiveUpDelay`. Returns whether the semaphore was actually signalled.
+    ///
+    /// `startFallbackFetch` is false where starting a download would override the user's auto-download setting for
+    /// media that has not begun playing yet (the round-video probe below); there the bound alone is the fix.
+    fileprivate func waitForCompleteFileWithFallback(semaphore: DispatchSemaphore, startFallbackFetch: Bool = true) -> Bool {
+        var waitedDuration: Double = 0.0
+        while true {
+            if semaphore.wait(timeout: DispatchTime.now() + FFMpegMediaFrameSourceContext.streamingReadWaitStep) == .success {
+                return true
+            }
+            if self.closed || self.readingError {
+                return false
+            }
+            waitedDuration += FFMpegMediaFrameSourceContext.streamingReadWaitStep
+            if startFallbackFetch && waitedDuration >= FFMpegMediaFrameSourceContext.streamingReadFallbackDelay {
+                self.requestStreamingFallbackFullFetch()
+            }
+            if waitedDuration >= FFMpegMediaFrameSourceContext.streamingReadGiveUpDelay {
+                return false
+            }
+        }
+    }
+
+    /// SuperGram (GOAL-STREAMING): the plain, whole-file download behind `fetchedFullDataDisposable`. Shared by
+    /// `initializeState` and by the stalled-read fallback so both record it the same way and both can be restarted
+    /// after the signal errors out.
+    fileprivate func startFullFetch(range: (Range<Int64>, MediaBoxFetchPriority)?) {
+        guard let postbox = self.postbox, let resourceReference = self.resourceReference else {
+            return
+        }
+        self.didRequestStreamingFallbackFullFetch = true
+        let fullFetchFailed = self.fullFetchFailed
+        let _ = fullFetchFailed.swap(false)
+        self.fetchedFullDataDisposable.set(fetchedMediaResource(mediaBox: postbox.mediaBox, userLocation: self.userLocation ?? .other, userContentType: self.userContentType ?? .other, reference: resourceReference, range: range, statsCategory: self.statsCategory ?? .generic, preferBackgroundReferenceRevalidation: true).start(error: { _ in
+            let _ = fullFetchFailed.swap(true)
+        }))
     }
     
     private func readPacket() -> FFMpegPacket? {

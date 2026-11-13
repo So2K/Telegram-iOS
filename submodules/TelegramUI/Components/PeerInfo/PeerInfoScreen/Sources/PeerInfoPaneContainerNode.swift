@@ -718,7 +718,7 @@ final class PeerInfoPaneContainerNode: ASDisplayNode, ASGestureRecognizerDelegat
                 return .left
             }
             return [.left, .right]
-        })
+        }, horizontalDirectionLockRatio: 1.8)
         panRecognizer.delegate = self.wrappedGestureRecognizerDelegate
         panRecognizer.delaysTouchesBegan = false
         panRecognizer.cancelsTouchesInView = true
@@ -784,11 +784,11 @@ final class PeerInfoPaneContainerNode: ASDisplayNode, ASGestureRecognizerDelegat
                 let translation = recognizer.translation(in: self.view)
                 let velocity = recognizer.velocity(in: self.view)
                 var directionIsToRight: Bool?
-                if abs(velocity.x) > 10.0 {
+                if abs(velocity.x) > 10.0 && abs(velocity.x) >= abs(velocity.y) * 1.5 {
                     directionIsToRight = velocity.x < 0.0
                 } else {
-                    if abs(translation.x) > size.width / 2.0 {
-                        directionIsToRight = translation.x > size.width / 2.0
+                    if abs(translation.x) > size.width / 2.0 && abs(translation.x) >= abs(translation.y) * 1.5 {
+                        directionIsToRight = translation.x < 0.0
                     }
                 }
                 if let directionIsToRight = directionIsToRight {

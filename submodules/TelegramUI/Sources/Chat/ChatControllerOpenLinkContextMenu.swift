@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import SwiftSignalKit
@@ -169,6 +171,13 @@ extension ChatControllerImpl {
                             }
 
                             let targetUrl = chatLinkContextMenuCanonicalUrl(from: url)?.absoluteString ?? url
+                            // MARK: Swiftgram
+                            // SuperGram (SGM-F4): "Open in Browser" from the link context menu honours the in-app
+                            // Safari switch too, so the two external-browser entry points agree.
+                            if SGSimpleSettings.shared.sgOpenLinksInAppSafari, let parsedTargetUrl = URL(string: targetUrl), sgCanOpenUrlWithSafariController(parsedTargetUrl) {
+                                sgOpenUrlWithSafariController(parsedUrl: parsedTargetUrl, originalUrl: targetUrl, context: self.context, presentationData: self.presentationData, navigationController: self.effectiveNavigationController)
+                                return
+                            }
                             let openInOptions = availableOpenInOptions(context: self.context, item: .url(url: targetUrl))
                             if let option = openInOptions.first(where: { $0.identifier == defaultWebBrowser }) {
                                 if case let .openUrl(openInUrl) = option.action() {

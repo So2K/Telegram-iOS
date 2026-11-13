@@ -1,0 +1,1350 @@
+--- a/src/zsign.cpp
++++ b/src/zsign.cpp
+@@ -3,6 +3,7 @@
+ #include <set>
+ #include "macho.h"
+ #include "bundle.h"
++#include "strict_signing.h"
+ #include "openssl.h"
+ #include "timer.h"
+ #include "archive.h"
+@@ -35,6 +36,8 @@
+ 	{"bundle_name", required_argument, NULL, 'n'},
+ 	{"bundle_version", required_argument, NULL, 'r'},
+ 	{"entitlements", required_argument, NULL, 'e'},
++    {"bundle-signing-map", required_argument, NULL, 1000},
++    {"preflight-only", no_argument, NULL, 1001},
+ 	{"icon", required_argument, NULL, 'I'},
+ 	{"output", required_argument, NULL, 'o'},
+ 	{"zip_level", required_argument, NULL, 'z'},
+@@ -134,6 +137,7 @@
+ 	ZLog::Print("-n, --bundle_name\tNew bundle name to change.\n");
+ 	ZLog::Print("-r, --bundle_version\tNew bundle version to change.\n");
+ 	ZLog::Print("-e, --entitlements\tNew entitlements to change.\n");
++    ZLog::Print("--bundle-signing-map\tStrict per-bundle JSON array of bundle_id/profile_path/entitlements_path. Staged .app only; macOS XML entitlements.\n");
+ 	ZLog::Print("-I, --icon\t\tPath to new app icon to replace the primary icon. (PNG format)\n");
+ 	ZLog::Print("-z, --zip_level\t\tCompressed level when output the ipa file. (0-9)\n");
+ 	ZLog::Print("-l, --dylib\t\tPath to inject dylib file. Use -l multiple time to inject multiple dylib files at once.\n");
+@@ -189,6 +193,9 @@
+ 	string strOutputFile;
+ 	string strDisplayName;
+ 	string strEntitleFile;
++    string strBundleSigningMap;
++    bool preflightOnly = false;
++    bool preflightDisallowedOption = false;
+ 	string strIconFile;
+ 	vector<string> arrDylibFiles;
+ 	vector<string> arrRemoveDylibNames;
+@@ -231,6 +238,14 @@
+ 		case 'n':
+ 			strDisplayName = optarg;
+ 			break;
++        case 1000:
++            if (!strBundleSigningMap.empty()) { ZLog::Error(">>> Duplicate bundle-signing-map option!\n"); return -1; }
++            strBundleSigningMap = ZFile::GetFullPath(optarg);
++            break;
++        case 1001:
++            if (preflightOnly) return -1;
++            preflightOnly = true;
++            break;
+ 		case 'e':
+ 			strEntitleFile = ZFile::GetFullPath(optarg);
+ 			break;
+@@ -306,9 +321,15 @@
+ 			break;
+ 		}
+ 
+-		ZLog::DebugV(">>> Option:\t-%c, %s\n", opt, optarg ? optarg : "");
+-	}
+-
++        if (opt != 1000 && opt != 1001) preflightDisallowedOption = true;
++        if (opt == 1000) ZLog::DebugV(">>> Option:\t--bundle-signing-map, %s\n", optarg ? optarg : "");
++        else ZLog::DebugV(">>> Option:\t-%c, %s\n", opt, opt == 'p' ? "<redacted>" : (optarg ? optarg : ""));
++	}
++
++    if (preflightOnly && (strBundleSigningMap.empty() || preflightDisallowedOption || optind + 1 != argc)) {
++        ZLog::Error(">>> Preflight-only accepts only a bundle signing map and one staged .app!\n");
++        return -1;
++    }
+ 	if (optind >= argc) {
+ 		return usage();
+ 	}
+@@ -357,9 +378,31 @@
+ 		}
+ 	}
+ 
++    if (!strBundleSigningMap.empty() && bCheckSignature) {
++        ZLog::Error(">>> Strict mode does not support certificate-check-only routing!\n");
++        return -1;
++    }
+ 	if (bCheckSignature && strPKeyFile.empty() && strProvFile.empty()) {
+ 		return CheckCertificate(strPath, strPassword);
+ 	}
++
++    const bool strictMode = !strBundleSigningMap.empty();
++    vector<ZStrictBundleSpec> strictSpecs;
++    if (strictMode) {
++        if (!strEntitleFile.empty() || !arrProvFiles.empty() || bAdhoc || bRemoveProvision || bRemoveExtensions || bRemoveWatchApp ||
++            bRemoveUISupportedDevices || bInjectExtensions || bEnableDocuments || !strMinVersion.empty() || !strBundleId.empty() ||
++            !strBundleVersion.empty() || !strDisplayName.empty() || !strIconFile.empty() || !arrDylibFiles.empty() || !arrRemoveDylibNames.empty() ||
++            !ZFile::IsFolder(strPath.c_str()) || !ZFile::IsPathSuffix(strPath, ".app")) {
++            ZLog::Error(">>> Strict mode requires a staged .app and rejects global profiles/entitlements or bundle mutation flags!\n");
++            return -1;
++        }
++        string manifest, directory = strBundleSigningMap;
++        ZFile::PathRemoveFileSpec(directory);
++        if (!ZStrictReadFile(strBundleSigningMap, 65536, manifest) || !ZStrictParseManifest(manifest, directory, strictSpecs)) {
++            ZLog::Error(">>> Invalid strict bundle-signing manifest!\n");
++            return -1;
++        }
++    }
+ 
+ 	bool bZipFile = ZFile::IsZipFile(strPath.c_str());
+ 	if (!bZipFile && !ZFile::IsFolder(strPath.c_str())) { // macho file
+@@ -422,7 +465,7 @@
+ 
+ 	//init
+ 	ZSignAsset zsa;
+-	if (!zsa.Init(strCertFile, strPKeyFile, strProvFile, strEntitleFile, strPassword, bAdhoc, bSHA256Only, false)) {
++	if (!strictMode && !zsa.Init(strCertFile, strPKeyFile, strProvFile, strEntitleFile, strPassword, bAdhoc, bSHA256Only, false)) {
+ 		return -1;
+ 	}
+ 
+@@ -455,7 +498,51 @@
+ 	bundle.m_bInjectExtensions = bInjectExtensions;
+ 
+ 	bool bRet;
+-	if (arrProvFiles.size() > 1) {
++    if (strictMode) {
++        set<string> identifiers;
++        for (const auto& spec : strictSpecs) identifiers.insert(spec.bundleId);
++        if (!bundle.PrepareStrictSigning(strFolder, identifiers)) return -1;
++        // Validate every public metadata input before loading any private key.
++        for (const auto& spec : strictSpecs) {
++            string provision, content, entitlementData;
++            jvalue profile, entitlements;
++            if (!ZStrictReadFile(spec.profilePath, 8388608, provision) || !ZSignAsset::GetCMSContent(provision, content) ||
++                !ZStrictReadMetadata(content, profile) || !ZStrictReadFile(spec.entitlementsPath, 1048576, entitlementData) ||
++                !ZStrictReadEntitlements(entitlementData, entitlements) || !ZStrictValidateEntitlements(profile, entitlements, spec.bundleId)) {
++                ZLog::Error(">>> Strict bundle metadata validation failed!\n");
++                return -1;
++            }
++            string canonical;
++            if (!ZStrictCanonicalEntitlements(entitlements, canonical)) {
++                ZLog::Error(">>> Strict signing supports exact bool/string/array/dict rights only; unsupported XML/DER entitlement serialization!\n");
++                return -1;
++            }
++        }
++        if (preflightOnly) {
++            if (!bundle.ValidateStrictResources()) {
++                ZLog::Error(">>> Strict read-only resource preflight failed!\n");
++                return -1;
++            }
++            printf("SUPERGRAM_STRICT_PREFLIGHT_V1_OK\n");
++            return 0;
++        }
++        list<ZSignAsset> assets;
++        map<string, ZSignAsset*> mappedAssets;
++        for (const auto& spec : strictSpecs) {
++            assets.emplace_back();
++            if (!assets.back().Init(strCertFile, strPKeyFile, spec.profilePath, spec.entitlementsPath, strPassword, false, bSHA256Only, false, spec.bundleId)) {
++                ZLog::Error(">>> Strict bundle asset initialization failed!\n");
++                return -1;
++            }
++            mappedAssets.emplace(spec.bundleId, &assets.back());
++        }
++        if (!bundle.SetStrictSignAssets(mappedAssets)) return -1;
++        jvalue mainInfo; string mainInfoData;
++        if (!ZStrictReadFile(strFolder + "/Info.plist", 1048576, mainInfoData) || !ZStrictReadMetadata(mainInfoData, mainInfo)) return -1;
++        auto mainAsset = mappedAssets.find(mainInfo["CFBundleIdentifier"].as_string());
++        if (mainAsset == mappedAssets.end()) return -1;
++        bRet = bundle.SignFolder(mainAsset->second, strFolder, "", "", "", {}, {}, true, false, false, false);
++    } else if (arrProvFiles.size() > 1) {
+ 		list<ZSignAsset> zsaList;
+ 		for (const string& provFile : arrProvFiles) {
+ 			zsaList.push_back(ZSignAsset());
+--- a/src/bundle.h
++++ b/src/bundle.h
+@@ -10,6 +10,9 @@
+ {
+ public:
+ 	ZBundle();
++    bool PrepareStrictSigning(const string& folder, const set<string>& identifiers);
++    bool ValidateStrictResources();
++    bool SetStrictSignAssets(const map<string, ZSignAsset*>& assets);
+ 
+ public:
+ 	bool SignFolder(ZSignAsset* pSignAsset,
+@@ -51,8 +54,15 @@
+ 
+ private:
+ 	bool GenerateCodeResources(const string& strFolder, jvalue& jvCodeRes);
++    bool CheckStrictOutputs(const string& folder, bool profileBundle);
+ 
+ private:
++    bool m_bStrictSigning;
++    string m_strStrictMainId;
++    string m_strStrictRootPath;
++    set<string> m_setStrictExecutables;
++    set<string> m_setStrictProfileIds;
++    map<string, ZSignAsset*> m_mapStrictAssets;
+ 	bool			m_bForceSign;
+ 	bool			m_bWeakInject;
+ 	bool			m_bRemoveProvision;
+--- a/src/bundle.cpp
++++ b/src/bundle.cpp
+@@ -1,4 +1,5 @@
+ #include "bundle.h"
++#include "strict_signing.h"
+ #include "base64.h"
+ #include "common.h"
+ #include "macho.h"
+@@ -7,6 +8,7 @@
+ 
+ ZBundle::ZBundle()
+ {
++    m_bStrictSigning = false;
+ 	m_pSignAssets = NULL;
+ 	m_pSignAsset = NULL;
+ 	m_bForceSign = false;
+@@ -49,13 +51,20 @@
+ {
+ 	string strInfoPlistData;
+ 	string strInfoPlistPath = strFolder + "/Info.plist";
+-	ZFile::ReadFile(strInfoPlistPath.c_str(), strInfoPlistData);
++    if (m_bStrictSigning) {
++        if (!ZStrictReadFile(strInfoPlistPath, 1048576, strInfoPlistData)) return false;
++    } else ZFile::ReadFile(strInfoPlistPath.c_str(), strInfoPlistData);
+ 
+ 	jvalue jvInfo;
+-	jvInfo.read_plist(strInfoPlistData);
++    if (m_bStrictSigning) {
++        if (!ZStrictReadMetadata(strInfoPlistData, jvInfo)) return false;
++    } else jvInfo.read_plist(strInfoPlistData);
+ 	string strBundleId = jvInfo["CFBundleIdentifier"];
+ 	string strBundleExe = jvInfo["CFBundleExecutable"];
+ 	string strBundleVersion = jvInfo["CFBundleVersion"];
++    if (m_bStrictSigning && (!jvInfo["CFBundleIdentifier"].is_string() || !ZStrictBundleId(strBundleId) ||
++        !jvInfo["CFBundleExecutable"].is_string() || strBundleExe.empty() || strBundleExe == "." || strBundleExe == ".." ||
++        strBundleExe.find('/') != string::npos || strBundleExe.find('\\') != string::npos)) return false;
+ 	if (strBundleId.empty() || strBundleExe.empty()) {
+ 		return false;
+ 	}
+@@ -118,11 +127,25 @@
+ 		jvalue jvNode;
+ 		if (GetSignFolderInfo(bundlePath, jvNode)) {
+ 			jvInfo["folders"].push_back(jvNode);
+-		}
++        } else if (m_bStrictSigning) {
++            return ZLog::Error(">>> Strict mode encountered an invalid bundle Info.plist!\n");
++        }
+ 	}
+ 	
++    bool validResources = true;
+ 	ZFile::EnumFolder(strFolder.c_str(), true, NULL, [&](bool bFolder, const string& strPath) {
+-		if (bFolder || string::npos != strPath.find(".dSYM") ||
++        if (bFolder) return false;
++#ifndef _WIN32
++        if (m_bStrictSigning) {
++            struct stat info;
++            if (lstat(strPath.c_str(), &info) != 0) { validResources = false; return true; }
++            if (S_ISLNK(info.st_mode)) {
++                // Other link targets are sealed literally, never opened as possible code.
++                if (stat(strPath.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) return false;
++            } else if (!S_ISREG(info.st_mode)) { validResources = false; return true; }
++        }
++#endif
++		if (string::npos != strPath.find(".dSYM") ||
+ 			string::npos != strPath.find("_WatchKitStub")) {
+ 			return false;
+ 		}
+@@ -132,7 +155,14 @@
+ #ifdef _WIN32
+ 			fopen_s(&fp, strPath.c_str(), "rb");
+ #else
+-			fp = fopen(strPath.c_str(), "rb");
++            if (m_bStrictSigning) {
++                const int descriptor = open(strPath.c_str(), O_RDONLY | O_NONBLOCK);
++                if (descriptor >= 0) {
++                    struct stat info;
++                    if (fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode)) fp = fdopen(descriptor, "rb");
++                    if (!fp) { close(descriptor); validResources = false; }
++                } else validResources = false;
++            } else fp = fopen(strPath.c_str(), "rb");
+ #endif
+ 			if (fp) {
+ 				uint32_t magic = 0;
+@@ -150,7 +180,98 @@
+ 		return false;
+ 	});
+ 
+-	return true;
++	return validResources;
++}
++
++bool ZBundle::PrepareStrictSigning(const string& folder, const set<string>& identifiers)
++{
++    m_bStrictSigning = true;
++    m_setStrictExecutables.clear();
++    m_setStrictProfileIds.clear();
++    m_mapStrictAssets.clear();
++    m_strStrictMainId.clear();
++    m_strStrictRootPath.clear();
++    if (!ZFile::IsFolder(folder.c_str()) || !ZFile::IsPathSuffix(folder, ".app") || identifiers.empty())
++        return ZLog::Error(">>> Strict mode requires a staged .app and nonempty mappings!\n");
++    if (!ZStrictCanonicalPath(folder, m_strStrictRootPath)) return false;
++    m_strAppFolder = folder;
++    jvalue root;
++    root["path"] = "/";
++    if (!GetSignFolderInfo(folder, root) || !GetObjectsToSign(folder, root)) return false;
++    m_strStrictMainId = root["bundle_id"].as_string();
++    vector<jvalue> nodes{root};
++    for (size_t i = 0; i < root["folders"].size(); ++i) nodes.push_back(root["folders"][i]);
++    for (const jvalue& node : nodes) {
++        const string path = node["path"].as_string();
++        const string relative = (path == "/" ? "" : path + "/") + node["bundle_executable"].as_string();
++        string canonical;
++        if (!ZStrictContainedCode(m_strStrictRootPath, folder + "/" + relative, canonical) ||
++            !m_setStrictExecutables.insert(canonical).second) return false;
++        ZMachO macho;
++        if (!macho.Init((folder + "/" + relative).c_str())) return false;
++        const bool profileBundle = path == "/" || ZFile::IsPathSuffix(path, ".app") || ZFile::IsPathSuffix(path, ".appex");
++        const string base = path == "/" ? folder : folder + "/" + path;
++        if (!CheckStrictOutputs(base, profileBundle)) return false;
++        if (profileBundle) {
++            if (!macho.IsExecute() || !m_setStrictProfileIds.insert(node["bundle_id"].as_string()).second)
++                return ZLog::Error(">>> Strict mode found duplicate or invalid application executables!\n");
++        } else if (macho.HasExecute()) {
++            return ZLog::Error(">>> Strict mode found an unclassified MH_EXECUTE bundle!\n");
++        }
++    }
++    if (m_setStrictProfileIds != identifiers) return ZLog::Error(">>> Strict bundle mappings are missing or unused!\n");
++    for (size_t i = 0; i < root["files"].size(); ++i) {
++        const string relative = root["files"][i].as_string();
++        string canonical;
++        if (!ZStrictContainedCode(m_strStrictRootPath, folder + "/" + relative, canonical)) return false;
++        if (m_setStrictExecutables.count(canonical)) continue;
++        ZMachO macho;
++        if (!macho.Init((folder + "/" + relative).c_str()) || macho.HasExecute())
++            return ZLog::Error(">>> Strict mode found an unclassified MH_EXECUTE file!\n");
++    }
++    return true;
++}
++
++bool ZBundle::ValidateStrictResources()
++{
++    // This path performs no profile installation, asset initialization or signing.
++    if (!m_bStrictSigning || m_strAppFolder.empty() || m_bRemoveProvision) return false;
++    jvalue root;
++    root["path"] = "/";
++    if (!GetSignFolderInfo(m_strAppFolder, root) || !GetObjectsToSign(m_strAppFolder, root)) return false;
++    vector<string> folders{m_strAppFolder};
++    for (size_t i = 0; i < root["folders"].size(); ++i)
++        folders.push_back(m_strAppFolder + "/" + root["folders"][i]["path"].as_string());
++    for (const string& folder : folders) {
++        jvalue resources;
++        if (!GenerateCodeResources(folder, resources)) return false;
++    }
++    return true;
++}
++
++bool ZBundle::SetStrictSignAssets(const map<string, ZSignAsset*>& assets)
++{
++    set<string> identifiers;
++    string certificate, team;
++    for (const auto& entry : assets) {
++        ZSignAsset* asset = entry.second;
++        if (!asset || asset->m_bAdhoc || asset->m_strTeamId.empty() ||
++            asset->m_strApplicationId != asset->m_strTeamId + "." + entry.first || asset->m_strLeafCertificateData.empty())
++            return ZLog::Error(">>> Strict mode requires exact initialized bundle assets!\n");
++        if (certificate.empty()) { certificate = asset->m_strLeafCertificateData; team = asset->m_strTeamId; }
++        if (certificate != asset->m_strLeafCertificateData || team != asset->m_strTeamId) return ZLog::Error(">>> Strict bundle signing certificates differ!\n");
++        identifiers.insert(entry.first);
++    }
++    if (!m_bStrictSigning || identifiers != m_setStrictProfileIds || !identifiers.count(m_strStrictMainId)) return false;
++    m_mapStrictAssets = assets;
++    return true;
++}
++
++bool ZBundle::CheckStrictOutputs(const string& folder, bool profileBundle)
++{
++    return ZStrictContainedOutput(m_strStrictRootPath, folder + "/_CodeSignature", true) &&
++           ZStrictContainedOutput(m_strStrictRootPath, folder + "/_CodeSignature/CodeResources", false) &&
++           (!profileBundle || ZStrictContainedOutput(m_strStrictRootPath, folder + "/embedded.mobileprovision", false));
+ }
+ 
+ bool ZBundle::GenerateCodeResources(const string& strFolder, jvalue& jvCodeRes)
+@@ -166,8 +287,15 @@
+ 	});
+ 
+ 	jvalue jvInfo;
+-	jvInfo.read_plist_from_file("%s/Info.plist", strFolder.c_str());
+-	string strBundleExe = jvInfo["CFBundleExecutable"];
++    string strBundleExe;
++    if (m_bStrictSigning) {
++        jvInfo["path"] = strFolder == m_strAppFolder ? "/" : strFolder.substr(m_strAppFolder.size() + 1);
++        if (!GetSignFolderInfo(strFolder, jvInfo)) return false;
++        strBundleExe = jvInfo["bundle_executable"].as_string();
++    } else {
++        jvInfo.read_plist_from_file("%s/Info.plist", strFolder.c_str());
++        strBundleExe = jvInfo["CFBundleExecutable"].as_string();
++    }
+ 
+ #ifdef _WIN32
+ 	iconv ic;
+@@ -190,6 +318,27 @@
+ 		}
+ 
+ 		string strFile = strFolder + "/" + strKey;
++#ifndef _WIN32
++        if (m_bStrictSigning) {
++            struct stat info;
++            if (lstat(strFile.c_str(), &info) != 0) return false;
++            if (S_ISLNK(info.st_mode)) {
++                char target[PATH_MAX];
++                const ssize_t length = readlink(strFile.c_str(), target, sizeof(target));
++                if (length <= 0 || size_t(length) >= sizeof(target)) return false;
++                const string linkTarget(target, size_t(length));
++                if (linkTarget.compare(0, 5, "data:") == 0 || linkTarget.compare(0, 5, "date:") == 0) return false;
++                // V1 omits links; V2 seals their literal target without following it.
++                if (!ZFile::IsPathSuffix(strKey, ".lproj/locversion.plist") && !ZFile::IsPathSuffix(strKey, ".DS_Store") &&
++                    strKey != "Info.plist" && strKey != "PkgInfo") {
++                    jvCodeRes["files2"][strKey]["symlink"] = linkTarget;
++                    if (string::npos != strKey.rfind(".lproj/")) jvCodeRes["files2"][strKey]["optional"] = true;
++                }
++                continue;
++            }
++            if (!S_ISREG(info.st_mode)) return false;
++        }
++#endif
+ 		string strSHA1Base64;
+ 		string strSHA256Base64;
+ 		ZSHA::SHABase64File(strFile.c_str(), strSHA1Base64, strSHA256Base64);
+@@ -312,13 +461,22 @@
+ 	if (jvNode.has("files")) {
+ 		for (size_t i = 0; i < jvNode["files"].size(); i++) {
+ 			string strFile = jvNode["files"][i];
++            if (m_bStrictSigning) {
++                string canonical;
++                if (!ZStrictContainedCode(m_strStrictRootPath, m_strAppFolder + "/" + strFile, canonical)) return false;
++                if (m_setStrictExecutables.count(canonical)) continue;
++            }
+ 			ZLog::PrintV(">>> SignFile: \t%s\n", strFile.c_str());
+ 			ZMachO macho;
+ 			if (macho.InitV("%s/%s", m_strAppFolder.c_str(), strFile.c_str())) {
++                if (m_bStrictSigning && macho.HasExecute()) return ZLog::Error(">>> Unclassified executable changed after preflight!\n");
++                string canonical;
++                if (m_bStrictSigning && !ZStrictContainedCode(m_strStrictRootPath, m_strAppFolder + "/" + strFile, canonical)) return false;
+ 				if (!macho.Sign(m_pSignAsset, m_bForceSign, "", "", "", "")) {
+ 					return false;
+ 				}
+ 			} else {
++                if (m_bStrictSigning) return false;
+ 				ZLog::WarnV(">>> Warning: Skipping non-Mach-O file: \t%s\n", strFile.c_str());
+ 			}
+ 		}
+@@ -358,8 +516,12 @@
+ 	}
+ 
+ 	string strExePath = strBaseFolder + "/" + strBundleExe;
++    const bool strictProfileBundle = strFolder == "/" || ZFile::IsPathSuffix(strFolder, ".app") || ZFile::IsPathSuffix(strFolder, ".appex");
++    if (m_bStrictSigning && !CheckStrictOutputs(strBaseFolder, strictProfileBundle)) return false;
+ 	ZLog::PrintV(">>> SignFolder: %s, (%s)\n", ("/" == strFolder) ? ZUtil::GetBaseName(m_strAppFolder.c_str()) : strFolder.c_str(), strBundleExe.c_str());
+ 
++    string canonical;
++    if (m_bStrictSigning && !ZStrictContainedCode(m_strStrictRootPath, strExePath, canonical)) return false;
+ 	ZMachO macho;
+ 	if (!macho.Init(strExePath.c_str())) {
+ 		ZLog::ErrorV(">>> Can't parse BundleExecute file! %s\n", strExePath.c_str());
+@@ -401,11 +563,25 @@
+ 		}
+ 	}
+ 
++    ZSignAsset* nodeAsset = m_pSignAsset;
++    if (m_bStrictSigning) {
++        const bool profileBundle = strFolder == "/" || ZFile::IsPathSuffix(strFolder, ".app") || ZFile::IsPathSuffix(strFolder, ".appex");
++        if (profileBundle) {
++            const auto found = m_mapStrictAssets.find(strBundleId);
++            if (found == m_mapStrictAssets.end() || !macho.IsExecute()) return false;
++            nodeAsset = found->second;
++            if (nodeAsset->m_strApplicationId != nodeAsset->m_strTeamId + "." + strBundleId) return false;
++            if (!ZStrictContainedOutput(m_strStrictRootPath, strBaseFolder + "/embedded.mobileprovision", false) ||
++                !ZFile::WriteFileV(nodeAsset->m_strProvData, "%s/embedded.mobileprovision", strBaseFolder.c_str())) return false;
++            bForceSign = true;
++        } else if (macho.HasExecute()) return false;
++    }
++
+ 	// The matched profile must land in the bundle BEFORE CodeResources is
+ 	// generated: the seal hashes every file in the bundle, so a profile
+ 	// written after sealing leaves the bundle failing Apple's verifier with
+ 	// "a sealed resource is missing or invalid" (codesign --verify --strict).
+-	if (m_pSignAssets) {
++	if (!m_bStrictSigning && m_pSignAssets) {
+ 		auto endsWith = [](const string& str, const string& suffix) {
+ 			return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
+ 		};
+@@ -422,6 +598,7 @@
+ 		}
+ 	}
+ 
++    if (m_bStrictSigning && !CheckStrictOutputs(strBaseFolder, strictProfileBundle)) return false;
+ 	ZFile::CreateFolderV("%s/_CodeSignature", strBaseFolder.c_str());
+ 	string strCodeResFile = strBaseFolder + "/_CodeSignature/CodeResources";
+ 
+@@ -462,12 +639,15 @@
+ 
+ 	string strCodeResData;
+ 	jvCodeRes.style_write_plist(strCodeResData);
++    if (m_bStrictSigning && !CheckStrictOutputs(strBaseFolder, strictProfileBundle)) return false;
+ 	if (!ZFile::WriteFile(strCodeResFile.c_str(), strCodeResData)) {
+ 		ZLog::ErrorV("\tWriting CodeResources failed! %s\n", strCodeResFile.c_str());
+ 		return false;
+ 	}
+ 
+-	if (!macho.Sign(m_pSignAsset, bForceSign, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResData)) {
++    if (!m_bStrictSigning) nodeAsset = m_pSignAsset;
++    if (m_bStrictSigning && !ZStrictContainedCode(m_strStrictRootPath, strExePath, canonical)) return false;
++	if (!macho.Sign(nodeAsset, bForceSign, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResData)) {
+ 		return false;
+ 	}
+ 
+@@ -787,7 +967,14 @@
+ 							bool bEnableCache,
+ 							bool bRemoveProvision)
+ {
+-	m_bForceSign = bForce;
++    if (m_bStrictSigning) {
++        string canonicalRoot;
++        const auto main = m_mapStrictAssets.find(m_strStrictMainId);
++        if (!ZStrictCanonicalPath(strFolder, canonicalRoot) || canonicalRoot != m_strStrictRootPath || !pSignAsset || main == m_mapStrictAssets.end() || pSignAsset != main->second ||
++            !strBundleId.empty() || !strBundleVersion.empty() || !strDisplayName.empty() ||
++            !arrInjectDylibs.empty() || !arrRemoveDylibNames.empty() || bRemoveProvision || !CheckStrictOutputs(strFolder, true)) return false;
++    }
++	m_bForceSign = m_bStrictSigning || bForce;
+ 	m_pSignAsset = pSignAsset;
+ 	m_bWeakInject = bWeakInject;
+ 	m_bRemoveProvision = bRemoveProvision;
+@@ -826,6 +1013,7 @@
+ 
+ 	ZFile::RemoveFileV("%s/embedded.mobileprovision", m_strAppFolder.c_str());
+ 	if (!pSignAsset->m_strProvData.empty()) {
++        if (m_bStrictSigning && !ZStrictContainedOutput(m_strStrictRootPath, m_strAppFolder + "/embedded.mobileprovision", false)) return false;
+ 		if (!ZFile::WriteFileV(pSignAsset->m_strProvData, "%s/embedded.mobileprovision", m_strAppFolder.c_str())) { // embedded.mobileprovision
+ 			ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
+ 			return false;
+--- a/src/openssl.h
++++ b/src/openssl.h
+@@ -14,7 +14,8 @@
+ 				const string& strPassword,
+ 				bool bAdhoc,
+ 				bool bSHA256Only,
+-				bool bSingleBinary);
++				bool bSingleBinary,
++                const string& strictBundleId = "");
+ 
+ 	bool GenerateCMS(const string& strCDHashData, 
+ 						const string& strCDHashesPlist, 
+@@ -55,6 +56,7 @@
+ 	string	m_strProvData;
+ 	string	m_strEntitleData;
+ 	string	m_strApplicationId;
++    string m_strLeafCertificateData;
+ 
+ private:
+ 	void*	m_evpPKey;
+--- a/src/openssl.cpp
++++ b/src/openssl.cpp
+@@ -1,6 +1,7 @@
+ #include "common.h"
+ #include "base64.h"
+ #include "openssl.h"
++#include "strict_signing.h"
+ #include <openssl/pem.h>
+ #include <openssl/cms.h>
+ #include <openssl/err.h>
+@@ -834,8 +835,10 @@
+ 	const string& strPassword,
+ 	bool bAdhoc,
+ 	bool bSHA256Only,
+-	bool bSingleBinary)
+-{
++	bool bSingleBinary,
++    const string& strictBundleId)
++{
++    if (!strictBundleId.empty() && (bAdhoc || bSingleBinary)) return false;
+ 	m_bAdhoc = bAdhoc;
+ 	m_bSHA256Only = bSHA256Only;
+ 	m_bSingleBinary = bSingleBinary;
+@@ -850,8 +853,12 @@
+ 		return true;
+ 	}
+ 
+-	ZFile::ReadFile(strProvFile.c_str(), m_strProvData);
+-	ZFile::ReadFile(strEntitleFile.c_str(), m_strEntitleData);
++    if (!strictBundleId.empty()) {
++        if (!ZStrictReadFile(strProvFile, 8388608, m_strProvData) || !ZStrictReadFile(strEntitleFile, 1048576, m_strEntitleData)) return false;
++    } else {
++        ZFile::ReadFile(strProvFile.c_str(), m_strProvData);
++        ZFile::ReadFile(strEntitleFile.c_str(), m_strEntitleData);
++    }
+ 	if (m_strProvData.empty()) {
+ 		ZLog::Error(">>> Can't find provision file!\n");
+ 		return false;
+@@ -860,7 +867,7 @@
+ 	jvalue jvProv;
+ 	string strProvContent;
+ 	if (GetCMSContent(m_strProvData, strProvContent)) {
+-		if (jvProv.read_plist(strProvContent)) {
++        if (strictBundleId.empty() ? jvProv.read_plist(strProvContent) : ZStrictReadMetadata(strProvContent, jvProv)) {
+ 			m_strApplicationId = jvProv["Entitlements"]["application-identifier"].as_cstr();
+ 			m_strTeamId = jvProv["TeamIdentifier"][0].as_cstr();
+ 			if (m_strEntitleData.empty()) {
+@@ -868,6 +875,17 @@
+ 			}
+ 		}
+ 	}
++
++    if (!strictBundleId.empty()) {
++        jvalue entitlements;
++        if (!ZStrictReadFile(strEntitleFile, 1048576, m_strEntitleData) ||
++            !ZStrictReadEntitlements(m_strEntitleData, entitlements) ||
++            !ZStrictValidateEntitlements(jvProv, entitlements, strictBundleId)) {
++            return ZLog::Error(">>> Strict bundle entitlement/profile validation failed!\n");
++        }
++        if (!ZStrictCanonicalEntitlements(entitlements, m_strEntitleData))
++            return ZLog::Error(">>> Strict signing supports exact bool/string/array/dict rights only; unsupported XML/DER entitlement serialization!\n");
++    }
+ 
+ 	if (m_strTeamId.empty()) {
+ 		ZLog::Error(">>> Can't find TeamId!\n");
+@@ -950,6 +968,16 @@
+ 		return false;
+ 	}
+ 
++    if (!strictBundleId.empty()) {
++        const int length = i2d_X509(x509Cert, NULL);
++        if (length <= 0) return ZLog::Error(">>> Cannot encode selected signing certificate!\n");
++        m_strLeafCertificateData.resize(length);
++        unsigned char* bytes = reinterpret_cast<unsigned char*>(&m_strLeafCertificateData[0]);
++        if (i2d_X509(x509Cert, &bytes) != length || !ZStrictLeafCertificateAllowed(jvProv, m_strLeafCertificateData)) {
++            return ZLog::Error(">>> Selected signing certificate is not authorized by this profile!\n");
++        }
++    }
++
+ 	if (!GetCertSubjectCN(x509Cert, m_strSubjectCN)) {
+ 		ZLog::Error(">>> Can't find paired certificate subject common name!\n");
+ 		return false;
+--- a/src/macho.h
++++ b/src/macho.h
+@@ -13,6 +13,8 @@
+ 	bool Free();
+ 	void PrintInfo();
+ 	bool CheckSignature() const;
++    bool IsExecute() const;
++    bool HasExecute() const;
+ 	bool Sign(ZSignAsset* pSignAsset,
+ 				bool bForce, 
+ 				string strBundleId, 
+--- a/src/macho.cpp
++++ b/src/macho.cpp
+@@ -121,6 +121,16 @@
+ 	);
+ }
+ 
++bool ZMachO::IsExecute() const
++{
++    return !m_arrArchOes.empty() && all_of(m_arrArchOes.begin(), m_arrArchOes.end(), [](ZArchO* arch) { return arch->IsExecute(); });
++}
++
++bool ZMachO::HasExecute() const
++{
++    return any_of(m_arrArchOes.begin(), m_arrArchOes.end(), [](ZArchO* arch) { return arch->IsExecute(); });
++}
++
+ bool ZMachO::Sign(ZSignAsset* pSignAsset, bool bForce, string strBundleId, string strInfoSHA1, string strInfoSHA256, const string& strCodeResourcesData)
+ {
+ 	if (NULL == m_pBase || m_arrArchOes.empty()) {
+--- /dev/null
++++ b/src/strict_signing.h
+@@ -0,0 +1,476 @@
++#pragma once
++#include "common.h"
++#include "json.h"
++#include "base64.h"
++#include <ctime>
++
++// Opt-in policy helpers: no key access, logging of profile contents or signing.
++struct ZStrictBundleSpec {
++    string bundleId;
++    string profilePath;
++    string entitlementsPath;
++};
++
++inline bool ZStrictBundleId(const string& value)
++{
++    if (value.empty() || value.front() == '.' || value.back() == '.') return false;
++    char previous = 0;
++    for (unsigned char c : value) {
++        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++              (c >= '0' && c <= '9') || c == '-' || c == '.')) return false;
++        if (c == '.' && previous == '.') return false;
++        previous = c;
++    }
++    return true;
++}
++
++inline bool ZStrictReadFile(const string& path, size_t limit, string& result)
++{
++    result.clear();
++    FILE* file = NULL;
++    struct stat info;
++#ifdef _WIN32
++    file = fopen(path.c_str(), "rb");
++    if (!file) return false;
++    const bool admitted = fstat(fileno(file), &info) == 0;
++#else
++    const int descriptor = open(path.c_str(), O_RDONLY | O_NONBLOCK);
++    if (descriptor < 0) return false;
++    if (fstat(descriptor, &info) != 0 || !S_ISREG(info.st_mode)) { close(descriptor); return false; }
++    file = fdopen(descriptor, "rb");
++    if (!file) { close(descriptor); return false; }
++    const bool admitted = true;
++#endif
++    bool valid = admitted && S_ISREG(info.st_mode) && info.st_size > 0 && uint64_t(info.st_size) <= limit;
++    char buffer[4096];
++    while (valid) {
++        const size_t count = fread(buffer, 1, min(sizeof(buffer), limit + 1 - result.size()), file);
++        result.append(buffer, count);
++        if (result.size() > limit || ferror(file)) { valid = false; break; }
++        if (!count) break;
++    }
++    fclose(file);
++    return valid && !result.empty();
++}
++
++// Strict signing writes code only inside the preflighted staging root.
++inline bool ZStrictCanonicalPath(const string& path, string& result)
++{
++    result.clear();
++#ifdef _WIN32
++    return false;
++#else
++    char resolved[PATH_MAX];
++    if (!realpath(path.c_str(), resolved)) return false;
++    result = resolved;
++    return true;
++#endif
++}
++
++inline bool ZStrictContainedCode(const string& root, const string& path, string& resolved)
++{
++    struct stat info;
++    return !root.empty() && ZStrictCanonicalPath(path, resolved) && resolved.size() > root.size() &&
++           resolved.compare(0, root.size(), root) == 0 && resolved[root.size()] == '/' &&
++           stat(resolved.c_str(), &info) == 0 && S_ISREG(info.st_mode) && info.st_nlink == 1;
++}
++
++inline bool ZStrictContainedOutput(const string& root, const string& path, bool directory)
++{
++    if (root.empty() || path.empty()) return false;
++#ifdef _WIN32
++    return false;
++#else
++    struct stat leaf;
++    // Known output aliases can overwrite admitted code or Info.plist inside the root.
++    if (lstat(path.c_str(), &leaf) == 0 && S_ISLNK(leaf.st_mode)) return false;
++    string cursor = path;
++    bool original = true;
++    for (;;) {
++        string resolved;
++        struct stat info;
++        if (ZStrictCanonicalPath(cursor, resolved)) {
++            const bool inside = resolved == root || (resolved.size() > root.size() &&
++                resolved.compare(0, root.size(), root) == 0 && resolved[root.size()] == '/');
++            if (!inside || stat(resolved.c_str(), &info) != 0) return false;
++            return original ? (directory ? S_ISDIR(info.st_mode) : (S_ISREG(info.st_mode) && info.st_nlink == 1)) : S_ISDIR(info.st_mode);
++        }
++        // A dangling or otherwise unresolvable existing link is never a fresh output.
++        if (lstat(cursor.c_str(), &info) == 0 || errno != ENOENT) return false;
++        const size_t separator = cursor.find_last_of('/');
++        if (separator == string::npos || separator == 0) return false;
++        cursor.erase(separator);
++        original = false;
++    }
++#endif
++}
++
++inline void ZStrictWhitespace(const string& text, size_t& position)
++{
++    while (position < text.size() && (text[position] == ' ' || text[position] == '\t' || text[position] == '\r' || text[position] == '\n')) ++position;
++}
++
++inline bool ZStrictJsonString(const string& text, size_t& position, string& value)
++{
++    ZStrictWhitespace(text, position);
++    const size_t begin = position;
++    if (position == text.size() || text[position++] != '"') return false;
++    while (position < text.size()) {
++        const unsigned char c = text[position++];
++        if (c < 32) return false;
++        if (c == '"') {
++            jvalue decoded;
++            if (!decoded.read(text.substr(begin, position - begin)) || !decoded.is_string()) return false;
++            value = decoded.as_string();
++            return true;
++        }
++        if (c != '\\') continue;
++        if (position == text.size()) return false;
++        const char escape = text[position++];
++        if (escape == 'u') {
++            if (text.size() - position < 4) return false;
++            const string code = text.substr(position, 4);
++            if (code.find_first_not_of("0123456789abcdefABCDEF") != string::npos) return false;
++            const unsigned long scalar = strtoul(code.c_str(), NULL, 16);
++            if (scalar == 0 || (scalar >= 0xd800 && scalar <= 0xdfff)) return false;
++            position += 4;
++        } else if (string("\"\\/bfnrt").find(escape) == string::npos) return false;
++    }
++    return false;
++}
++
++inline bool ZStrictJsonCharacter(const string& text, size_t& position, char expected)
++{
++    ZStrictWhitespace(text, position);
++    if (position == text.size() || text[position] != expected) return false;
++    ++position;
++    return true;
++}
++
++inline bool ZStrictParseManifest(const string& text, const string& directory,
++                                vector<ZStrictBundleSpec>& result)
++{
++    result.clear();
++    if (text.empty() || text.size() > 65536) return false;
++    size_t position = 0;
++    if (!ZStrictJsonCharacter(text, position, '[')) return false;
++    set<string> identifiers;
++    for (;;) {
++        if (result.size() >= 64 || !ZStrictJsonCharacter(text, position, '{')) return false;
++        map<string, string> fields;
++        for (;;) {
++            string key, value;
++            if (!ZStrictJsonString(text, position, key) || !ZStrictJsonCharacter(text, position, ':') ||
++                !ZStrictJsonString(text, position, value) || !fields.emplace(key, value).second) return false;
++            ZStrictWhitespace(text, position);
++            if (position == text.size()) return false;
++            if (text[position] == '}') { ++position; break; }
++            if (!ZStrictJsonCharacter(text, position, ',')) return false;
++        }
++        if (fields.size() != 3 || !fields.count("bundle_id") || !fields.count("profile_path") || !fields.count("entitlements_path")) return false;
++        ZStrictBundleSpec spec{fields["bundle_id"], fields["profile_path"], fields["entitlements_path"]};
++        if (!ZStrictBundleId(spec.bundleId) || !identifiers.insert(spec.bundleId).second ||
++            spec.profilePath.empty() || spec.entitlementsPath.empty()) return false;
++        if (spec.profilePath.front() != '/') spec.profilePath = directory + "/" + spec.profilePath;
++        if (spec.entitlementsPath.front() != '/') spec.entitlementsPath = directory + "/" + spec.entitlementsPath;
++        result.push_back(spec);
++        ZStrictWhitespace(text, position);
++        if (position == text.size()) return false;
++        if (text[position] == ']') { ++position; break; }
++        if (!ZStrictJsonCharacter(text, position, ',')) return false;
++    }
++    ZStrictWhitespace(text, position);
++    return position == text.size();
++}
++
++inline bool ZStrictEntitlementAllowed(const jvalue& value, const jvalue& grant)
++{
++    if (value.type() != grant.type()) return false;
++    if (value.is_string()) {
++        const string requested = value.as_string(), permission = grant.as_string();
++        if (requested.find('*') != string::npos) return false;
++        if (requested == permission) return true;
++        const size_t wildcard = permission.find('*');
++        return wildcard != string::npos && wildcard == permission.size() - 1 &&
++               requested.compare(0, wildcard, permission, 0, wildcard) == 0;
++    }
++    if (value.is_array()) {
++        for (size_t i = 0; i < value.size(); ++i) {
++            bool allowed = false;
++            for (size_t j = 0; j < grant.size(); ++j) {
++                if (ZStrictEntitlementAllowed(value[i], grant[j])) { allowed = true; break; }
++            }
++            if (!allowed) return false;
++        }
++        return true;
++    }
++    if (value.is_object()) {
++        vector<string> keys;
++        value.get_keys(keys);
++        for (const string& key : keys) {
++            if (!grant.has(key) || !ZStrictEntitlementAllowed(value[key], grant[key])) return false;
++        }
++        return true;
++    }
++    if (value.is_bool()) return value.as_bool() == grant.as_bool();
++    if (value.is_int()) return value.as_int64() == grant.as_int64();
++    if (value.is_double()) return value.as_double() == grant.as_double();
++    if (value.is_data()) return value.as_data() == grant.as_data();
++    if (value.is_date()) return value.as_date() == grant.as_date();
++    return false;
++}
++
++inline bool ZStrictCertificateMetadata(const jvalue& profile)
++{
++    const jvalue& certificates = profile["DeveloperCertificates"];
++    if (!certificates.is_array() || certificates.size() == 0) return false;
++    for (size_t i = 0; i < certificates.size(); ++i)
++        if (!certificates[i].is_data() || certificates[i].as_data().empty()) return false;
++    return true;
++}
++
++inline bool ZStrictValidateEntitlements(const jvalue& profile, const jvalue& entitlements,
++                                       const string& bundleId)
++{
++    const jvalue& teams = profile["TeamIdentifier"];
++    const jvalue& grants = profile["Entitlements"];
++    if (!ZStrictCertificateMetadata(profile) || !ZStrictBundleId(bundleId) || !teams.is_array() || teams.size() != 1 ||
++        !teams[0].is_string() || teams[0].as_string().empty() ||
++        !grants.is_object() || !entitlements.is_object() || entitlements.size() == 0) return false;
++    const string team = teams[0].as_string();
++    const string appId = team + "." + bundleId;
++    for (const jvalue* values : {&grants, &entitlements}) {
++        if (!(*values)["application-identifier"].is_string() || (*values)["application-identifier"].as_string() != appId ||
++            !(*values)["com.apple.developer.team-identifier"].is_string() || (*values)["com.apple.developer.team-identifier"].as_string() != team ||
++            !(*values)["get-task-allow"].is_bool() || (*values)["get-task-allow"].as_bool()) return false;
++    }
++    return ZStrictEntitlementAllowed(entitlements, grants);
++}
++
++inline bool ZStrictLeafCertificateAllowed(const jvalue& profile, const string& certificateDER)
++{
++    const jvalue& certificates = profile["DeveloperCertificates"];
++    if (certificateDER.empty() || !ZStrictCertificateMetadata(profile)) return false;
++    for (size_t i = 0; i < certificates.size(); ++i) {
++        if (certificates[i].as_data() == certificateDER) return true;
++    }
++    return false;
++}
++
++#ifdef __APPLE__
++#include <dlfcn.h>
++#endif
++
++// The system XML reader supplies decoded text and validates XML, including EOF.
++// No DTD loading/entity substitution is enabled. Binary plists are not accepted.
++inline bool ZStrictReadXMLPlist(const string& text, jvalue& result, bool metadata)
++{
++    result.clear();
++    if (text.empty() || text.size() > (metadata ? 8388608 : 1048576) || text.find('\0') != string::npos || text.compare(0, 8, "bplist00") == 0) return false;
++#ifndef __APPLE__
++    return false; // The opt-in mode requires the macOS system reader.
++#else
++    static void* library = dlopen("/usr/lib/libxml2.2.dylib", RTLD_LOCAL | RTLD_LAZY);
++    if (!library) return false;
++    typedef void* (*Create)(const char*, int, const char*, const char*, int);
++    typedef int (*Integer)(void*);
++    typedef const unsigned char* (*String)(void*);
++    typedef void (*Free)(void*);
++    const auto create = reinterpret_cast<Create>(dlsym(library, "xmlReaderForMemory"));
++    const auto read = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderRead"));
++    const auto type = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderNodeType"));
++    const auto empty = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderIsEmptyElement"));
++    const auto attributeCount = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderAttributeCount"));
++    const auto firstAttribute = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderMoveToFirstAttribute"));
++    const auto element = reinterpret_cast<Integer>(dlsym(library, "xmlTextReaderMoveToElement"));
++    const auto name = reinterpret_cast<String>(dlsym(library, "xmlTextReaderConstName"));
++    const auto value = reinterpret_cast<String>(dlsym(library, "xmlTextReaderConstValue"));
++    const auto freeReader = reinterpret_cast<Free>(dlsym(library, "xmlFreeTextReader"));
++    if (!create || !read || !type || !empty || !attributeCount || !firstAttribute || !element || !name || !value || !freeReader) return false;
++    const size_t start = text.find_first_not_of(" \t\r\n");
++    if (start == string::npos) return false;
++    const string document = text.substr(start, text.find_last_not_of(" \t\r\n") - start + 1);
++    void* reader = create(document.data(), int(document.size()), NULL, NULL, (1 << 11) | (1 << 5) | (1 << 6)); // NONET, NOERROR, NOWARNING
++    if (!reader) return false;
++    struct ReaderGuard { void* reader; Free free; ~ReaderGuard() { free(reader); } } guard{reader, freeReader};
++    struct Frame { string tag; jvalue object; string text; string key; set<string> keys; bool hasKey = false; };
++    vector<Frame> stack;
++    bool rootSeen = false, rootComplete = false;
++    const string standardDTD = "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">";
++    auto finish = [&]() -> bool {
++        Frame frame = stack.back(); stack.pop_back();
++        jvalue parsed;
++        if (frame.tag == "dict" || frame.tag == "array") {
++            if (frame.hasKey) return false;
++            parsed = frame.object;
++        } else if (frame.tag == "true" || frame.tag == "false") {
++            if (!frame.text.empty()) return false;
++            parsed = frame.tag == "true";
++        } else if (frame.tag == "string" || frame.tag == "key") {
++            parsed = frame.text;
++        } else if (frame.tag == "integer") {
++            if (frame.text.empty()) return false;
++            size_t start = (frame.text[0] == '-' || frame.text[0] == '+') ? 1 : 0;
++            if (start == frame.text.size() || frame.text.find_first_not_of("0123456789", start) != string::npos) return false;
++            errno = 0; char* end = NULL;
++            const long long number = strtoll(frame.text.c_str(), &end, 10);
++            if (errno == ERANGE || !end || *end) return false;
++            parsed = int64_t(number);
++        } else if (frame.tag == "real") {
++            if (frame.text.empty() || frame.text.find_first_not_of("0123456789+-.eE") != string::npos) return false;
++            errno = 0; char* end = NULL;
++            const double number = strtod(frame.text.c_str(), &end);
++            if (errno == ERANGE || end == frame.text.c_str() || !end || *end || !isfinite(number)) return false;
++            parsed = number;
++        } else if (metadata && frame.tag == "data") {
++            string encoded;
++            for (unsigned char character : frame.text) {
++                if (character == ' ' || character == '\t' || character == '\r' || character == '\n') continue;
++                encoded += character;
++            }
++            if (encoded.size() % 4 != 0) return false;
++            const size_t padding = encoded.find('=');
++            if (padding != string::npos && (encoded.size() - padding > 2 || encoded.find_first_not_of('=', padding) != string::npos)) return false;
++            if (encoded.substr(0, padding).find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") != string::npos) return false;
++            jbase64 decoder;
++            string decoded; decoder.decode(encoded.c_str(), decoded);
++            jbase64 encoder;
++            if (string(encoder.encode(decoded)) != encoded) return false;
++            parsed.assign_data(decoded);
++        } else if (metadata && frame.tag == "date") {
++            if (frame.text.size() != 20) return false;
++            struct tm date = {};
++            const char* end = strptime(frame.text.c_str(), "%Y-%m-%dT%H:%M:%SZ", &date);
++            if (!end || *end) return false;
++            const time_t instant = timegm(&date);
++            struct tm roundTrip;
++            if (!gmtime_r(&instant, &roundTrip)) return false;
++            char formatted[32];
++            if (!strftime(formatted, sizeof(formatted), "%Y-%m-%dT%H:%M:%SZ", &roundTrip) || frame.text != formatted) return false;
++            parsed.assign_date(instant);
++        } else if (frame.tag == "plist") {
++            if (!frame.object.is_object() || !stack.empty()) return false;
++            result = frame.object; rootComplete = true; return true;
++        } else return false;
++        if (stack.empty()) return false;
++        Frame& parent = stack.back();
++        if (parent.tag == "dict") {
++            if (frame.tag == "key") {
++                if (parent.hasKey || frame.text.empty() || !parent.keys.insert(frame.text).second) return false;
++                parent.key = frame.text; parent.hasKey = true;
++            } else {
++                if (!parent.hasKey) return false;
++                parent.object[parent.key] = parsed; parent.hasKey = false;
++            }
++        } else if (parent.tag == "array") {
++            if (frame.tag == "key") return false;
++            parent.object.push_back(parsed);
++        } else if (parent.tag == "plist") {
++            if (frame.tag != "dict" || !parent.object.is_null()) return false;
++            parent.object = parsed;
++        } else return false;
++        return true;
++    };
++    int status;
++    while ((status = read(reader)) == 1) {
++        const int kind = type(reader);
++        const char* nodeName = reinterpret_cast<const char*>(name(reader));
++        const char* nodeValue = reinterpret_cast<const char*>(value(reader));
++        if (kind == 10) { // Only the literal standard, non-loading Apple plist declaration.
++            const size_t position = document.find("<!DOCTYPE");
++            if (rootSeen || position == string::npos || document.compare(position, standardDTD.size(), standardDTD) != 0 ||
++                document.find("<!DOCTYPE", position + standardDTD.size()) != string::npos || document.find("<!ENTITY") != string::npos) return false;
++            continue;
++        }
++        if (kind == 8 || kind == 17) continue; // Comments / XML declaration.
++        if (kind == 3 || kind == 4 || kind == 13 || kind == 14) {
++            const string content = nodeValue ? nodeValue : "";
++            if (!stack.empty() && stack.back().tag != "dict" && stack.back().tag != "array" && stack.back().tag != "plist") stack.back().text += content;
++            else if (content.find_first_not_of(" \t\r\n") != string::npos) return false;
++            continue;
++        }
++        if (kind == 1) {
++            if (!nodeName || rootComplete || stack.size() >= 32) return false;
++            const string tag = nodeName;
++            if (stack.empty()) {
++                if (rootSeen || tag != "plist" || attributeCount(reader) != 1 || firstAttribute(reader) != 1 ||
++                    !name(reader) || string(reinterpret_cast<const char*>(name(reader))) != "version" ||
++                    !value(reader) || string(reinterpret_cast<const char*>(value(reader))) != "1.0" || element(reader) != 1) return false;
++                rootSeen = true;
++            } else if (attributeCount(reader) != 0 || tag == "plist" ||
++                (stack.back().tag != "dict" && stack.back().tag != "array" && stack.back().tag != "plist")) return false;
++            if (tag != "plist" && tag != "dict" && tag != "array" && tag != "key" && tag != "string" && tag != "integer" && tag != "real" && tag != "true" && tag != "false" && !(metadata && (tag == "data" || tag == "date"))) return false;
++            Frame frame; frame.tag = tag;
++            if (tag == "dict") frame.object = jvalue(jvalue::E_OBJECT);
++            if (tag == "array") frame.object = jvalue(jvalue::E_ARRAY);
++            stack.push_back(frame);
++            if (empty(reader) == 1 && !finish()) return false;
++        } else if (kind == 15) {
++            if (!nodeName || stack.empty() || stack.back().tag != nodeName || !finish()) return false;
++        } else return false; // Entity references, PI, DTD content and unknown nodes.
++    }
++    return status == 0 && rootComplete && stack.empty() && result.is_object();
++#endif
++}
++
++inline bool ZStrictReadEntitlements(const string& text, jvalue& result)
++{
++    return ZStrictReadXMLPlist(text, result, false);
++}
++
++inline bool ZStrictReadMetadata(const string& text, jvalue& result)
++{
++    result.clear();
++    if (text.empty() || text.size() > 8388608) return false;
++    if (text.compare(0, 8, "bplist00") == 0) {
++        jpreader reader(true);
++        return reader.parse_binary(text.data(), text.size(), result) && result.is_object();
++    }
++    return ZStrictReadXMLPlist(text, result, true);
++}
++
++// The legacy DER builder supports this subset only. Require both serializers to
++// preserve the exact authorized types and values before any private key access.
++inline bool ZStrictDERCompatible(const jvalue& value)
++{
++    if (value.is_string() || value.is_bool()) return true;
++    if (value.is_array()) {
++        for (size_t i = 0; i < value.size(); ++i) if (!ZStrictDERCompatible(value[i])) return false;
++        return true;
++    }
++    if (value.is_object()) {
++        vector<string> keys; value.get_keys(keys);
++        for (const string& key : keys) if (!ZStrictDERCompatible(value[key])) return false;
++        return true;
++    }
++    return false;
++}
++
++inline bool ZStrictExactValue(const jvalue& left, const jvalue& right)
++{
++    if (left.type() != right.type()) return false;
++    if (left.is_string()) return left.as_string() == right.as_string();
++    if (left.is_bool()) return left.as_bool() == right.as_bool();
++    if (left.is_array()) {
++        if (left.size() != right.size()) return false;
++        for (size_t i = 0; i < left.size(); ++i) if (!ZStrictExactValue(left[i], right[i])) return false;
++        return true;
++    }
++    if (left.is_object()) {
++        if (left.size() != right.size()) return false;
++        vector<string> keys; left.get_keys(keys);
++        for (const string& key : keys) if (!right.has(key) || !ZStrictExactValue(left[key], right[key])) return false;
++        return true;
++    }
++    return false;
++}
++
++inline bool ZStrictCanonicalEntitlements(const jvalue& desired, string& canonical)
++{
++    canonical.clear();
++    if (!desired.is_object() || !ZStrictDERCompatible(desired)) return false;
++    desired.style_write_plist(canonical);
++    jvalue systemValue, legacyValue;
++    return ZStrictReadEntitlements(canonical, systemValue) && legacyValue.read_plist(canonical) &&
++           ZStrictExactValue(desired, systemValue) && ZStrictExactValue(desired, legacyValue);
++}
+--- a/src/common/json.h
++++ b/src/common/json.h
+@@ -568,7 +568,7 @@
+ class jpreader
+ {
+ public:
+-	jpreader();
++	jpreader(bool reject_ambiguous_metadata = false);
+ 
+ public:
+ 	enum bplist_object_type
+@@ -670,6 +670,7 @@
+ 	bool		_read_binary_value(const char*& pcur, jvalue& pv);
+ 	bool		_read_unicode(const char* pcur, size_t size, jvalue& pv);
+ 	bool		_bp_in_bounds(const char* p, size_t n) const;
++    bool _charge_binary_bytes(size_t count);
+ 
+ private: //xml
+ 	const char* m_pbegin;
+@@ -680,6 +681,9 @@
+ 	int			m_depth;
+ 
+ private: //binary
++    bool m_reject_ambiguous_metadata;
++    size_t m_binary_read_count;
++    size_t m_binary_byte_count;
+ 	const char* m_ptrailer;
+ 	uint64_t	m_num_objects;
+ 	uint64_t	m_top_object_offset;
+--- a/src/common/json.cpp
++++ b/src/common/json.cpp
+@@ -2112,8 +2112,11 @@
+ }
+ 
+ //////////////////////////////////////////////////////////////////////////
+-jpreader::jpreader()
+-{
++jpreader::jpreader(bool reject_ambiguous_metadata)
++{
++    m_reject_ambiguous_metadata = reject_ambiguous_metadata;
++    m_binary_read_count = 0;
++    m_binary_byte_count = 0;
+ 	//xml
+ 	m_pbegin = NULL;
+ 	m_pend = NULL;
+@@ -2618,6 +2621,15 @@
+ 	return true;
+ }
+ 
++bool jpreader::_charge_binary_bytes(size_t count)
++{
++    if (!m_reject_ambiguous_metadata) return true;
++    const size_t limit = 16 * 1024 * 1024;
++    if (count > limit - m_binary_byte_count) return false;
++    m_binary_byte_count += count;
++    return true;
++}
++
+ bool jpreader::_read_unicode(const char* pcursor, size_t size, jvalue& pv)
+ {
+ 	if (0 == size) {
+@@ -2632,16 +2644,32 @@
+ 	if (!_bp_in_bounds(pcursor, byte_len)) {
+ 		return false;
+ 	}
+-	// UTF-16 -> UTF-8: worst case 3 bytes per code unit (we don't combine surrogates here).
++	// UTF-16 -> UTF-8: at most 3 bytes per code unit; strict pairs use 4 bytes per pair.
+ 	if (size > (SIZE_MAX / 3 - 1)) {
+ 		return false;
+ 	}
+ 
++    if (!_charge_binary_bytes(3 * size)) return false;
+ 	string out;
+ 	out.reserve(3 * size + 1);
+ 	const uint8_t* src = (const uint8_t*)pcursor;
+ 	for (size_t i = 0; i < size; ++i) {
+ 		uint16_t wc = (uint16_t)((src[2 * i] << 8) | src[2 * i + 1]);
++        if (m_reject_ambiguous_metadata) {
++            if (wc == 0 || (wc >= 0xdc00 && wc <= 0xdfff)) return false;
++            if (wc >= 0xd800 && wc <= 0xdbff) {
++                if (i + 1 >= size) return false;
++                const uint16_t low = (uint16_t)((src[2 * (i + 1)] << 8) | src[2 * (i + 1) + 1]);
++                if (low < 0xdc00 || low > 0xdfff) return false;
++                const uint32_t scalar = 0x10000 + ((uint32_t(wc) - 0xd800) << 10) + (uint32_t(low) - 0xdc00);
++                out += (char)(0xf0 | (scalar >> 18));
++                out += (char)(0x80 | ((scalar >> 12) & 0x3f));
++                out += (char)(0x80 | ((scalar >> 6) & 0x3f));
++                out += (char)(0x80 | (scalar & 0x3f));
++                ++i;
++                continue;
++            }
++        }
+ 		if (wc >= 0x800) {
+ 			out += (char)(0xE0 | ((wc >> 12) & 0x0F));
+ 			out += (char)(0x80 | ((wc >> 6) & 0x3F));
+@@ -2659,6 +2687,8 @@
+ 
+ bool jpreader::_read_binary_value(const char*& pcursor, jvalue& pv)
+ {
++    // Shared binary references can expand exponentially despite a small input.
++    if (m_reject_ambiguous_metadata && ++m_binary_read_count > 65536) return false;
+ 	if (m_depth >= MAX_DEPTH) {
+ 		return false;
+ 	}
+@@ -2682,6 +2712,7 @@
+ 	{
+ 		switch (value) {
+ 		case BPLIST_NULL:
++            if (m_reject_ambiguous_metadata) return false;
+ 			pv = jvalue(jvalue::E_NULL);
+ 			break;
+ 		case NS_NUMBER_FALSE:
+@@ -2691,6 +2722,7 @@
+ 			pv = true;
+ 			break;
+ 		default:
++            if (m_reject_ambiguous_metadata) return false;
+ 			pv = jvalue(jvalue::E_NULL);
+ 			break;
+ 		}
+@@ -2719,6 +2751,7 @@
+ 			float real = 0;
+ 			::memcpy(&real, pcursor, sizeof(float));
+ 			pv = (double)jpwriter::_swap(real);
++            if (m_reject_ambiguous_metadata && !isfinite(pv.as_double())) return false;
+ 			pcursor += sizeof(float);
+ 		} else if (3 == value) {
+ 			if (!_bp_in_bounds(pcursor, sizeof(double))) {
+@@ -2727,6 +2760,7 @@
+ 			double real = 0;
+ 			::memcpy(&real, pcursor, sizeof(double));
+ 			pv = jpwriter::_swap(real);
++            if (m_reject_ambiguous_metadata && !isfinite(pv.as_double())) return false;
+ 			pcursor += sizeof(double);
+ 		} else {
+ 			return false;
+@@ -2741,7 +2775,15 @@
+ 		double date = 0;
+ 		::memcpy(&date, pcursor, sizeof(double));
+ 		date = jpwriter::_swap(date);
+-		pv.assign_date(((time_t)date) + 978278400);
++        if (m_reject_ambiguous_metadata) {
++            // Check before the floating-point-to-time_t conversion; keep legacy parsing unchanged.
++            const double instant = date + 978307200.0;
++            if (!isfinite(instant) || instant < -62135596800.0 || instant > 253402300799.0 ||
++                instant < (double)numeric_limits<time_t>::lowest() || instant > (double)numeric_limits<time_t>::max()) return false;
++            pv.assign_date((time_t)instant);
++        } else {
++            pv.assign_date(((time_t)date) + 978278400);
++        }
+ 		pcursor += sizeof(double);
+ 	}
+ 	break;
+@@ -2756,6 +2798,7 @@
+ 		if (!_bp_in_bounds(pcursor, size)) {
+ 			return false;
+ 		}
++        if (!_charge_binary_bytes(size)) return false;
+ 		pv.assign_data((const uint8_t*)pcursor, size);
+ 		pcursor += size;
+ 	}
+@@ -2772,7 +2815,9 @@
+ 		if (!_bp_in_bounds(pcursor, size)) {
+ 			return false;
+ 		}
++        if (!_charge_binary_bytes(size)) return false;
+ 		string strval(pcursor, size);
++        if (m_reject_ambiguous_metadata && strval.find('\0') != string::npos) return false;
+ 		pv = strval.c_str();
+ 		pcursor += size;
+ 	}
+@@ -2795,6 +2840,7 @@
+ 	case NS_SET:
+ 	case NS_ORDEREDSET:
+ 	{
++        if (m_reject_ambiguous_metadata && type != NS_ARRAY) return false;
+ 		size_t size = value;
+ 		if (0x0F == value) {
+ 			if (!_read_uint_size(pcursor, size)) {
+@@ -2907,6 +2953,7 @@
+ 				return false;
+ 			}
+ 
++            if (m_reject_ambiguous_metadata && (!jkey.is_string() || jval.is_null() || pv.has(jkey.as_cstr()))) return false;
+ 			if (jkey.is_string() && !jval.is_null()) {
+ 				pv[jkey.as_cstr()] = jval;
+ 			}
+@@ -2915,6 +2962,7 @@
+ 	break;
+ 	case BPLIST_UID:
+ 	{
++        if (m_reject_ambiguous_metadata) return false;
+ 		size_t size = (size_t)value + 1;
+ 		if (size > 8) {
+ 			return false;
+@@ -2944,6 +2992,9 @@
+ 
+ bool jpreader::parse_binary(const char* pbdoc, size_t len, jvalue& pv)
+ {
++    m_binary_read_count = 0;
++    m_binary_byte_count = 0;
++    if (m_reject_ambiguous_metadata) pv.clear();
+ 	m_pbegin = pbdoc;
+ 	m_pend = pbdoc + len;
+ 	m_depth = 0;

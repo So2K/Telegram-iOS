@@ -215,6 +215,13 @@ public final class NavigationContainer: ASDisplayNode, ASGestureRecognizerDelega
             guard let layout = self.state.layout else {
                 return
             }
+            // SuperGram: a back swipe that starts while the push animation of the screen that was just opened is
+            // still settling used to be swallowed (the spring's long, visually invisible tail kept `state.transition`
+            // set for 0.5 s), so the user had to lift the finger and swipe again. Finish the push instantly instead
+            // and let the swipe take over.
+            if let currentTransition = self.state.transition, case .push = currentTransition.type, !currentTransition.coordinator.isInteractive {
+                currentTransition.coordinator.performCompletion(completion: {})
+            }
             guard self.state.transition == nil else {
                 return
             }

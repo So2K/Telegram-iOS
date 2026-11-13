@@ -12,6 +12,20 @@ import ItemListPeerItem
 import DeviceAccess
 import TelegramStringFormatting
 import PeerNameColorItem
+import SGSimpleSettings
+
+// MARK: Swiftgram
+/// SuperGram (W2A-06): whether the account-ID row is added to the **Settings** screen itself. Separate from
+/// `showProfileId`, which governs the `id:` row on a profile, and OFF by default.
+///
+/// Read raw, like the other cross-module SuperGram gates (`sgIsTabBarHiddenSetting()` in `TelegramRootController`,
+/// `SuperGramStoryGates`, `SuperGramShareButton`): the default here and the one registered by
+/// `SGSimpleSettings.registerDefaults()` must stay in sync at `false`.
+let superGramShowProfileIdInSettingsKey = "sgShowProfileIdInSettings"
+
+func superGramShowProfileIdInSettings() -> Bool {
+    return UserDefaults.standard.object(forKey: superGramShowProfileIdInSettingsKey) as? Bool ?? false
+}
 
 enum SettingsSection: Int, CaseIterable {
     case edit
@@ -19,6 +33,7 @@ enum SettingsSection: Int, CaseIterable {
     case accounts
     case myProfile
     case proxy
+    case superGram
     case apps
     case shortcuts
     case advanced
@@ -78,7 +93,22 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
             interaction.openSettings(.username)
         }))
     }
-    
+
+    // MARK: Swiftgram
+    // SuperGram (SGUI-05): account ID row in the Settings tab, copied on tap.
+    //
+    // SuperGram (W2A-06): opt-in, and OFF by default. `showProfileId` is on by default and drives the `id:` row on
+    // *other people's* profiles, which is the point of the feature; it should not also plant an accent-coloured
+    // "ID: 123456789" row into the stock Settings screen next to "Set Profile Photo" / "Set Username" for every
+    // user. With this off, your own ID is still one tap away under Settings -> My Profile, which goes through
+    // `infoItems` -> `InfoSection.superGram` and honours `showProfileId` as before.
+    if SGSimpleSettings.shared.showProfileId, superGramShowProfileIdInSettings(), let peer = data.peer {
+        let idText = String(peer.id.id._internalGetInt64Value())
+        items[.edit]!.append(PeerInfoScreenActionItem(id: 100, text: "ID: \(idText)", color: .accent, action: {
+            superGramCopyProfileText(idText, context: context, interaction: interaction)
+        }))
+    }
+
     if let settings = data.globalSettings {
         if settings.premiumGracePeriod {
             items[.phone]!.append(PeerInfoScreenInfoItem(id: 0, title: "Your access to Telegram Premium will expire soon!", text: .markdown("Unfortunately, your latest payment didn't come through. To keep your access to exclusive features, please renew the subscription."), isWarning: true, linkAction: nil))
@@ -168,7 +198,12 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
             }))
         }
     }
-    
+
+    // MARK: Swiftgram
+    items[.superGram]!.append(PeerInfoScreenDisclosureItem(id: 0, text: "SuperGram", icon: PresentationResourcesSettings.superGram, action: {
+        interaction.openSettings(.superGram)
+    }))
+
     var appIndex = 1000
     if let settings = data.globalSettings {
         for bot in settings.bots {
@@ -249,15 +284,15 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
         interaction.openSettings(.language)
     }))
     
-    let premiumConfiguration = PremiumConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
-    let isPremiumDisabled = premiumConfiguration.isPremiumDisabled
-    if !isPremiumDisabled || context.isPremium {
+    // SuperGram: no promo rows (UPS-03). "Telegram Premium" and "Telegram Business" stay only for subscribers
+    // (subscription / business management), "Your Stars" only with a non-zero balance, "Send a Gift" is hidden.
+    if context.isPremium {
         items[.payment]!.append(PeerInfoScreenDisclosureItem(id: 100, label: .text(""), text: presentationData.strings.Settings_Premium, icon: PresentationResourcesSettings.premium, action: {
             interaction.openSettings(.premium)
         }))
     }
     if let starsState = data.starsState {
-        if !isPremiumDisabled || abs(starsState.balance.value) > 0 {
+        if starsState.balance != StarsAmount.zero {
             let balanceText: NSAttributedString
             if abs(starsState.balance.value) > 0 {
                 let formattedLabel = formatStarsAmountText(starsState.balance, dateTimeFormat: presentationData.dateTimeFormat)
@@ -290,19 +325,12 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
             }))
         }
     }
-    if !isPremiumDisabled || context.isPremium {
+    if context.isPremium {
         items[.payment]!.append(PeerInfoScreenDisclosureItem(id: 104, label: .text(""), additionalBadgeLabel: nil, text: presentationData.strings.Settings_Business, icon: PresentationResourcesSettings.business, action: {
             interaction.openSettings(.businessSetup)
         }))
     }
-    if let starsState = data.starsState {
-        if !isPremiumDisabled || starsState.balance > StarsAmount.zero {
-            items[.payment]!.append(PeerInfoScreenDisclosureItem(id: 105, label: .text(""), text: presentationData.strings.Settings_SendGift, icon: PresentationResourcesSettings.premiumGift, action: {
-                interaction.openSettings(.premiumGift)
-            }))
-        }
-    }
-    
+
     if let settings = data.globalSettings {
         if settings.hasPassport {
             items[.extra]!.append(PeerInfoScreenDisclosureItem(id: 0, text: presentationData.strings.Settings_Passport, icon: PresentationResourcesSettings.passport, action: {

@@ -172,7 +172,11 @@ public final class HeaderPanelContainerComponent: Component {
             }
             
             var validPanelKeys: [AnyHashable] = []
-            for panel in component.panels {
+            // SuperGram: honour the declared panel order instead of the order in which callers
+            // happen to append panels, so that e.g. the media playback bar cannot end up below
+            // a panel that is supposed to sit under it.
+            let orderedPanels = component.panels.sorted { $0.orderIndex < $1.orderIndex }
+            for panel in orderedPanels {
                 validPanelKeys.append(panel.key)
                 
                 var panelTransition = transition

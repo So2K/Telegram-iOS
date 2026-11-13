@@ -85,7 +85,16 @@ public class PremiumLimitsListScreen: ViewController {
             self.containerView.addSubview(self.closeView)
         
             self.footerNode.action = { [weak self] in
-                self?.controller?.action()
+                guard let controller = self?.controller else {
+                    return
+                }
+                // SuperGram (UPS-14): for non-subscribers the footer button is a plain "OK" that closes the sheet;
+                // it never runs the caller's action, which opens the Premium sales screen.
+                if controller.superGramSuppressUpsell {
+                    controller.dismiss(animated: true, completion: nil)
+                } else {
+                    controller.action()
+                }
             }
             
             let context = controller.context
@@ -1466,17 +1475,28 @@ public class PremiumLimitsListScreen: ViewController {
     private let buttonText: String
     private let buttonGloss: Bool
     private let forceDark: Bool
-    
+
+    // SuperGram (UPS-14): true when this sheet must stay informational (non-subscriber, upsell hidden).
+    fileprivate let superGramSuppressUpsell: Bool
+
     public var action: () -> Void = {}
     public var disposed: () -> Void = {}
-    
+
     public init(context: AccountContext, subject: PremiumDemoScreen.Subject, source: PremiumDemoScreen.Source, order: [PremiumPerk]?, buttonText: String, isPremium: Bool, forceDark: Bool = false) {
         self.context = context
         self.subject = subject
         self.source = source
         self.order = order
-        self.buttonText = buttonText
-        self.buttonGloss = !isPremium
+        // SuperGram (UPS-14): non-subscribers get an "OK" button with no gloss instead of "Subscribe for …".
+        let superGramSuppressUpsell = superGramHidePremiumUpsell && !isPremium
+        self.superGramSuppressUpsell = superGramSuppressUpsell
+        if superGramSuppressUpsell {
+            self.buttonText = context.sharedContext.currentPresentationData.with({ $0 }).strings.Common_OK
+            self.buttonGloss = false
+        } else {
+            self.buttonText = buttonText
+            self.buttonGloss = !isPremium
+        }
         self.forceDark = forceDark
         
         super.init(navigationBarPresentationData: nil)

@@ -86,7 +86,10 @@ public func serializeBytes(_ value: Buffer, buffer: Buffer, boxed: Bool) {
             buffer.appendInt32(-1255641564)
         }
         
-        var length: Int32 = Int32(value.size)
+        // SuperGram: a buffer that declares a size but has no backing storage used to emit a length
+        // header followed by no payload, which desynchronizes the whole serialized stream (the reader
+        // then interprets the next fields as data). Serialize it as empty instead.
+        var length: Int32 = (value.size != 0 && value.data == nil) ? 0 : Int32(value.size)
         var padding: Int32 = 0
         if length >= 254 {
             var tmp: UInt8 = 254
@@ -271,18 +274,23 @@ public class Buffer: CustomStringConvertible {
         }
 
         if self.capacity < self._size + length {
-            self.capacity = self._size + length + 128
+            // SuperGram: commit `self.capacity` only after the allocation succeeds. HEAD 9fe18208 replaced
+            // `malloc(...)!` / `realloc(...)!` with a silent `return` but kept raising `self.capacity` first, so a
+            // failed realloc left the buffer claiming a capacity it does not have and the next append memcpy'd past
+            // the end of the old block.
+            let updatedCapacity = self._size + length + 128
             if self.data == nil {
-                guard let data = malloc(Int(self.capacity)) else {
+                guard let data = malloc(Int(updatedCapacity)) else {
                     return
                 }
                 self.data = data
             } else {
-                guard let data = realloc(self.data, Int(self.capacity)) else {
+                guard let data = realloc(self.data, Int(updatedCapacity)) else {
                     return
                 }
                 self.data = data
             }
+            self.capacity = updatedCapacity
         }
 
         guard let data = self.data else {
@@ -301,18 +309,20 @@ public class Buffer: CustomStringConvertible {
         }
 
         if self.capacity < self._size + buffer._size {
-            self.capacity = self._size + buffer._size + 128
+            // SuperGram: see appendBytes - raise `self.capacity` only after the allocation succeeds.
+            let updatedCapacity = self._size + buffer._size + 128
             if self.data == nil {
-                guard let data = malloc(Int(self.capacity)) else {
+                guard let data = malloc(Int(updatedCapacity)) else {
                     return
                 }
                 self.data = data
             } else {
-                guard let data = realloc(self.data, Int(self.capacity)) else {
+                guard let data = realloc(self.data, Int(updatedCapacity)) else {
                     return
                 }
                 self.data = data
             }
+            self.capacity = updatedCapacity
         }
         
         guard let data = self.data else {

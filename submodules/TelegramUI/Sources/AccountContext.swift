@@ -24,6 +24,9 @@ import DCTAnimationCacheImpl
 import DCTMultiAnimationRendererImpl
 import AppBundle
 import DirectMediaImageCache
+// MARK: Swiftgram
+import SGSimpleSettings
+import SGStrings
 
 private final class DeviceSpecificContactImportContext {
     let disposable = MetaDisposable()
@@ -820,6 +823,28 @@ public final class AccountContextImpl: AccountContext {
     }
     
     public func requestCall(peerId: PeerId, isVideo: Bool, completion: @escaping () -> Void) {
+        // MARK: Swiftgram
+        // SuperGram: "confirmCalls" asks before placing an audio/video call (SGM-F11). Swiftgram wraps the whole body
+        // in a closure; the body is kept unchanged in superGramPerformRequestCall instead.
+        // SuperGram: the confirmation needs a window to present in. A call requested while there is no main window
+        // (CallKit / an intent / a share-extension host) previously hit `mainWindow?.present` on nil and the call was
+        // silently dropped — no alert, no call. Fall through to placing the call instead: losing the confirmation
+        // step is strictly better than losing the call.
+        if SGSimpleSettings.shared.confirmCalls, let mainWindow = self.sharedContext.mainWindow {
+            let presentationData = self.sharedContext.currentPresentationData.with { $0 }
+            let title = isVideo ? i18n("CallConfirmation.Video.Title", presentationData.strings.baseLanguageCode) : i18n("CallConfirmation.Audio.Title", presentationData.strings.baseLanguageCode)
+            mainWindow.present(textAlertController(context: self, title: nil, text: title, actions: [TextAlertAction(type: .genericAction, title: presentationData.strings.Common_No, action: {}), TextAlertAction(type: .destructiveAction, title: presentationData.strings.Common_Yes, action: { [weak self] in
+                guard let self else {
+                    return
+                }
+                self.superGramPerformRequestCall(peerId: peerId, isVideo: isVideo, completion: completion)
+            })]), on: .root)
+        } else {
+            self.superGramPerformRequestCall(peerId: peerId, isVideo: isVideo, completion: completion)
+        }
+    }
+
+    private func superGramPerformRequestCall(peerId: PeerId, isVideo: Bool, completion: @escaping () -> Void) {
         guard let callResult = self.sharedContext.callManager?.requestCall(context: self, peerId: peerId, isVideo: isVideo, endCurrentIfAny: false) else {
             return
         }

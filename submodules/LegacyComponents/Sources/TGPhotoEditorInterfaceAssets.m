@@ -145,6 +145,22 @@
     return TGTintedImage([self gifIcon], [self accentColor]);
 }
 
+// MARK: Swiftgram
++ (UIImage *)telescopeIcon
+{
+    // SuperGram: the name must NOT carry the `@2x` scale suffix. UIKit treats `RecordVideoIconOverlay@2x` as the
+    // base name and loads the 60x60 px file at scale 1.0 (60x60 pt), which overflows the 40 pt button and overlaps
+    // the mute button. Passing the unsuffixed name lets UIKit resolve the `@2x` asset at scale 2 (30x30 pt),
+    // matching `muteIcon`.
+    return TGTintedImage(TGComponentsImageNamed(@"RecordVideoIconOverlay.png"), [self toolbarIconColor]);
+}
+
++ (UIImage *)telescopeActiveIcon
+{
+    // SuperGram: tint the raw asset once; tinting `telescopeIcon` again would just redo the toolbar tint.
+    return TGTintedImage(TGComponentsImageNamed(@"RecordVideoIconOverlay.png"), [self accentColor]);
+}
+
 + (UIImage *)gifIcon
 {
     return TGTintedImage([UIImage imageNamed:@"Editor/Gif"], [self toolbarIconColor]);

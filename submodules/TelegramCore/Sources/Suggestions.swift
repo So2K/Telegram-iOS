@@ -143,9 +143,32 @@ func _internal_getServerProvidedSuggestions(account: Account) -> Signal<[ServerP
             }
         }
         
-        return items.filter({ !dismissedSuggestions.contains($0.id) })
+        return items.filter({ item in
+            if dismissedSuggestions.contains(item.id) {
+                return false
+            }
+            if !telegramPromoSuggestionsEnabled && item.isPromo {
+                return false
+            }
+            return true
+        })
     }
     |> distinctUntilChanged
+}
+
+// SuperGram: server-driven marketing notices (Premium upgrade/annual/restore, Christmas gift, custom `.link` banners) are dropped.
+// Billing and account notices (grace period, Stars subscription low balance, password/email/passkey/phone setup, birthdays) are kept.
+let telegramPromoSuggestionsEnabled = false
+
+private extension ServerProvidedSuggestion {
+    var isPromo: Bool {
+        switch self {
+        case .upgradePremium, .annualPremium, .restorePremium, .xmasPremiumGift, .link:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 func _internal_getServerDismissedSuggestions(account: Account) -> Signal<[String], NoError> {

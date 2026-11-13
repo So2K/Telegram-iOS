@@ -24,6 +24,9 @@ swift_library(
         "//submodules/TelegramUI/Components/GlassBackgroundComponent",
         "//submodules/ComponentFlow",
         "//submodules/Components/ComponentDisplayAdapters",
+        # MARK: SuperGram
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
+        "//Swiftgram/SGStrings:SGStrings",
     ],
     visibility = [
         "//visibility:public",

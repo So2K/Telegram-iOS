@@ -359,7 +359,7 @@ final class ChatImageGalleryItemNode: ZoomableContentGalleryItemNode {
     }
     
     private func setupImageRecognition(_ generate: @escaping (TransformImageArguments) -> DrawingContext?, dimensions: PixelDimensions) {
-        guard let message = self.message, !message.isCopyProtected() && message.paidContent == nil else {
+        guard let message = self.message, message.sgGalleryCanSaveContent(peerIsCopyProtected: self.peerIsCopyProtected, isSecret: self.isSecret) && message.paidContent == nil else {
             return
         }
         let displaySize = dimensions.cgSize.fitted(CGSize(width: 1280.0, height: 1280.0)).dividedByScreenScale().integralFloor
@@ -459,7 +459,8 @@ final class ChatImageGalleryItemNode: ZoomableContentGalleryItemNode {
         self.translateToLanguage = translateToLanguage
         self.peerIsCopyProtected = peerIsCopyProtected
         self.isSecret = isSecret
-        self.imageNode.captureProtected = message.id.peerId.namespace == Namespaces.Peer.SecretChat || message.isCopyProtected() || peerIsCopyProtected || isSecret || message.paidContent != nil
+        // SuperGram: noforwards photos stay capturable while sgAllowScreenCaptureProtected is on; secret chats, self-destructing / view-once media and paid media stay protected
+        self.imageNode.captureProtected = SuperGramContentProtection.shouldDisableScreenCapture(isSecret: message.sgGalleryIsSecretContent(isSecret: isSecret) || message.paidContent != nil, isCopyProtected: message.isCopyProtected() || peerIsCopyProtected)
         self.updateFooter(animated: false)
         
         var title: String?
@@ -733,7 +734,7 @@ final class ChatImageGalleryItemNode: ZoomableContentGalleryItemNode {
                     f(.default)
                 })))
                 
-                if !message.isCopyProtected() && !self.peerIsCopyProtected && message.paidContent == nil, let media = self.contextAndMedia?.1 {
+                if message.sgGalleryCanSaveContent(peerIsCopyProtected: self.peerIsCopyProtected, isSecret: self.isSecret) && message.paidContent == nil, let media = self.contextAndMedia?.1 {
                     items.append(.action(ContextMenuActionItem(text: self.presentationData.strings.Gallery_CreateSticker, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Sticker"), color: theme.actionSheet.primaryTextColor) }, action: { [weak self] _, f in
                         f(.default)
                         guard let self else {
@@ -776,9 +777,27 @@ final class ChatImageGalleryItemNode: ZoomableContentGalleryItemNode {
                             controller.present(UndoOverlayController(presentationData: strongSelf.presentationData, content: .mediaSaved(text: strongSelf.presentationData.strings.Gallery_ImageSaved), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
                         })
                     })))
+                    // MARK: Swiftgram
+                    // SuperGram: SaveToCameraRoll.copyToPasteboard only copies TelegramMediaImage data, so the item is not offered for image documents
+                    if media.media is TelegramMediaImage {
+                        items.append(.action(ContextMenuActionItem(text: self.presentationData.strings.Conversation_ContextMenuCopy, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Copy"), color: theme.actionSheet.primaryTextColor) }, action: { [weak self] action in
+                            action.dismissWithResult(.default)
+
+                            let _ = (SaveToCameraRoll.copyToPasteboard(context: context, userLocation: .peer(message.id.peerId), mediaReference: media)
+                            |> deliverOnMainQueue).start(completed: { [weak self] in
+                                guard let strongSelf = self else {
+                                    return
+                                }
+                                guard let controller = strongSelf.galleryController() else {
+                                    return
+                                }
+                                controller.present(UndoOverlayController(presentationData: strongSelf.presentationData, content: .mediaSaved(text: strongSelf.presentationData.strings.Conversation_ImageCopied), elevatedLayout: false, animateInAsReplacement: false, action: { _ in return false }), in: .window(.root))
+                            })
+                        })))
+                    }
                 }
             }
-            
+
             if let peer, let message = self.message, canSendMessagesToPeer(peer) {
                 items.append(.action(ContextMenuActionItem(text: self.presentationData.strings.Conversation_ContextMenuReply, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Reply"), color: theme.contextMenu.primaryColor)}, action: { [weak self] _, f in
                     if let self, let navigationController = self.baseNavigationController() {

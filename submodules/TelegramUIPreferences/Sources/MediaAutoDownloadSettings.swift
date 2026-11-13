@@ -262,6 +262,12 @@ public struct MediaAutoSaveSettings: Codable, Equatable {
     }
 }
 
+public extension Notification.Name {
+    /// Posted after a thermal transition recomputes a shared account context's effective energy policy.
+    /// The notification object is that context.
+    static let superGramEnergyUsageSettingsDidChange = Notification.Name("SuperGramEnergyUsageSettingsDidChange")
+}
+
 public struct EnergyUsageSettings: Codable, Equatable {
     private enum CodingKeys: CodingKey {
         case activationThreshold

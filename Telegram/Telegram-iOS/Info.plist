@@ -5,13 +5,15 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).refresh</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).cleanup</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).upload.*</string>
 	</array>
 	<key>CFBundleAllowMixedLocalizations</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>${APP_NAME}</string>
+	<string>SuperGram</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIcons</key>
@@ -293,6 +295,8 @@
 	<string>We need this so that you can share photos and videos from your photo library.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>You can use Siri to send messages.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>SuperGram uses speech recognition to transcribe voice messages when you request it.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>

@@ -300,6 +300,7 @@ public func chatMessageGalleryControllerData(
                     let gallery = GalleryController(context: context, source: source ?? .peerMessagesAtId(messageId: message.id, chatLocation: chatLocation ?? .peer(id: message.id.peerId), customTag: chatFilterTag, chatLocationContextHolder: chatLocationContextHolder ?? Atomic<ChatLocationContextHolder?>(value: nil)), invertItemOrder: reverseMessageGalleryOrder, streamSingleVideo: stream, fromPlayingVideo: autoplayingVideo, landscape: landscape, timecode: timecode, synchronousLoad: synchronousLoad, replaceRootController: { [weak navigationController] controller, ready in
                         navigationController?.replaceTopController(controller, animated: false, ready: ready)
                         }, baseNavigationController: navigationController, actionInteraction: actionInteraction)
+                    gallery.temporaryDoNotWaitForReady = autoplayingVideo
                     return .gallery(.single(gallery))
                 }
                 
@@ -321,6 +322,8 @@ public func chatMessageGalleryControllerData(
                 let startState: Signal<(timecode: Double?, rate: Double), NoError>
                 if let timecode = timecode {
                     startState = .single((timecode: timecode, rate: 1.0))
+                } else if let image = galleryMedia as? TelegramMediaImage, image.video == nil {
+                    startState = .single((timecode: nil, rate: 1.0))
                 } else {
                     startState = mediaPlaybackStoredState(engine: context.engine, messageId: message.id)
                     |> map { state in

@@ -21,14 +21,106 @@ private func parseRange(from rangeString: String) -> Range<Int>? {
         return nil
     }
     
-    let rangeValues = rangeString.dropFirst("bytes=".count).split(separator: "-")
+    let rangeValues = rangeString.dropFirst("bytes=".count).split(separator: "-", omittingEmptySubsequences: false)
     
     guard rangeValues.count == 2,
           let start = Int(rangeValues[0]),
-          let end = Int(rangeValues[1]) else {
+          let end = Int(rangeValues[1]),
+          start >= 0, start <= end, end < Int.max else {
         return nil
     }
     return start ..< end
+}
+
+// A queued Signal value owns its segment until the response has read it. Dropping a queued value on abort
+// must clean the file too; raw TempBoxFile has no deinit cleanup.
+fileprivate final class HLSJSTemporaryFile {
+    let file: TempBoxFile
+    private let disposed = Atomic<Bool>(value: false)
+
+    init(file: TempBoxFile) {
+        self.file = file
+    }
+
+    deinit {
+        self.dispose()
+    }
+
+    func dispose() {
+        if !self.disposed.swap(true) {
+            TempBox.shared.dispose(self.file)
+        }
+    }
+
+    func detach() -> TempBoxFile {
+        let _ = self.disposed.swap(true)
+        return self.file
+    }
+}
+
+private final class HLSJSXHRRequest {
+    let contextId: Int
+    let disposable = MetaDisposable()
+    var responseStarted = false
+
+    init(contextId: Int) {
+        self.contextId = contextId
+    }
+}
+
+// Confined to the main queue. Install before subscribing: cache hits can answer synchronously.
+private final class HLSJSXHRRequests {
+    private var requests: [Int: HLSJSXHRRequest] = [:]
+
+    deinit {
+        self.cancelAll()
+    }
+
+    func begin(id: Int, contextId: Int) -> HLSJSXHRRequest {
+        self.cancel(id: id)
+        let request = HLSJSXHRRequest(contextId: contextId)
+        self.requests[id] = request
+        return request
+    }
+
+    func startResponse(id: Int, request: HLSJSXHRRequest) -> Bool {
+        guard self.requests[id] === request, !request.responseStarted else {
+            return false
+        }
+        request.responseStarted = true
+        return true
+    }
+
+    @discardableResult
+    func complete(id: Int, request: HLSJSXHRRequest) -> Bool {
+        guard self.requests[id] === request else {
+            return false
+        }
+        self.requests.removeValue(forKey: id)
+        request.disposable.dispose()
+        return true
+    }
+
+    func cancel(id: Int) {
+        if let request = self.requests.removeValue(forKey: id) {
+            request.disposable.dispose()
+        }
+    }
+
+    func cancel(contextId: Int) {
+        let requests = self.requests.filter { $0.value.contextId == contextId }
+        for (id, request) in requests {
+            self.complete(id: id, request: request)
+        }
+    }
+
+    func cancelAll() {
+        let requests = Array(self.requests.values)
+        self.requests.removeAll()
+        for request in requests {
+            request.disposable.dispose()
+        }
+    }
 }
 
 final class HLSJSServerSource: SharedHLSServer.Source {
@@ -40,8 +132,9 @@ final class HLSJSServerSource: SharedHLSServer.Source {
     
     private var playlistFetchDisposables: [Int: Disposable] = [:]
     
-    init(accountId: Int64, fileId: Int64, postbox: Postbox, userLocation: MediaResourceUserLocation, playlistFiles: [Int: FileMediaReference], qualityFiles: [Int: FileMediaReference]) {
-        self.id = "\(UInt64(bitPattern: accountId))_\(fileId)"
+    init(accountId: Int64, fileId: Int64, instanceId: Int, postbox: Postbox, userLocation: MediaResourceUserLocation, playlistFiles: [Int: FileMediaReference], qualityFiles: [Int: FileMediaReference]) {
+        // Separate players of the same media must route XHRs to their own cancellation owner.
+        self.id = "\(UInt64(bitPattern: accountId))_\(fileId)_\(instanceId)"
         self.postbox = postbox
         self.userLocation = userLocation
         self.playlistFiles = playlistFiles
@@ -144,113 +237,98 @@ final class HLSJSServerSource: SharedHLSServer.Source {
     }
     
     func fileData(id: Int64, range: Range<Int>) -> Signal<(TempBoxFile, Range<Int>, Int)?, NoError> {
-        guard let (quality, file) = self.qualityFiles.first(where: { $0.value.media.fileId.id == id }) else {
+        return self.ownedFileData(id: id, range: range)
+        |> map { result in
+            return result.map { ($0.0.detach(), $0.1, $0.2) }
+        }
+    }
+
+    fileprivate func ownedFileData(id: Int64, range: Range<Int>) -> Signal<(HLSJSTemporaryFile, Range<Int>, Int)?, NoError> {
+        guard let qualityFile = self.qualityFiles.first(where: { $0.value.media.fileId.id == id }) else {
             return .single(nil)
         }
-        
+        let file = qualityFile.value
+        #if DEBUG
+        let quality = qualityFile.key
+        #endif
+
         guard let size = file.media.size else {
             return .single(nil)
         }
         
         let postbox = self.postbox
         let userLocation = self.userLocation
-        
-        let playlistPreloadRange = self.playlistData(quality: quality)
-        |> mapToSignal { playlistString -> Signal<Range<Int64>?, NoError> in
-            var durations: [Int] = []
-            var byteRanges: [Range<Int>] = []
-            
-            guard let extinfRegex = try? NSRegularExpression(pattern: "EXTINF:(\\d+)", options: []),
-                  let byteRangeRegex = try? NSRegularExpression(pattern: "EXT-X-BYTERANGE:(\\d+)@(\\d+)", options: []) else {
-                return .single(nil)
-            }
-            
-            let extinfResults = extinfRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
-            for result in extinfResults {
-                if let durationRange = Range(result.range(at: 1), in: playlistString) {
-                    if let duration = Int(String(playlistString[durationRange])) {
-                        durations.append(duration)
-                    }
-                }
-            }
-            
-            let byteRangeResults = byteRangeRegex.matches(in: playlistString, range: NSRange(playlistString.startIndex..., in: playlistString))
-            for result in byteRangeResults {
-                if let lengthRange = Range(result.range(at: 1), in: playlistString), let upperBoundRange = Range(result.range(at: 2), in: playlistString) {
-                    if let length = Int(String(playlistString[lengthRange])), let lowerBound = Int(String(playlistString[upperBoundRange])), lowerBound >= 0, length > 0, lowerBound <= Int.max - length {
-                        byteRanges.append(lowerBound ..< (lowerBound + length))
-                    }
-                }
-            }
-            
-            let prefixSeconds = 10
-            var rangeUpperBound: Int64 = 0
-            if durations.count == byteRanges.count {
-                var remainingSeconds = prefixSeconds
-                
-                for i in 0 ..< durations.count {
-                    if remainingSeconds <= 0 {
-                        break
-                    }
-                    let duration = durations[i]
-                    let byteRange = byteRanges[i]
-                    
-                    remainingSeconds -= duration
-                    rangeUpperBound = max(rangeUpperBound, Int64(byteRange.upperBound))
-                }
-            }
 
-            if rangeUpperBound != 0 {
-                return .single(0 ..< rangeUpperBound)
-            } else {
-                return .single(nil)
-            }
+        // SuperGram: the segment request used to wait for the level playlist and re-parse it with regexes on every
+        // segment only to compute a preload range that was never used. hls.js has already loaded that playlist
+        // (it needs its byte ranges to request a segment), so the extra dependency only added CPU work and a way
+        // to hang the request when the playlist file could not be fetched.
+        let clippedUpperBound = min(Int64(range.upperBound), size)
+        if Int64(range.lowerBound) >= clippedUpperBound {
+            return .single(nil)
         }
-        
-        let mappedRange: Range<Int64> = Int64(range.lowerBound) ..< Int64(range.upperBound)
-        
+        let mappedRange: Range<Int64> = Int64(range.lowerBound) ..< clippedUpperBound
+
         let queue = postbox.mediaBox.dataQueue
-        let fetchFromRemote: Signal<(TempBoxFile, Range<Int>, Int)?, NoError> = playlistPreloadRange
-        |> mapToSignal { preloadRange -> Signal<(TempBoxFile, Range<Int>, Int)?, NoError> in
-            return Signal { subscriber in
-                let partialFile = TempBox.shared.tempFile(fileName: "data")
-                
-                if let cachedData = postbox.mediaBox.internal_resourceData(id: file.media.resource.id, size: size, in: Int64(range.lowerBound) ..< Int64(range.upperBound)) {
+        let fetchFromRemote: Signal<(HLSJSTemporaryFile, Range<Int>, Int)?, NoError> = Signal { subscriber in
+                let partialFileOwner = HLSJSTemporaryFile(file: TempBox.shared.tempFile(fileName: "data"))
+                let partialFile = partialFileOwner.file
+
+                if let cachedData = postbox.mediaBox.internal_resourceData(id: file.media.resource.id, size: size, in: mappedRange) {
                     #if DEBUG
                     print("Fetched \(quality)p part from cache")
                     #endif
-                    
-                    let outputFile = ManagedFile(queue: nil, path: partialFile.path, mode: .readwrite)
-                    if let outputFile {
+
+                    // SuperGram: every exit of the cache-hit path must answer the request, otherwise the XHR never completes.
+                    var didCopy = false
+                    if let outputFile = ManagedFile(queue: nil, path: partialFile.path, mode: .readwrite) {
+                        didCopy = true
                         let blockSize = 128 * 1024
                         var tempBuffer = Data(count: blockSize)
                         var blockOffset = 0
                         while blockOffset < cachedData.length {
                             let currentBlockSize = min(cachedData.length - blockOffset, blockSize)
-                            
-                            tempBuffer.withUnsafeMutableBytes { bytes -> Void in
+
+                            let blockCopied = tempBuffer.withUnsafeMutableBytes { bytes -> Bool in
                                 guard let baseAddress = bytes.baseAddress else {
-                                    return
+                                    return false
                                 }
-                                let _ = cachedData.file.read(baseAddress, currentBlockSize)
-                                let _ = outputFile.write(baseAddress, count: currentBlockSize)
+                                let readCount = cachedData.file.read(baseAddress, currentBlockSize)
+                                if readCount != currentBlockSize {
+                                    return false
+                                }
+                                let writeCount = outputFile.write(baseAddress, count: currentBlockSize)
+                                return writeCount == currentBlockSize
                             }
-                            
+                            if !blockCopied {
+                                didCopy = false
+                                break
+                            }
+
                             blockOffset += blockSize
                         }
                         outputFile._unsafeClose()
-                        subscriber.putNext((partialFile, 0 ..< cachedData.length, Int(size)))
-                        subscriber.putCompletion()
                     } else {
                         #if DEBUG
                         print("Error writing cached file to disk")
                         #endif
                     }
-                    
+
+                    if didCopy {
+                        subscriber.putNext((partialFileOwner, 0 ..< cachedData.length, Int(size)))
+                    } else {
+                        partialFileOwner.dispose()
+                        subscriber.putNext(nil)
+                    }
+                    subscriber.putCompletion()
+
                     return EmptyDisposable
                 }
-                
+
                 guard let fetchResource = postbox.mediaBox.fetchResource else {
+                    partialFileOwner.dispose()
+                    subscriber.putNext(nil)
+                    subscriber.putCompletion()
                     return EmptyDisposable
                 }
                 
@@ -275,9 +353,17 @@ final class HLSJSServerSource: SharedHLSServer.Source {
                     partialPath: partialFile.path,
                     metaPath: metaFile.path
                 ) else {
+                    TempBox.shared.dispose(completeFile)
+                    TempBox.shared.dispose(metaFile)
+                    partialFileOwner.dispose()
+                    subscriber.putNext(nil)
+                    subscriber.putCompletion()
                     return EmptyDisposable
                 }
-                
+
+                // Accessed only on `queue` (MediaBox data queue), where all file context callbacks are delivered.
+                var didAnswer = false
+
                 let fetchDisposable = fileContext.fetched(
                     range: mappedRange,
                     priority: .default,
@@ -285,29 +371,46 @@ final class HLSJSServerSource: SharedHLSServer.Source {
                         return fetchResource(file.media.resource, intervals, params)
                     },
                     error: { _ in
+                        // SuperGram: propagate fetch errors as a failed response (HTTP 500) so hls.js retries the
+                        // segment instead of waiting for an XHR that never completes.
+                        if !didAnswer {
+                            didAnswer = true
+                            subscriber.putNext(nil)
+                            subscriber.putCompletion()
+                        }
                     },
                     completed: {
                     }
                 )
-                
+
                 #if DEBUG
                 let startTime = CFAbsoluteTimeGetCurrent()
                 #endif
-                
+
                 let dataDisposable = fileContext.data(
                     range: mappedRange,
                     waitUntilAfterInitialFetch: true,
                     next: { result in
-                        if result.complete {
+                        if result.complete && !didAnswer {
+                            didAnswer = true
                             #if DEBUG
                             let fetchTime = CFAbsoluteTimeGetCurrent() - startTime
                             print("Fetching \(quality)p part took \(fetchTime * 1000.0) ms")
                             #endif
+                            var resultRange = Int(result.offset) ..< Int(result.offset + result.size)
                             if let data = try? Data(contentsOf: URL(fileURLWithPath: partialFile.path), options: .alwaysMapped) {
-                                let subData = data.subdata(in: Int(result.offset) ..< Int(result.offset + result.size))
-                                postbox.mediaBox.storeResourceData(file.media.resource.id, range: Int64(range.lowerBound) ..< Int64(range.upperBound), data: subData)
+                                // SuperGram: the reported size is not clipped to what was written; clamp before subdata.
+                                resultRange = min(resultRange.lowerBound, data.count) ..< min(resultRange.upperBound, data.count)
+                                if !resultRange.isEmpty {
+                                    let subData = data.subdata(in: resultRange)
+                                    postbox.mediaBox.storeResourceData(file.media.resource.id, range: mappedRange.lowerBound ..< (mappedRange.lowerBound + Int64(subData.count)), data: subData)
+                                }
                             }
-                            subscriber.putNext((partialFile, Int(result.offset) ..< Int(result.offset + result.size), Int(size)))
+                            if resultRange.isEmpty {
+                                subscriber.putNext(nil)
+                            } else {
+                                subscriber.putNext((partialFileOwner, resultRange, Int(size)))
+                            }
                             subscriber.putCompletion()
                         }
                     }
@@ -321,12 +424,13 @@ final class HLSJSServerSource: SharedHLSServer.Source {
                         
                         TempBox.shared.dispose(completeFile)
                         TempBox.shared.dispose(metaFile)
+                        // If no response owns the partial, releasing the producer's owner removes it now.
+                        withExtendedLifetime(partialFileOwner) {}
                     }
                 }
             }
             |> runOn(queue)
-        }
-        
+
         return fetchFromRemote
     }
 }
@@ -375,6 +479,7 @@ private final class SharedHLSVideoJSContext: NSObject {
     private var pendingInitializeInstanceIds: [(id: Int, urlPrefix: String)] = []
     
     private var tempTasks: [Int: URLSessionTask] = [:]
+    private let sourceRequests = HLSJSXHRRequests()
     
     private var emptyTimer: Foundation.Timer?
     
@@ -490,6 +595,12 @@ private final class SharedHLSVideoJSContext: NSObject {
     }
     
     private func disposeJsContext() {
+        self.sourceRequests.cancelAll()
+        let tempTasks = Array(self.tempTasks.values)
+        self.tempTasks.removeAll()
+        for task in tempTasks {
+            task.cancel()
+        }
         if let _ = self.jsContext {
             self.jsContext = nil
         }
@@ -498,6 +609,38 @@ private final class SharedHLSVideoJSContext: NSObject {
         self.videoElements.removeAll()
         self.mediaSources.removeAll()
         self.sourceBuffers.removeAll()
+    }
+
+    private func startSourceRequest<T>(
+        id: Int,
+        contextId: Int,
+        signal: Signal<T, NoError>,
+        receive: @escaping (T, @escaping ([String: Any]) -> Void) -> Void,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        let request = self.sourceRequests.begin(id: id, contextId: contextId)
+        request.disposable.set((signal |> deliverOn(.mainQueue()) |> take(1)).start(next: { [weak self] result in
+            guard let self, self.sourceRequests.startResponse(id: id, request: request) else {
+                return
+            }
+            receive(result, { [weak self] response in
+                // File reading/base64 encoding happens off-main; the bridge and request registry are main-only.
+                Queue.mainQueue().async {
+                    guard let self, self.sourceRequests.complete(id: id, request: request) else {
+                        return
+                    }
+                    completion(response)
+                }
+            })
+        }, completed: { [weak self] in
+            guard let self, self.sourceRequests.startResponse(id: id, request: request) else {
+                return
+            }
+            // A source that ends without a response must close the XHR too.
+            if self.sourceRequests.complete(id: id, request: request) {
+                SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .internalServerError, completion: completion)
+            }
+        }))
     }
     
     private func bridgeInvoke(
@@ -687,6 +830,8 @@ private final class SharedHLSVideoJSContext: NSObject {
                     assertionFailure()
                     return
                 }
+                self.sourceRequests.cancel(id: id)
+                self.tempTasks.removeValue(forKey: id)?.cancel()
                 guard let url = params["url"] as? String else {
                     assertionFailure()
                     return
@@ -728,21 +873,18 @@ private final class SharedHLSVideoJSContext: NSObject {
                         
                         let filePath = String(requestPath[firstSlash.upperBound...])
                         if filePath == "master.m3u8" {
-                            let _ = (source.masterPlaylistData()
-                            |> take(1)).start(next: { result in
-                                SharedHLSVideoJSContext.sendResponseAndClose(id: id, data: result.data(using: .utf8)!, completion: completion)
-                            })
+                            self.startSourceRequest(id: id, contextId: context.instanceId, signal: source.masterPlaylistData(), receive: { result, respond in
+                                SharedHLSVideoJSContext.sendResponseAndClose(id: id, data: result.data(using: .utf8)!, completion: respond)
+                            }, completion: completion)
                         } else if filePath.hasPrefix("hls_level_") && filePath.hasSuffix(".m3u8") {
                             guard let levelIndex = Int(String(filePath[filePath.index(filePath.startIndex, offsetBy: "hls_level_".count) ..< filePath.index(filePath.endIndex, offsetBy: -".m3u8".count)])) else {
                                 SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .notFound, completion: completion)
                                 return
                             }
                             
-                            let _ = (source.playlistData(quality: levelIndex)
-                            |> deliverOn(.mainQueue())
-                            |> take(1)).start(next: { result in
-                                SharedHLSVideoJSContext.sendResponseAndClose(id: id, data: result.data(using: .utf8)!, completion: completion)
-                            })
+                            self.startSourceRequest(id: id, contextId: context.instanceId, signal: source.playlistData(quality: levelIndex), receive: { result, respond in
+                                SharedHLSVideoJSContext.sendResponseAndClose(id: id, data: result.data(using: .utf8)!, completion: respond)
+                            }, completion: completion)
                         } else if filePath.hasPrefix("partfile") && filePath.hasSuffix(".mp4") {
                             let fileId = String(filePath[filePath.index(filePath.startIndex, offsetBy: "partfile".count) ..< filePath.index(filePath.endIndex, offsetBy: -".mp4".count)])
                             guard let fileIdValue = Int64(fileId) else {
@@ -753,16 +895,15 @@ private final class SharedHLSVideoJSContext: NSObject {
                                 SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .badRequest, completion: completion)
                                 return
                             }
-                            let _ = (source.fileData(id: fileIdValue, range: requestRange.lowerBound ..< requestRange.upperBound + 1)
-                            |> deliverOn(.mainQueue())
-                            //|> timeout(5.0, queue: self.queue, alternate: .single(nil))
-                            |> take(1)).start(next: { result in
+                            self.startSourceRequest(id: id, contextId: context.instanceId, signal: source.ownedFileData(id: fileIdValue, range: requestRange.lowerBound ..< requestRange.upperBound + 1), receive: { result, respond in
                                 if let (tempFile, tempFileRange, totalSize) = result {
-                                    SharedHLSVideoJSContext.sendResponseFileAndClose(id: id, file: tempFile, fileRange: tempFileRange, range: requestRange, totalSize: totalSize, completion: completion)
+                                    SharedHLSVideoJSContext.sendResponseFileAndClose(id: id, file: tempFile, fileRange: tempFileRange, range: requestRange, totalSize: totalSize, completion: respond)
                                 } else {
-                                    SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .internalServerError, completion: completion)
+                                    SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .internalServerError, completion: respond)
                                 }
-                            })
+                            }, completion: completion)
+                        } else {
+                            SharedHLSVideoJSContext.sendErrorAndClose(id: id, error: .notFound, completion: completion)
                         }
                         
                         break
@@ -777,6 +918,7 @@ private final class SharedHLSVideoJSContext: NSObject {
                     assertionFailure()
                     return
                 }
+                self.sourceRequests.cancel(id: id)
                 
                 if let task = self.tempTasks.removeValue(forKey: id) {
                     task.cancel()
@@ -811,9 +953,20 @@ private final class SharedHLSVideoJSContext: NSObject {
         ])
     }
     
-    private static func sendResponseFileAndClose(id: Int, file: TempBoxFile, fileRange: Range<Int>, range: Range<Int>, totalSize: Int, completion: @escaping ([String: Any]) -> Void) {
+    private static func sendResponseFileAndClose(id: Int, file: HLSJSTemporaryFile, fileRange: Range<Int>, range: Range<Int>, totalSize: Int, completion: @escaping ([String: Any]) -> Void) {
         Queue.concurrentDefaultQueue().async {
-            if let data = try? Data(contentsOf: URL(fileURLWithPath: file.path), options: .mappedIfSafe).subdata(in: fileRange) {
+            var responseData: Data?
+            if let fileData = try? Data(contentsOf: URL(fileURLWithPath: file.file.path), options: .mappedIfSafe) {
+                // SuperGram: never trap on a range that extends past the temp file.
+                let clampedRange = min(fileRange.lowerBound, fileData.count) ..< min(fileRange.upperBound, fileData.count)
+                if !clampedRange.isEmpty {
+                    responseData = fileData.subdata(in: clampedRange)
+                }
+            }
+            // SuperGram: the segment temp file is not needed once it has been read (it used to stay on disk until the next launch).
+            file.dispose()
+
+            if let data = responseData {
                 completion([
                     "status": 200,
                     "statusText": "OK",
@@ -821,7 +974,7 @@ private final class SharedHLSVideoJSContext: NSObject {
                     "responseHeaders": [
                         "Content-Type": "application/octet-stream",
                         "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound)/\(totalSize)",
-                        "Content-Length": "\(fileRange.upperBound - fileRange.lowerBound)"
+                        "Content-Length": "\(data.count)"
                     ] as [String: String]
                 ])
             } else {
@@ -849,6 +1002,7 @@ private final class SharedHLSVideoJSContext: NSObject {
                     return
                 }
                 self.pendingInitializeInstanceIds.removeAll(where: { $0.id == contextInstanceId })
+                self.sourceRequests.cancel(contextId: contextInstanceId)
                 
                 if let current = self.contextReferences[contextInstanceId] {
                     if let value = current.contentNode {
@@ -1023,9 +1177,9 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
     private let dimensionsPromise = ValuePromise<CGSize>(CGSize())
     
     private var validLayout: (size: CGSize, actualSize: CGSize)?
-    
-    private var statusTimer: Foundation.Timer?
-    
+
+    private var lastBridgeStatus: (bridgeId: Int, isPlaying: Bool, isWaiting: Bool, currentTime: Double, sentAt: Double)?
+
     private var preferredVideoQuality: UniversalVideoContentVideoQuality = .auto
     
     fileprivate var playerIsReady: Bool = false
@@ -1044,10 +1198,7 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
     
     private var requestedBaseRate: Double = 1.0
     private var requestedLevelIndex: Int?
-    
-    private var didBecomeActiveObserver: NSObjectProtocol?
-    private var willResignActiveObserver: NSObjectProtocol?
-    
+
     private let chunkPlayerPartsState = Promise<ChunkMediaPlayerPartsState>(ChunkMediaPlayerPartsState(duration: nil, content: .parts([])))
     private var sourceBufferStateDisposable: Disposable?
     
@@ -1056,7 +1207,8 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
     private var contextDisposable: Disposable?
     
     init(context: AccountContext, postbox: Postbox, audioSessionManager: ManagedAudioSession, userLocation: MediaResourceUserLocation, fileReference: FileMediaReference, streamVideo: Bool, loopVideo: Bool, enableSound: Bool, baseRate: Double, fetchAutomatically: Bool, onlyFullSizeThumbnail: Bool, useLargeThumbnail: Bool, autoFetchFullSizeThumbnail: Bool, codecConfiguration: HLSCodecConfiguration) {
-        self.instanceId = HLSVideoJSNativeContentNode.nextInstanceId
+        let instanceId = HLSVideoJSNativeContentNode.nextInstanceId
+        self.instanceId = instanceId
         HLSVideoJSNativeContentNode.nextInstanceId += 1
         
         self.postbox = postbox
@@ -1085,7 +1237,7 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
         
         var playerSource: HLSJSServerSource?
         if let qualitySet = HLSQualitySet(baseFile: fileReference, codecConfiguration: codecConfiguration) {
-            let playerSourceValue = HLSJSServerSource(accountId: context.account.id.int64, fileId: fileReference.media.fileId.id, postbox: postbox, userLocation: userLocation, playlistFiles: qualitySet.playlistFiles, qualityFiles: qualitySet.qualityFiles)
+            let playerSourceValue = HLSJSServerSource(accountId: context.account.id.int64, fileId: fileReference.media.fileId.id, instanceId: instanceId, postbox: postbox, userLocation: userLocation, playlistFiles: qualitySet.playlistFiles, qualityFiles: qualitySet.qualityFiles)
             playerSource = playerSourceValue
         }
         self.playerSource = playerSource
@@ -1154,14 +1306,10 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
         }
         
         self._bufferingStatus.set(.single(nil))
-        
-        self.didBecomeActiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil, using: { [weak self] _ in
-            let _ = self
-        })
-        self.willResignActiveObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil, using: { [weak self] _ in
-            let _ = self
-        })
-        
+
+        // SuperGram: removed the no-op foreground/background observers and the 25 Hz status timer whose
+        // handler (updateStatus) is empty; they only woke the main run loop for every live HLS node.
+
         self.playerStatusDisposable = (self.player.status
         |> deliverOnMainQueue).startStrict(next: { [weak self] status in
             guard let self else {
@@ -1169,14 +1317,7 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
             }
             self.updatePlayerStatus(status: status)
         })
-        
-        self.statusTimer = Foundation.Timer.scheduledTimer(withTimeInterval: 1.0 / 25.0, repeats: true, block: { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.updateStatus()
-        })
-        
+
         onSeeked = { [weak self] in
             Queue.mainQueue().async {
                 guard let self else {
@@ -1192,18 +1333,9 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
     }
     
     deinit {
-        if let didBecomeActiveObserver = self.didBecomeActiveObserver {
-            NotificationCenter.default.removeObserver(didBecomeActiveObserver)
-        }
-        if let willResignActiveObserver = self.willResignActiveObserver {
-            NotificationCenter.default.removeObserver(willResignActiveObserver)
-        }
-        
         self.serverDisposable?.dispose()
         self.audioSessionDisposable.dispose()
-        
-        self.statusTimer?.invalidate()
-        
+
         self.sourceBufferStateDisposable?.dispose()
         self.playerStatusDisposable?.dispose()
         
@@ -1407,12 +1539,33 @@ final class HLSVideoJSNativeContentNode: ASDisplayNode, UniversalVideoContentNod
                 isBuffering = true
             }
             
+            // SuperGram: throttle the JS bridge. Every call serializes JSON and evaluates a script on the shared
+            // JavaScriptCore context; state changes and position jumps go out immediately, steady playback
+            // progress at most every 150 ms (hls.js only needs currentTime to keep advancing between its 100 ms ticks).
+            let now = CACurrentMediaTime()
+            var shouldSend = true
+            if let lastBridgeStatus = self.lastBridgeStatus, lastBridgeStatus.bridgeId == bridgeId, lastBridgeStatus.isPlaying == isPlaying, lastBridgeStatus.isWaiting == isBuffering {
+                if isPlaying && !isBuffering {
+                    let elapsed = now - lastBridgeStatus.sentAt
+                    let expectedTime = lastBridgeStatus.currentTime + max(0.0, elapsed) * status.baseRate
+                    if abs(status.timestamp - expectedTime) <= 0.3 && elapsed < 0.15 {
+                        shouldSend = false
+                    }
+                } else if abs(status.timestamp - lastBridgeStatus.currentTime) < 0.001 {
+                    shouldSend = false
+                }
+            }
+            if !shouldSend {
+                return
+            }
+            self.lastBridgeStatus = (bridgeId, isPlaying, isBuffering, status.timestamp, now)
+
             let result: [String: Any] = [
                 "isPlaying": isPlaying,
                 "isWaiting": isBuffering,
                 "currentTime": status.timestamp
             ]
-            
+
             guard let jsonResult = try? JSONSerialization.data(withJSONObject: result),
                   let jsonResultString = String(data: jsonResult, encoding: .utf8) else {
                 return

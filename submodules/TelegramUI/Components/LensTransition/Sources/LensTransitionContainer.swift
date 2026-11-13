@@ -1485,6 +1485,7 @@ private final class LensTransitionContainerFallbackImpl: UIView, LensTransitionC
         super.init(frame: frame)
 
         self.backgroundView.contentView.clipsToBounds = true
+        self.backgroundView.contentView.layer.cornerCurve = .continuous
         self.addSubview(self.backgroundView)
     }
 
@@ -1526,7 +1527,7 @@ public final class LensTransitionContainer: UIView {
     }
     
     public init(effectView: LensTransitionContainerEffectView) {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), !GlassBackgroundView.usesCustomGlassImpl {
             self.impl = LensTransitionContainerImpl(effectView: effectView)
         } else {
             self.impl = LensTransitionContainerFallbackImpl(frame: CGRect())

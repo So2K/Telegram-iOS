@@ -34,6 +34,9 @@ public func presentTranslateScreen(
     default:
         break
     }
+    if sgPrefersOnDeviceChatTranslation() {
+        useSystemTranslation = true
+    }
     
     if useSystemTranslation {
         presentSystemTranslateScreen(context: context, text: text)

@@ -2,7 +2,9 @@
 
 static void (*loggingFunction)(NSString *) = NULL;
 static void (*shortLoggingFunction)(NSString *) = NULL;
-static bool MTLogEnabledValue = true;
+// SuperGram: verbose MTProto logging stays off until the shared logger enables it
+// (network logging), so nothing is dumped while the app starts and settings load.
+static bool MTLogEnabledValue = false;
 
 bool MTLogEnabled() {
     return loggingFunction != NULL && MTLogEnabledValue;

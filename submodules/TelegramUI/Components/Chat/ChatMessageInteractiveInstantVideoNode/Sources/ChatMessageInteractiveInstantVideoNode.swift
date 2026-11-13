@@ -30,6 +30,8 @@ import ChatControllerInteraction
 import WallpaperBackgroundNode
 import TelegramStringFormatting
 import InvisibleInkDustNode
+import LocalAudioTranscription
+import SuperGramLocalTranscription
 
 public struct ChatMessageInstantVideoItemLayoutResult {
     public let contentSize: CGSize
@@ -249,7 +251,8 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         
         let audioTranscriptionState = self.audioTranscriptionState
         let audioTranscriptionText = self.audioTranscriptionText
-        
+        let hasRunningTranscribeRequest = self.transcribeDisposable != nil
+
         let viaBotLayout = TextNode.asyncLayout(self.viaBotNode)
         let makeReplyInfoLayout = ChatMessageReplyInfoNode.asyncLayout(self.replyInfoNode)
         let makeForwardInfoLayout = ChatMessageForwardInfoNode.asyncLayout(self.forwardInfoNode)
@@ -617,12 +620,22 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             let result = ChatMessageInstantVideoItemLayoutResult(contentSize: contentSize, overflowLeft: 0.0, overflowRight: dateAndStatusOverflow ? 0.0 : (max(0.0, floorToScreenPixels(videoFrame.midX) + 55.0 + dateAndStatusSize.width - videoFrame.width)))
             
             var updatedAudioTranscriptionState: AudioTranscriptionButtonComponent.TranscriptionState?
-            let transcribedText = transcribedText(message: EngineMessage(item.message))
-            
+            var transcribedText = transcribedText(message: EngineMessage(item.message))
+            let isLocallyTranscribing = SuperGramLocalTranscriptionManager.shared.isTranscribing(context: item.context, messageId: item.message.id)
+            if case .error = transcribedText, isLocallyTranscribing {
+                // SuperGram: don't flash the previous error while a local retry is running
+                transcribedText = nil
+            }
+            // SuperGram: local transcription for round videos, same policy as transcribe()
+            let transcriptionPolicy = SuperGramTranscriptionPolicy(context: item.context, message: item.message, isPremium: item.associatedData.isPremium, providedByGroupBoost: item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost)
+
             switch audioTranscriptionState {
             case .inProgress:
                 if transcribedText != nil {
                     updatedAudioTranscriptionState = .expanded
+                } else if transcriptionPolicy.useLocalTranscription && !isLocallyTranscribing && !hasRunningTranscribeRequest {
+                    // SuperGram: nothing is running any more (node recycled, job gave up) — never spin forever
+                    updatedAudioTranscriptionState = .collapsed
                 }
             default:
                 break
@@ -634,7 +647,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
             }
             
             let currentTime = Int32(Date().timeIntervalSince1970)
-            if transcribedText == nil, let cooldownUntilTime = item.associatedData.audioTranscriptionTrial.cooldownUntilTime, cooldownUntilTime > currentTime {
+            if !transcriptionPolicy.useLocalTranscription, transcribedText == nil, let cooldownUntilTime = item.associatedData.audioTranscriptionTrial.cooldownUntilTime, cooldownUntilTime > currentTime {
                 updatedAudioTranscriptionState = .locked
             }
             
@@ -779,7 +792,7 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                                         }
                                     }
                                 }
-                            }), content: NativeVideoContent(id: .message(item.message.stableId, telegramFile.fileId), userLocation: .peer(item.message.id.peerId), fileReference: .message(message: MessageReference(item.message), media: telegramFile), streamVideo: streamVideo ? .conservative : .none, enableSound: false, fetchAutomatically: false, isAudioVideoMessage: true, captureProtected: item.associatedData.isCopyProtectionEnabled || item.message.isCopyProtected(), storeAfterDownload: nil), priority: item.associatedData.isStandalone ? .overlay : .embedded, autoplay: item.context.sharedContext.energyUsageSettings.autoplayVideo && !isViewOnceMessage)
+                            }), content: NativeVideoContent(id: .message(item.message.stableId, telegramFile.fileId), userLocation: .peer(item.message.id.peerId), fileReference: .message(message: MessageReference(item.message), media: telegramFile), streamVideo: streamVideo ? .conservative : .none, enableSound: false, fetchAutomatically: false, isAudioVideoMessage: true, captureProtected: item.message.sgCaptureProtected(isCopyProtected: item.associatedData.isCopyProtectionEnabled || item.message.isCopyProtected()), storeAfterDownload: nil), priority: item.associatedData.isStandalone ? .overlay : .embedded, autoplay: item.context.sharedContext.energyUsageSettings.autoplayVideo && !isViewOnceMessage)
                             if let previousVideoNode = previousVideoNode {
                                 videoNode.bounds = previousVideoNode.bounds
                                 videoNode.position = previousVideoNode.position
@@ -837,10 +850,11 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
                         }))
                     }
                                                             
+                    // SuperGram: the policy decides whether the button is offered at all (setting, secret chats, view-once)
                     var displayTranscribe = false
-                    if item.message.id.peerId.namespace != Namespaces.Peer.SecretChat && statusDisplayType == .free && !isViewOnceMessage && !item.presentationData.isPreview {
+                    if transcriptionPolicy.isTranscriptionAllowed && statusDisplayType == .free && !isViewOnceMessage && !item.presentationData.isPreview {
                         let premiumConfiguration = PremiumConfiguration.with(appConfiguration: item.context.currentAppConfiguration.with { $0 })
-                        if item.associatedData.isPremium || item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
+                        if transcriptionPolicy.useLocalTranscription || item.associatedData.isPremium || item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
                             displayTranscribe = true
                         } else if premiumConfiguration.audioTransciptionTrialCount > 0 {
                             if incoming {
@@ -1820,19 +1834,26 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
     }
     
     private func transcribe() {
-        guard let item = self.item, item.message.id.namespace == Namespaces.Message.Cloud else {
+        guard let item = self.item else {
             return
         }
-        
-        if !item.context.isPremium, case .inProgress = self.audioTranscriptionState {
+
+        // SuperGram: local (Apple Speech) transcription for round videos, same policy as the layout pass
+        let transcriptionPolicy = SuperGramTranscriptionPolicy(context: item.context, message: item.message, isPremium: item.associatedData.isPremium, providedByGroupBoost: item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost)
+        guard transcriptionPolicy.canTranscribe(messageId: item.message.id) else {
             return
         }
-        
+        let useLocalTranscription = transcriptionPolicy.useLocalTranscription
+
+        if case .inProgress = self.audioTranscriptionState {
+            return
+        }
+
         let presentationData = item.context.sharedContext.currentPresentationData.with { $0 }
         let premiumConfiguration = PremiumConfiguration.with(appConfiguration: item.context.currentAppConfiguration.with { $0 })
-        
+
         let transcriptionText = transcribedText(message: EngineMessage(item.message))
-        if transcriptionText == nil && !item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
+        if !useLocalTranscription && transcriptionText == nil && !item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
             if premiumConfiguration.audioTransciptionTrialCount > 0 {
                 if !item.associatedData.isPremium {
                     if self.presentAudioTranscriptionTooltip(finished: false) {
@@ -1890,22 +1911,34 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         if shouldBeginTranscription {
             if self.transcribeDisposable == nil {
                 self.audioTranscriptionState = .inProgress
-                self.requestUpdateLayout(true)
-                
-                self.transcribeDisposable = (item.context.engine.messages.transcribeAudio(messageId: item.message.id)
-                |> deliverOnMainQueue).startStrict(next: { [weak self] result in
-                    guard let strongSelf = self else {
-                        return
+
+                if useLocalTranscription {
+                    if let file = self.media {
+                        // SuperGram: fetch -> extract audio -> Apple Speech -> store, shared with voice messages
+                        self.startLocalTranscription(context: item.context, message: item.message, file: file)
+                    } else {
+                        // Nothing to transcribe: the button must not stay in the in-progress state
+                        self.audioTranscriptionState = .collapsed
                     }
-                    strongSelf.transcribeDisposable?.dispose()
-                    strongSelf.transcribeDisposable = nil
-                    
-                    if let item = strongSelf.item, !item.associatedData.isPremium && !item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
-                        Queue.mainQueue().after(0.1, {
-                            let _ = strongSelf.presentAudioTranscriptionTooltip(finished: true)
-                        })
-                    }
-                })
+                    self.requestUpdateLayout(true)
+                } else {
+                    self.requestUpdateLayout(true)
+
+                    self.transcribeDisposable = (item.context.engine.messages.transcribeAudio(messageId: item.message.id)
+                    |> deliverOnMainQueue).startStrict(next: { [weak self] result in
+                        guard let strongSelf = self else {
+                            return
+                        }
+                        strongSelf.transcribeDisposable?.dispose()
+                        strongSelf.transcribeDisposable = nil
+
+                        if let item = strongSelf.item, !item.associatedData.isPremium && !item.associatedData.alwaysDisplayTranscribeButton.providedByGroupBoost {
+                            Queue.mainQueue().after(0.1, {
+                                let _ = strongSelf.presentAudioTranscriptionTooltip(finished: true)
+                            })
+                        }
+                    })
+                }
             }
         }
         
@@ -1925,7 +1958,44 @@ public class ChatMessageInteractiveInstantVideoNode: ASDisplayNode {
         
         self.updateTranscriptionExpanded?(self.audioTranscriptionState)
     }
-    
+
+    /// SuperGram: runs the shared local transcription pipeline for this round video. The manager stores the
+    /// result (and "no speech") in the message itself, so the bubble expands through the normal layout pass.
+    private func startLocalTranscription(context: AccountContext, message: Message, file: TelegramMediaFile) {
+        let disposable = MetaDisposable()
+        self.transcribeDisposable = disposable
+        disposable.set((SuperGramLocalTranscriptionManager.shared.transcribe(context: context, message: message, file: file)
+        |> deliverOnMainQueue).startStrict(next: { [weak self, weak disposable] outcome in
+            guard let self else {
+                return
+            }
+            if let disposable {
+                disposable.dispose()
+                if let current = self.transcribeDisposable, current === disposable {
+                    self.transcribeDisposable = nil
+                }
+            }
+
+            switch outcome {
+            case .success, .failure(.noSpeech):
+                // The stored attribute expands the in-progress transcription on the next layout
+                break
+            case let .failure(error):
+                // Nothing was stored: leave the in-progress state so that a tap retries
+                if case .inProgress = self.audioTranscriptionState {
+                    self.audioTranscriptionState = .collapsed
+                    self.requestUpdateLayout(true)
+                    self.updateTranscriptionExpanded?(self.audioTranscriptionState)
+                }
+                if let item = self.item {
+                    superGramPresentLocalTranscriptionError(context: context, error: error, present: { controller in
+                        item.controllerInteraction.presentControllerInCurrent(controller, nil)
+                    })
+                }
+            }
+        }))
+    }
+
     private func presentAudioTranscriptionTooltip(finished: Bool) -> Bool {
         guard let item = self.item, !item.associatedData.isPremium else {
             return false

@@ -155,8 +155,11 @@ final class RadialProgressComponent: Component {
                 self.layer.contents = image.cgImage
             } else {
                 UIGraphicsBeginImageContextWithOptions(availableSize, false, 0.0)
-                draw(context: UIGraphicsGetCurrentContext()!)
-                self.layer.contents = UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+                // SuperGram: a failed image context used to trap on the force unwrap instead of skipping the draw.
+                if let context = UIGraphicsGetCurrentContext() {
+                    draw(context: context)
+                    self.layer.contents = UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+                }
                 UIGraphicsEndImageContext()
             }
 
@@ -271,8 +274,11 @@ final class CheckComponent: Component {
                 self.layer.contents = image.cgImage
             } else {
                 UIGraphicsBeginImageContextWithOptions(size, false, 0.0)
-                draw(context: UIGraphicsGetCurrentContext()!)
-                self.layer.contents = UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+                // SuperGram: a failed image context used to trap on the force unwrap instead of skipping the draw.
+                if let context = UIGraphicsGetCurrentContext() {
+                    draw(context: context)
+                    self.layer.contents = UIGraphicsGetImageFromCurrentImageContext()?.cgImage
+                }
                 UIGraphicsEndImageContext()
             }
         }

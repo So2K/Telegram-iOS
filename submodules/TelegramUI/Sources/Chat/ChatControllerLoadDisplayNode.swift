@@ -426,7 +426,7 @@ extension ChatControllerImpl {
             presentationInterfaceState = presentationInterfaceState.updatedBoostsToUnrestrict(contentData.state.boostsToUnrestrict)
             presentationInterfaceState = presentationInterfaceState.updatedHasBirthdayToday(contentData.state.hasBirthdayToday)
             presentationInterfaceState = presentationInterfaceState.updatedBusinessIntro(contentData.state.businessIntro)
-            presentationInterfaceState = presentationInterfaceState.updatedAdMessage(contentData.state.adMessage)
+            presentationInterfaceState = presentationInterfaceState.updatedAdMessage(nil)
             presentationInterfaceState = presentationInterfaceState.updatedPeerVerification(contentData.state.peerVerification)
             presentationInterfaceState = presentationInterfaceState.updatedStarGiftsAvailable(contentData.state.starGiftsAvailable)
             presentationInterfaceState = presentationInterfaceState.updatedSavedMessagesTopicPeer(contentData.state.savedMessagesTopicPeer)
@@ -645,7 +645,7 @@ extension ChatControllerImpl {
         let initTimestamp = self.initTimestamp
         #endif
         
-        self.ready.set(combineLatest(queue: .mainQueue(), [
+        let fullyReady = (combineLatest(queue: .mainQueue(), [
             self.contentDataReady.get(),
             self.wallpaperReady.get(),
             self.presentationReady.get()
@@ -665,6 +665,8 @@ extension ChatControllerImpl {
                 #endif
             }
         })
+
+        self.ready.set(fullyReady)
     }
     
     func loadDisplayNodeImpl() {
@@ -1346,6 +1348,9 @@ extension ChatControllerImpl {
             }
         }
         
+        self.chatDisplayNode.navigateButtons.searchPressed = { [weak self] in
+            self?.interfaceInteraction?.beginMessageSearch(.everything, "")
+        }
         self.chatDisplayNode.navigateButtons.downPressed = { [weak self] in
             guard let self else {
                 return
@@ -2961,7 +2966,16 @@ extension ChatControllerImpl {
                 }
             }
         }, displayVideoUnmuteTip: { [weak self] location in
-            guard let strongSelf = self, !strongSelf.didDisplayVideoUnmuteTooltip, let layout = strongSelf.validLayout, strongSelf.traceVisibility() && isTopmostChatController(strongSelf) else {
+            guard let strongSelf = self else {
+                return
+            }
+            if location == nil {
+                // SuperGram: the tooltip is presented in the root window, so it has to be torn down even
+                // when this chat is no longer visible/topmost, otherwise it hangs over the next screen.
+                strongSelf.videoUnmuteTooltipController?.dismissImmediately()
+                return
+            }
+            guard !strongSelf.didDisplayVideoUnmuteTooltip, let layout = strongSelf.validLayout, strongSelf.traceVisibility() && isTopmostChatController(strongSelf) else {
                 return
             }
             if let location = location, location.y < strongSelf.navigationLayout(layout: layout).navigationFrame.maxY {
@@ -4391,6 +4405,7 @@ extension ChatControllerImpl {
             let context = strongSelf.context
             let presentationData = strongSelf.presentationData
             let _ = context.engine.messages.togglePeerMessagesTranslationHidden(peerId: peerId, hidden: true).startStandalone()
+            SuperGramTranslatePanel.setShown(peerId: peerId, false)
 
             var text: String = ""
             if let peer = strongSelf.presentationInterfaceState.renderedPeer?.peer {
@@ -4410,6 +4425,7 @@ extension ChatControllerImpl {
             strongSelf.present(UndoOverlayController(presentationData: presentationData, content: .image(image: generateTintedImage(image: UIImage(bundleImageName: "Chat/Title Panels/Translate"), color: .white)!, title: nil, text: text, round: false, undoText: presentationData.strings.Undo_Undo), elevatedLayout: false, animateInAsReplacement: false, action: { action in
                     if case .undo = action {
                         let _ = context.engine.messages.togglePeerMessagesTranslationHidden(peerId: peerId, hidden: false).startStandalone()
+                        SuperGramTranslatePanel.setShown(peerId: peerId, true)
                     }
                     return true
             }), in: .current)
@@ -4638,6 +4654,10 @@ extension ChatControllerImpl {
             default:
                 break
             }
+            if sgPrefersOnDeviceChatTranslation() {
+                // SuperGram: the user picked on-device Apple Translation (iOS 18+ is checked by the helper)
+                useSystemTranslation = true
+            }
 
             if useSystemTranslation {
                 presentTranslateScreen(
@@ -4833,88 +4853,8 @@ extension ChatControllerImpl {
             }
         }
         
-        var lastEventTimestamp: Double = 0.0
-        self.networkSpeedEventsDisposable = (self.context.account.network.networkSpeedLimitedEvents
-        |> deliverOnMainQueue).start(next: { [weak self] event in
-            guard let self else {
-                return
-            }
-            
-            switch event {
-            case let .download(subject):
-                if case let .message(messageId) = subject {
-                    var isVisible = false
-                    self.chatDisplayNode.historyNode.forEachVisibleItemNode { itemNode in
-                        if let itemNode = itemNode as? ChatMessageItemView, let item = itemNode.item {
-                            for (message, _) in item.content {
-                                if message.id == messageId {
-                                    isVisible = true
-                                }
-                            }
-                        }
-                    }
-                    
-                    if !isVisible {
-                        return
-                    }
-                }
-            case .upload:
-                break
-            }
-            
-            let timestamp = CFAbsoluteTimeGetCurrent()
-            if lastEventTimestamp + 10.0 < timestamp {
-                lastEventTimestamp = timestamp
-            } else {
-                return
-            }
-            
-            let title: String
-            let text: String
-            switch event {
-            case .download:
-                var speedIncreaseFactor = 10
-                if let data = self.context.currentAppConfiguration.with({ $0 }).data, let value = data["upload_premium_speedup_download"] as? Double {
-                    speedIncreaseFactor = Int(value)
-                }
-                title = self.presentationData.strings.Chat_SpeedLimitAlert_Download_Title
-                text = self.presentationData.strings.Chat_SpeedLimitAlert_Download_Text("\(speedIncreaseFactor)").string
-            case .upload:
-                var speedIncreaseFactor = 10
-                if let data = self.context.currentAppConfiguration.with({ $0 }).data, let value = data["upload_premium_speedup_upload"] as? Double {
-                    speedIncreaseFactor = Int(value)
-                }
-                title = self.presentationData.strings.Chat_SpeedLimitAlert_Upload_Title
-                text = self.presentationData.strings.Chat_SpeedLimitAlert_Upload_Text("\(speedIncreaseFactor)").string
-            }
-            let content: UndoOverlayContent = .universal(animation: "anim_speed_low", scale: 0.066, colors: [:], title: title, text: text, customUndoText: nil, timeout: 5.0)
-            
-            self.context.account.network.markNetworkSpeedLimitDisplayed()
-            
-            self.present(UndoOverlayController(presentationData: self.presentationData, content: content, elevatedLayout: false, position: .top, action: { [weak self] action in
-                guard let self else {
-                    return false
-                }
-                switch action {
-                case .info:
-                    let context = self.context
-                    var replaceImpl: ((ViewController) -> Void)?
-                    let controller = context.sharedContext.makePremiumDemoController(context: context, subject: .fasterDownload, forceDark: false, action: {
-                        let controller = context.sharedContext.makePremiumIntroController(context: context, source: .fasterDownload, forceDark: false, dismissed: nil)
-                        replaceImpl?(controller)
-                    }, dismissed: nil)
-                    replaceImpl = { [weak controller] c in
-                        controller?.replace(with: c)
-                    }
-                    self.push(controller)
-                    return true
-                default:
-                    break
-                }
-                return false
-            }), in: .current)
-        })
-        
+        // SuperGram: no "download/upload speed limited, get Premium" toast; networkSpeedLimitedEvents is not subscribed.
+
         if case .scheduledMessages = self.subject {
             self.postedScheduledMessagesEventsDisposable = (self.context.account.stateManager.sentScheduledMessageIds
             |> deliverOnMainQueue).start(next: { [weak self] ids in

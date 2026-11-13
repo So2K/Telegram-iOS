@@ -22,6 +22,49 @@ private struct FetchControls {
     let cancel: () -> Void
 }
 
+// SuperGram (FIX-RICH-MD): instant-page media — and, above all, the media of a rich ("markdown") message
+// bubble, which is the message's *primary on-screen content* — used to be fetched through
+// `chatMessagePhotoInteractiveFetched` / `freeMediaFileInteractiveFetched`, i.e. `fetchedMediaResource`
+// with `isInteractive: false` and `continueInBackground: false`. The FetchV2 part budget added in this fork
+// classifies such a fetch as `.background` unless the resource happens to be <= 512 KB, which puts it in the
+// same (much smaller) lane as chat-list prefetch, story preloads and auto-downloads — so a rich message's
+// image could crawl or appear to never load while the rest of the app downloaded. Normal chat media does not
+// hit this because it goes through the FetchManager, which marks its fetches `continueInBackground`.
+// These two helpers are the same fetches, announced as interactive. Nothing else about them changes.
+private func instantPageInteractiveImageFetched(context: AccountContext, userLocation: MediaResourceUserLocation, photoReference: ImageMediaReference) -> Signal<Never, NoError> {
+    guard let largestRepresentation = largestRepresentationForPhoto(photoReference.media) else {
+        return .complete()
+    }
+    return fetchedMediaResource(
+        mediaBox: context.account.postbox.mediaBox,
+        userLocation: userLocation,
+        userContentType: .image,
+        reference: photoReference.resourceReference(largestRepresentation.resource),
+        statsCategory: .image,
+        reportResultStatus: true,
+        isInteractive: true
+    )
+    |> ignoreValues
+    |> `catch` { _ -> Signal<Never, NoError> in
+        return .complete()
+    }
+}
+
+private func instantPageInteractiveFileFetched(context: AccountContext, userLocation: MediaResourceUserLocation, fileReference: FileMediaReference) -> Signal<Never, NoError> {
+    return fetchedMediaResource(
+        mediaBox: context.account.postbox.mediaBox,
+        userLocation: userLocation,
+        userContentType: MediaResourceUserContentType(file: fileReference.media),
+        reference: fileReference.resourceReference(fileReference.media.resource),
+        statsCategory: .file,
+        isInteractive: true
+    )
+    |> ignoreValues
+    |> `catch` { _ -> Signal<Never, NoError> in
+        return .complete()
+    }
+}
+
 private enum ExternalImageLoadState {
     case loading
     case ready
@@ -121,12 +164,12 @@ final class InstantPageImageNode: ASDisplayNode, InstantPageNode, InstantPageExt
                 self.imageNode.setSignal(chatMessagePhoto(postbox: context.account.postbox, userLocation: sourceLocation.userLocation, photoReference: imageReference))
                 
                 if !interactive || shouldDownloadMediaAutomatically(settings: context.sharedContext.currentAutomaticMediaDownloadSettings, peerType: sourceLocation.peerType, networkType: MediaAutoDownloadNetworkType(context.account.immediateNetworkType), authorPeerId: nil, contactsPeerIds: Set(), media: image) {
-                    self.fetchedDisposable.set(chatMessagePhotoInteractiveFetched(context: context, userLocation: sourceLocation.userLocation, photoReference: imageReference, displayAtSize: nil, storeToDownloadsPeerId: nil).start())
+                    self.fetchedDisposable.set(instantPageInteractiveImageFetched(context: context, userLocation: sourceLocation.userLocation, photoReference: imageReference).start())
                 }
-                
+
                 self.fetchControls = FetchControls(fetch: { [weak self] manual in
                     if let strongSelf = self {
-                        strongSelf.fetchedDisposable.set(chatMessagePhotoInteractiveFetched(context: context, userLocation: sourceLocation.userLocation, photoReference: imageReference, displayAtSize: nil, storeToDownloadsPeerId: nil).start())
+                        strongSelf.fetchedDisposable.set(instantPageInteractiveImageFetched(context: context, userLocation: sourceLocation.userLocation, photoReference: imageReference).start())
                     }
                 }, cancel: {
                     chatMessagePhotoCancelInteractiveFetch(account: context.account, photoReference: imageReference)
@@ -152,9 +195,38 @@ final class InstantPageImageNode: ASDisplayNode, InstantPageNode, InstantPageExt
                 let fileReference = fileReferenceForMedia?(file) ?? FileMediaReference.webPage(webPage: WebpageReference(webPage), media: file)
                 if file.mimeType.hasPrefix("image/") {
                     if !interactive || shouldDownloadMediaAutomatically(settings: context.sharedContext.currentAutomaticMediaDownloadSettings, peerType: sourceLocation.peerType, networkType: MediaAutoDownloadNetworkType(context.account.immediateNetworkType), authorPeerId: nil, contactsPeerIds: Set(), media: file) {
-                        _ = freeMediaFileInteractiveFetched(account: context.account, userLocation: sourceLocation.userLocation, fileReference: fileReference).start()
+                        self.fetchedDisposable.set(instantPageInteractiveFileFetched(context: context, userLocation: sourceLocation.userLocation, fileReference: fileReference).start())
                     }
                     self.imageNode.setSignal(instantPageImageFile(account: context.account, userLocation: sourceLocation.userLocation, fileReference: fileReference, fetched: true))
+
+                    // SuperGram (FIX-RICH-MD): an image sent as a *document* (the common shape for
+                    // server/AI-sent rich "markdown" messages) used to have neither a status node nor
+                    // fetch controls here, unlike the `.image` branch above. `shouldDownloadMediaAutomatically`
+                    // says no for the `file` auto-download category above its size limit (3 MB on Wi-Fi,
+                    // 1 MB on cellular by default — and the whole category is off in the "low" preset), so
+                    // such an image stayed permanently blank with no download button and no way to tap it
+                    // into loading. Give it the same status + fetch/cancel affordances photos already have.
+                    // (`!file.isVideo` so this never fights the `.play` overlay installed below.)
+                    if interactive, !file.isVideo {
+                        self.fetchControls = FetchControls(fetch: { [weak self] _ in
+                            if let strongSelf = self {
+                                strongSelf.fetchedDisposable.set(instantPageInteractiveFileFetched(context: context, userLocation: sourceLocation.userLocation, fileReference: fileReference).start())
+                            }
+                        }, cancel: {
+                            context.account.postbox.mediaBox.cancelInteractiveResourceFetch(file.resource)
+                        })
+
+                        self.statusDisposable.set((context.engine.resources.status(resource: EngineMediaResource(file.resource)) |> deliverOnMainQueue).start(next: { [weak self] status in
+                            displayLinkDispatcher.dispatch {
+                                if let strongSelf = self {
+                                    strongSelf.fetchStatus = status
+                                    strongSelf.updateFetchStatus()
+                                }
+                            }
+                        }))
+
+                        self.pinchContainerNode.contentNode.addSubnode(self.statusNode)
+                    }
                 } else {
                     self.imageNode.setSignal(chatMessageVideo(postbox: context.account.postbox, userLocation: sourceLocation.userLocation, videoReference: fileReference))
                 }
@@ -285,13 +357,37 @@ final class InstantPageImageNode: ASDisplayNode, InstantPageNode, InstantPageExt
     }
     
     private func currentMediaDimensions() -> PixelDimensions? {
-        if case let .image(image) = self.media.media, let largest = largestImageRepresentation(image.representations) {
-            return largest.dimensions
+        // SuperGram (FIX-RICH-MD): `layout()` only builds a `TransformImageArguments` when this returns a
+        // value, so a media item whose dimensions are missing or zero never gets an image layout applied and
+        // stays blank *even after its bytes are on disk*. Server/AI-sent rich messages do produce such media
+        // (the `.map` 600x300 fallback in InstantPageV2Layout exists for the same reason), so fall back to
+        // any representation that carries real dimensions before giving up.
+        if case let .image(image) = self.media.media {
+            if let largest = largestImageRepresentation(image.representations), largest.dimensions.width > 0, largest.dimensions.height > 0 {
+                return largest.dimensions
+            }
+            return image.representations.first(where: { $0.dimensions.width > 0 && $0.dimensions.height > 0 })?.dimensions
         } else if case let .file(file) = self.media.media {
-            return file.dimensions
+            if let dimensions = file.dimensions, dimensions.width > 0, dimensions.height > 0 {
+                return dimensions
+            }
+            return file.previewRepresentations.first(where: { $0.dimensions.width > 0 && $0.dimensions.height > 0 })?.dimensions
         } else {
             return nil
         }
+    }
+
+    /// Natural size to feed `TransformImageArguments` for a node laid out at `size`. Falls back to the
+    /// node's own box when the media carries no usable dimensions at all, so the image is still applied
+    /// (aspect-filling the box) instead of never being drawn.
+    private func layoutMediaDimensions(fittingIn size: CGSize) -> PixelDimensions? {
+        if let dimensions = self.effectiveMediaDimensions() {
+            return dimensions
+        }
+        guard size.width > 0.0, size.height > 0.0 else {
+            return nil
+        }
+        return PixelDimensions(width: Int32(max(1.0, size.width)), height: Int32(max(1.0, size.height)))
     }
     
     private func effectiveMediaDimensions() -> PixelDimensions? {
@@ -372,7 +468,7 @@ final class InstantPageImageNode: ASDisplayNode, InstantPageNode, InstantPageExt
             let radialStatusSize: CGFloat = max(18.0, min(50.0, floor(min(size.width, size.height) * 0.7)))
             self.statusNode.frame = CGRect(x: floorToScreenPixels((size.width - radialStatusSize) / 2.0), y: floorToScreenPixels((size.height - radialStatusSize) / 2.0), width: radialStatusSize, height: radialStatusSize)
             
-            if case .image = self.media.media, let dimensions = self.effectiveMediaDimensions() {
+            if case .image = self.media.media, let dimensions = self.layoutMediaDimensions(fittingIn: size) {
                 let imageSize = dimensions.cgSize.aspectFilled(size)
                 let boundingSize = size
                 let radius: CGFloat = self.roundCorners ? floor(min(imageSize.width, imageSize.height) / 2.0) : 0.0
@@ -381,7 +477,7 @@ final class InstantPageImageNode: ASDisplayNode, InstantPageNode, InstantPageExt
                 apply()
                 
                 self.linkIconNode.frame = CGRect(x: size.width - 38.0, y: 14.0, width: 24.0, height: 24.0)
-            } else if case let .file(file) = self.media.media, let dimensions = self.effectiveMediaDimensions() {
+            } else if case let .file(file) = self.media.media, let dimensions = self.layoutMediaDimensions(fittingIn: size) {
                 let emptyColor = file.mimeType.hasPrefix("image/") ? self.theme.imageTintColor : nil
                 
                 let imageSize = dimensions.cgSize.aspectFilled(size)

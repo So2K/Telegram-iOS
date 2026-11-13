@@ -12,6 +12,22 @@ import ComponentFlow
 import BundleIconComponent
 import GlassBarButtonComponent
 
+private func countriesByPrefix(_ countries: [Country]) -> [String: (Country, Country.CountryCode)] {
+    var result: [String: (Country, Country.CountryCode)] = [:]
+    for country in countries {
+        for code in country.countryCodes {
+            if !code.prefixes.isEmpty {
+                for prefix in code.prefixes {
+                    result["\(code.code)\(prefix)"] = (country, code)
+                }
+            } else {
+                result[code.code] = (country, code)
+            }
+        }
+    }
+    return result
+}
+
 private func loadCountryCodes() -> [Country] {
     guard let filePath = getAppBundle().path(forResource: "PhoneCountries", ofType: "txt") else {
         return []
@@ -27,8 +43,6 @@ private func loadCountryCodes() -> [Country] {
     let endOfLine = "\r\n"
     
     var result: [Country] = []
-    var countriesByPrefix: [String: (Country, Country.CountryCode)] = [:]
-    
     var currentLocation = data.startIndex
     
     let locale = Locale(identifier: "en-US")
@@ -53,13 +67,13 @@ private func loadCountryCodes() -> [Country] {
         let pattern = String(data[idRange.upperBound ..< patternRange.lowerBound])
         
         let maybeNameRange = data.range(of: endOfLine, options: [], range: patternRange.upperBound ..< data.endIndex)
+            ?? data.range(of: "\n", options: [], range: patternRange.upperBound ..< data.endIndex)
         
         let countryName = locale.localizedString(forIdentifier: countryId) ?? ""
         if let _ = Int(countryCode) {
             let code = Country.CountryCode(code: countryCode, prefixes: [], patterns: !pattern.isEmpty ? [pattern] : [])
             let country = Country(id: countryId, name: countryName, localizedName: nil, countryCodes: [code], hidden: false)
             result.append(country)
-            countriesByPrefix["\(code.code)"] = (country, code)
         }
         
         if let maybeNameRange = maybeNameRange {
@@ -69,32 +83,23 @@ private func loadCountryCodes() -> [Country] {
         }
     }
     
-    countryCodesByPrefix = countriesByPrefix
-    
     return result
 }
 
 private var countryCodes: [Country] = loadCountryCodes()
-private var countryCodesByPrefix: [String: (Country, Country.CountryCode)] = [:]
+private var countryCodesByPrefix: [String: (Country, Country.CountryCode)] = countriesByPrefix(countryCodes)
 
 public func loadServerCountryCodes(accountManager: AccountManager<TelegramAccountManagerTypes>, engine: TelegramEngineUnauthorized, completion: @escaping () -> Void) {
     let _ = (engine.localization.getCountriesList(accountManager: accountManager, langCode: nil)
     |> deliverOnMainQueue).start(next: { countries in
-        countryCodes = countries
-        
-        var countriesByPrefix: [String: (Country, Country.CountryCode)] = [:]
-        for country in countries {
-            for code in country.countryCodes {
-                if !code.prefixes.isEmpty {
-                    for prefix in code.prefixes {
-                        countriesByPrefix["\(code.code)\(prefix)"] = (country, code)
-                    }
-                } else {
-                    countriesByPrefix[code.code] = (country, code)
-                }
+        guard !countries.isEmpty else {
+            Queue.mainQueue().async {
+                completion()
             }
+            return
         }
-        countryCodesByPrefix = countriesByPrefix
+        countryCodes = countries
+        countryCodesByPrefix = countriesByPrefix(countries)
                 
         Queue.mainQueue().async {
             completion()
@@ -105,21 +110,14 @@ public func loadServerCountryCodes(accountManager: AccountManager<TelegramAccoun
 public func loadServerCountryCodes(accountManager: AccountManager<TelegramAccountManagerTypes>, engine: TelegramEngine, completion: @escaping () -> Void) {
     let _ = (engine.localization.getCountriesList(accountManager: accountManager, langCode: nil)
     |> deliverOnMainQueue).start(next: { countries in
-        countryCodes = countries
-
-        var countriesByPrefix: [String: (Country, Country.CountryCode)] = [:]
-        for country in countries {
-            for code in country.countryCodes {
-                if !code.prefixes.isEmpty {
-                    for prefix in code.prefixes {
-                        countriesByPrefix["\(code.code)\(prefix)"] = (country, code)
-                    }
-                } else {
-                    countriesByPrefix[code.code] = (country, code)
-                }
+        guard !countries.isEmpty else {
+            Queue.mainQueue().async {
+                completion()
             }
+            return
         }
-        countryCodesByPrefix = countriesByPrefix
+        countryCodes = countries
+        countryCodesByPrefix = countriesByPrefix(countries)
         Queue.mainQueue().async {
             completion()
         }

@@ -45,6 +45,7 @@ import SliderContextItem
 import SaveProgressScreen
 import DirectMediaImageCache
 import PromptUI
+import SGSimpleSettings
 
 public final class StoryAvailableReactions: Equatable {
     let reactionItems: [ReactionItem]
@@ -518,7 +519,11 @@ public final class StoryItemSetContainerComponent: Component {
         private var isAnimatingOut: Bool = false
         
         private var scheduledStoryUnpinnedUndoOverlay: ViewController?
-        
+
+        // SuperGram: raw "HD stories" preference; StoryChatContent ANDs it with isPremium
+        private var sgHighQualityStoriesSetting: Bool = false
+        private var sgHighQualityStoriesDisposable: Disposable?
+
         override init(frame: CGRect) {
             self.sendMessageContext = StoryItemSetContainerSendMessage()
             
@@ -750,6 +755,7 @@ public final class StoryItemSetContainerComponent: Component {
             self.audioRecorderStatusDisposable?.dispose()
             self.videoRecorderDisposable?.dispose()
             self.updateDisposable.dispose()
+            self.sgHighQualityStoriesDisposable?.dispose()
         }
         
         public var mediaStreamCall: PresentationGroupCall? {
@@ -1661,7 +1667,7 @@ public final class StoryItemSetContainerComponent: Component {
                             isVideoBuffering: visibleItem.isBuffering,
                             isCurrent: index == centralIndex,
                             isUIHidden: component.hideUI,
-                            preferHighQuality: component.slice.additionalPeerData.preferHighQualityStories,
+                            preferHighQuality: self.sgPreferHighQualityStories(component: component),
                             isEmbeddedInCamera: component.isEmbeddedInCamera,
                             canManageLiveChatMessagesFromPeers: canManageLiveChatMessagesFromPeers,
                             activateReaction: { [weak self] reactionView, reaction in
@@ -2682,7 +2688,26 @@ public final class StoryItemSetContainerComponent: Component {
                         
             if self.component == nil {
                 self.sendMessageContext.setup(component: component, view: self, inputPanelExternalState: self.inputPanelExternalState, keyboardInputData: component.keyboardInputData)
-                
+
+                // SuperGram: follow the HD preference directly so sgStoryHDWithoutPremium can apply it without Premium
+                self.sgHighQualityStoriesSetting = component.context.sharedContext.currentAutomaticMediaDownloadSettings.highQualityStories
+                self.sgHighQualityStoriesDisposable = (component.context.sharedContext.automaticMediaDownloadSettings
+                |> map { settings -> Bool in
+                    return settings.highQualityStories
+                }
+                |> distinctUntilChanged
+                |> deliverOnMainQueue).startStrict(next: { [weak self] value in
+                    guard let self else {
+                        return
+                    }
+                    if self.sgHighQualityStoriesSetting != value {
+                        self.sgHighQualityStoriesSetting = value
+                        if !self.isUpdatingComponent {
+                            self.state?.updated(transition: .immediate)
+                        }
+                    }
+                })
+
                 /*#if DEBUG
                 class Target: NSObject {
                     let f: () -> Void
@@ -4535,12 +4560,7 @@ public final class StoryItemSetContainerComponent: Component {
                     self.captionItem = captionItem
                 }
                 
-                var enableEntities = true
-                if case .user = component.slice.effectivePeer {
-                    if !component.slice.effectivePeer.isService && !component.slice.effectivePeer.isPremium {
-                        enableEntities = false
-                    }
-                }
+                // SuperGram: caption entities of non-Premium authors are rendered too (stock client strips them)
                 var forwardInfoStory: Signal<EngineStoryItem?, NoError>? = nil
                 if let forwardInfo = component.slice.item.storyItem.forwardInfo, case let .known(peer, id, _) = forwardInfo {
                     forwardInfoStory = component.slice.forwardInfoStories[EngineStoryId(peerId: peer.id, id: id)]?.get()
@@ -4557,7 +4577,7 @@ public final class StoryItemSetContainerComponent: Component {
                         forwardInfo: component.slice.item.storyItem.forwardInfo,
                         forwardInfoStory: forwardInfoStory,
                         music: component.slice.item.storyItem.music,
-                        entities: enableEntities ? component.slice.item.storyItem.entities : [],
+                        entities: component.slice.item.storyItem.entities,
                         entityFiles: component.slice.item.entityFiles,
                         action: { [weak self] action in
                             guard let self, let component = self.component else {
@@ -5573,13 +5593,23 @@ public final class StoryItemSetContainerComponent: Component {
             }
             
             if subject != nil || chat {
-                if let index = navigationController.viewControllers.firstIndex(where: { c in
+                var existingChatIndex = navigationController.viewControllers.firstIndex(where: { c in
                     if let c = c as? ChatController, case .peer(peer.id) = c.chatLocation {
                         return true
                     } else {
                         return false
                     }
-                }) {
+                })
+                if SGSimpleSettings.shared.sgKeepNavigationStack {
+                    // SuperGram: only go back to the nearest chat below the story viewer; jumping back to an older
+                    // chat of the same peer would throw away every screen opened after it
+                    if let nearestIndex = navigationController.viewControllers.lastIndex(where: { $0 is ChatController }), let c = navigationController.viewControllers[nearestIndex] as? ChatController, case .peer(peer.id) = c.chatLocation {
+                        existingChatIndex = nearestIndex
+                    } else {
+                        existingChatIndex = nil
+                    }
+                }
+                if let index = existingChatIndex {
                     var viewControllers = navigationController.viewControllers
                     for i in ((index + 1) ..< viewControllers.count).reversed() {
                         if viewControllers[i] !== controller {
@@ -5609,12 +5639,21 @@ public final class StoryItemSetContainerComponent: Component {
                 }
             } else {
                 var currentViewControllers = navigationController.viewControllers
-                if let index = currentViewControllers.firstIndex(where: { c in
+                var existingInfoIndex = currentViewControllers.firstIndex(where: { c in
                     if let c = c as? PeerInfoScreen, c.peerId == peer.id {
                         return true
                     }
                     return false
-                }) {
+                })
+                if SGSimpleSettings.shared.sgKeepNavigationStack {
+                    // SuperGram: same rule for profiles — only the nearest profile/chat below the story viewer
+                    if let nearestIndex = currentViewControllers.lastIndex(where: { $0 is PeerInfoScreen || $0 is ChatController }), let c = currentViewControllers[nearestIndex] as? PeerInfoScreen, c.peerId == peer.id {
+                        existingInfoIndex = nearestIndex
+                    } else {
+                        existingInfoIndex = nil
+                    }
+                }
+                if let index = existingInfoIndex {
                     if let controller = component.controller() as? StoryContainerScreen {
                         controller.dismiss()
                     }
@@ -5965,7 +6004,16 @@ public final class StoryItemSetContainerComponent: Component {
             component.controller()?.push(controller)
         }
         
-        private func requestSave() {
+        // SuperGram: additionalPeerData.preferHighQualityStories is `setting && isPremium`; with sgStoryHDWithoutPremium the raw setting decides
+        func sgPreferHighQualityStories(component: StoryItemSetContainerComponent) -> Bool {
+            if component.slice.additionalPeerData.preferHighQualityStories {
+                return true
+            }
+            return SuperGramStoryGates.storyHDWithoutPremium && self.sgHighQualityStoriesSetting
+        }
+
+        // SuperGram: internal (was private) so the protected-story share sheet can offer Save to Gallery
+        func requestSave() {
             guard let component = self.component, let peerReference = PeerReference(component.slice.effectivePeer) else {
                 return
             }
@@ -6678,7 +6726,8 @@ public final class StoryItemSetContainerComponent: Component {
                         self.requestSave()
                     })))
                     
-                    if case let .user(accountUser) = component.slice.effectivePeer, !isLiveStream {
+                    // SuperGram: stealth mode is enforced by the server (Premium only); hide its upsell entry for non-Premium accounts
+                    if case let .user(accountUser) = component.slice.effectivePeer, !isLiveStream, accountUser.isPremium || !SuperGramStoryGates.hidePremiumUpsell {
                         items.append(.action(ContextMenuActionItem(text: component.strings.Story_ContextStealthMode, icon: { theme in
                             return generateTintedImage(image: UIImage(bundleImageName: accountUser.isPremium ? "Chat/Context Menu/Eye" : "Chat/Context Menu/EyeLocked"), color: theme.contextMenu.primaryColor)
                         }, action: { [weak self] _, a in
@@ -7302,30 +7351,32 @@ public final class StoryItemSetContainerComponent: Component {
                     }
                     
                     if !component.slice.item.storyItem.isMy, case let .file(file) = component.slice.item.storyItem.media, file.isVideo {
-                        let isHq = component.slice.additionalPeerData.preferHighQualityStories
+                        // SuperGram: HD without Premium (sgStoryHDWithoutPremium), no quality upsell sheet
+                        let isHq = self.sgPreferHighQualityStories(component: component)
+                        let canSelectHq = accountUser.isPremium || SuperGramStoryGates.storyHDWithoutPremium
                         items.append(.action(ContextMenuActionItem(text: isHq ? component.strings.Story_ContextMenuSD : component.strings.Story_ContextMenuHD, icon: { theme in
                             if isHq {
                                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/QualitySd"), color: theme.contextMenu.primaryColor)
                             } else {
-                                return generateTintedImage(image: UIImage(bundleImageName: accountUser.isPremium ? "Chat/Context Menu/QualityHd" : "Chat/Context Menu/QualityHdLocked"), color: theme.contextMenu.primaryColor)
+                                return generateTintedImage(image: UIImage(bundleImageName: canSelectHq ? "Chat/Context Menu/QualityHd" : "Chat/Context Menu/QualityHdLocked"), color: theme.contextMenu.primaryColor)
                             }
                         }, action: { [weak self] _, a in
                             a(.default)
-                            
+
                             guard let self, let component = self.component, let controller = component.controller() else {
                                 return
                             }
-                            
-                            if !component.slice.additionalPeerData.preferHighQualityStories && !accountUser.isPremium {
+
+                            if !isHq && !canSelectHq {
                                 self.presentQualityUpgradeScreen()
-                                
+
                                 return
                             }
-                            
+
                             let presentationData = component.context.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: component.theme)
                             let title: String
                             let text: String
-                            if component.slice.additionalPeerData.preferHighQualityStories {
+                            if isHq {
                                 title = component.strings.Story_ToastQualitySD_Title
                                 text = component.strings.Story_ToastQualitySD_Text
                             } else {
@@ -7421,26 +7472,24 @@ public final class StoryItemSetContainerComponent: Component {
                             }
                             self.beginPictureInPicture()
                         })))
-                    } else if !component.slice.item.storyItem.isForwardingDisabled {
+                    } else if !component.slice.item.storyItem.isForwardingDisabled || SuperGramStoryGates.allowSaveProtectedContent {
+                        // SuperGram: Save to Gallery without Premium; protected (noforwards) stories behind sgAllowSaveProtectedContent
                         let saveText: String = component.strings.Story_Context_SaveToGallery
                         items.append(.action(ContextMenuActionItem(text: saveText, icon: { theme in
-                            return generateTintedImage(image: UIImage(bundleImageName: accountUser.isPremium ? "Chat/Context Menu/Download" : "Chat/Context Menu/DownloadLocked"), color: theme.contextMenu.primaryColor)
+                            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Download"), color: theme.contextMenu.primaryColor)
                         }, action: { [weak self] _, a in
                             a(.default)
-                            
+
                             guard let self else {
                                 return
                             }
-                            
-                            if accountUser.isPremium {
-                                self.requestSave()
-                            } else {
-                                self.presentSaveUpgradeScreen()
-                            }
+
+                            self.requestSave()
                         })))
                     }
-                    
-                    if case .user = component.slice.effectivePeer, !isLiveStream {
+
+                    // SuperGram: stealth mode is enforced by the server (Premium only); hide its upsell entry for non-Premium accounts
+                    if case .user = component.slice.effectivePeer, !isLiveStream, accountUser.isPremium || !SuperGramStoryGates.hidePremiumUpsell {
                         items.append(.action(ContextMenuActionItem(text: component.strings.Story_ContextStealthMode, icon: { theme in
                             return generateTintedImage(image: UIImage(bundleImageName: accountUser.isPremium ? "Chat/Context Menu/Eye" : "Chat/Context Menu/EyeLocked"), color: theme.contextMenu.primaryColor)
                         }, action: { [weak self] _, a in

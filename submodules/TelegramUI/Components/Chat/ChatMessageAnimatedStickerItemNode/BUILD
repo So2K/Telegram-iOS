@@ -10,6 +10,8 @@ swift_library(
         "-warnings-as-errors",
     ],
     deps = [
+        # SuperGram (W2-CHATUI-INPUT): stickerSize / stickerTimestamp.
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
         "//submodules/AsyncDisplayKit",
         "//submodules/Display",
         "//submodules/SSignalKit/SwiftSignalKit",

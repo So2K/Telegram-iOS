@@ -905,7 +905,7 @@ public final class ChatInputMessageAccessoryPanel: Component {
             let textSize = self.text.update(
                 transition: .immediate,
                 component: AnyComponent(MultilineTextComponent(
-                    text: .plain(textString),
+                    text: .plain(textString)
                 )),
                 environment: {},
                 containerSize: CGSize(width: availableSize.width - lineFrame.maxX - textInsets.left - textInsets.right, height: 100.0)
@@ -915,7 +915,7 @@ public final class ChatInputMessageAccessoryPanel: Component {
             let _ = self.tintText.update(
                 transition: .immediate,
                 component: AnyComponent(MultilineTextComponent(
-                    text: .plain(tintTextString),
+                    text: .plain(tintTextString)
                 )),
                 environment: {},
                 containerSize: CGSize(width: availableSize.width - lineFrame.maxX - textInsets.left - textInsets.right, height: 100.0)

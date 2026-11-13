@@ -19,6 +19,10 @@ private struct AccountTasks {
     let activeCalls: Bool
     let watchTasks: Bool
     let userInterfaceInUse: Bool
+
+    var hasBackgroundDownloads: Bool {
+        return self.backgroundDownloads && superGramBackgroundDownloadsEnabled()
+    }
     
     var isEmpty: Bool {
         if self.stateSynchronization {
@@ -30,7 +34,7 @@ private struct AccountTasks {
         if self.backgroundLocation {
             return false
         }
-        if self.backgroundDownloads {
+        if self.hasBackgroundDownloads {
             return false
         }
         if self.backgroundAudio {
@@ -51,6 +55,19 @@ private struct AccountTasks {
 
 private let backgroundTaskSubmissionDelay: Double = 10.0
 
+private func superGramBackgroundDownloadsEnabled() -> Bool {
+    return UserDefaults.standard.object(forKey: "sgBackgroundDownloads") as? Bool ?? true
+}
+
+/// SuperGram: how long "the user has a download running" is held after the FetchManager stops reporting one.
+/// It exists to cover the windows in which a user-initiated entry is momentarily not *active* although the
+/// download is still in progress — above all the exponential retry backoff, which tops out at 60 s
+/// (`FetchManagerImpl.handleEntryFetchFailed`), plus the hand-over to the next file of a queue. It is a
+/// bounded tail, deliberately: it is what keeps the background keep-alive from ending the moment a flaky
+/// network drops a part, while still guaranteeing that the keep-alive stops a fixed time after the user's
+/// last download ends. See AppDelegate's `accountHasUserInitiatedDownloads`.
+let superGramUserInitiatedDownloadHoldPeriod: Double = 90.0
+
 private struct PendingMediaUploadKey: Hashable {
     let accountId: AccountRecordId
     let messageId: EngineMessage.Id
@@ -59,6 +76,21 @@ private struct PendingMediaUploadKey: Hashable {
 private struct PendingStoryUploadKey: Hashable {
     let accountId: AccountRecordId
     let stableId: Int32
+}
+
+// SuperGram: there is exactly one SharedWakeupManager per process (AppDelegate owns it). The notification
+// fallback in AuthorizedApplicationContext has no reference to it, so this weak hook lets it report that the
+// background keep-alive just did its job, which resets the keep-alive's idle deadline (see P0-1 duty cycle).
+private weak var sharedWakeupManagerInstance: SharedWakeupManager?
+
+func superGramNoteBackgroundNotificationActivity() {
+    if Queue.mainQueue().isCurrent() {
+        sharedWakeupManagerInstance?.noteBackgroundNotificationActivity()
+    } else {
+        Queue.mainQueue().async {
+            sharedWakeupManagerInstance?.noteBackgroundNotificationActivity()
+        }
+    }
 }
 
 public final class SharedWakeupManager {
@@ -85,12 +117,45 @@ public final class SharedWakeupManager {
     private var pendingMediaUploadsDisposable: Disposable?
     private var pendingStoryUploadsDisposable: Disposable?
     private var currentTask: (UIBackgroundTaskIdentifier, Double, SwiftSignalKit.Timer)?
+    private var backgroundExtensionBudgetExhausted = false
     private var currentExternalCompletion: (() -> Void, SwiftSignalKit.Timer)?
     private var currentExternalCompletionValidationTimer: SwiftSignalKit.Timer?
     
     private var managedPausedInBackgroundPlayer: Disposable?
     private var keepIdleDisposable: Disposable?
     private var silenceAudioRenderer: MediaPlayerAudioRenderer?
+    // SuperGram: another app or a call can interrupt the background audio session at any time; iOS then
+    // suspends the app. Being suspended while a Postbox (SQLite, app group container) transaction holds
+    // a file lock terminates the app with 0xDEAD10CC, so an interruption releases the keep-alive through
+    // the regular "no background work" path under a short background task.
+    private var silenceAudioInterrupted: Bool = false
+    private var silenceAudioInterruptionObserver: NSObjectProtocol?
+    private var silenceAudioResetObserver: NSObjectProtocol?
+    private var silenceAudioInterruptionTask: (UIBackgroundTaskIdentifier, SwiftSignalKit.Timer)?
+
+    // SuperGram: duty cycle for the notification keep-alive. The keep-alive exists so that new messages can be
+    // turned into local notifications while the app is in the background; when it cannot do that, running it is
+    // pure battery cost. Two cases are detected here:
+    //  * the primary account has had no network for a sustained stretch (airplane mode, no coverage) — nothing
+    //    can arrive, so nothing can be notified,
+    //  * nothing has arrived for a long time — the tail hours of an overnight background session, where the whole
+    //    cost is paid and a delayed notification costs nothing.
+    // Both only stop the *keep-alive*; notification delivery itself is untouched, and anything that shows the
+    // keep-alive is earning its cost (foreground, a delivered fallback notification, an active download) restarts
+    // it immediately while the app is still running.
+    private static let keepAliveIdleTimeout: Double = 2.0 * 60.0 * 60.0
+    private static let keepAliveLowPowerIdleTimeout: Double = 20.0 * 60.0
+    private static let keepAliveNoNetworkGracePeriod: Double = 10.0 * 60.0
+    private var keepAliveLastActivityTimestamp: Double = CFAbsoluteTimeGetCurrent()
+    private var keepAliveIdleTimer: SwiftSignalKit.Timer?
+    private var keepAliveIdleTimerDeadline: Double?
+    private var primaryAccountHasNetwork: Bool = true
+    private var primaryAccountNoNetworkSince: Double?
+    private var primaryAccountNetworkDisposable: Disposable?
+    private var backgroundStateObservers: [NSObjectProtocol] = []
+    private var isKeepAliveSuspendedForIdle: Bool = false
+    private var isKeepAliveSuspendedForNetwork: Bool = false
+    private var isKeepAliveSuspendedForThermal: Bool = false
     
     private var accountsAndTasks: [(Account, Bool, AccountTasks)] = []
     
@@ -111,7 +176,7 @@ public final class SharedWakeupManager {
     private var backgroundStoryProcessingTaskCancellationRequestedByApp: Bool = false
     private var pendingBackgroundStoryProcessingTaskTimer: SwiftSignalKit.Timer?
 
-    public init(beginBackgroundTask: @escaping (String, @escaping () -> Void) -> UIBackgroundTaskIdentifier?, endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void, backgroundTimeRemaining: @escaping () -> Double, acquireIdleExtension: @escaping () -> Disposable?, activeAccounts: Signal<(primary: Account?, accounts: [(AccountRecordId, Account)]), NoError>, liveLocationPolling: Signal<AccountRecordId?, NoError>, watchTasks: Signal<AccountRecordId?, NoError>, inForeground: Signal<Bool, NoError>, hasActiveAudioSession: Signal<Bool, NoError>, notificationManager: SharedNotificationManager?, mediaManager: MediaManager, callManager: PresentationCallManager?, accountUserInterfaceInUse: @escaping (AccountRecordId) -> Signal<Bool, NoError>, presentationData: @escaping () -> PresentationData?) {
+    public init(beginBackgroundTask: @escaping (String, @escaping () -> Void) -> UIBackgroundTaskIdentifier?, endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void, backgroundTimeRemaining: @escaping () -> Double, acquireIdleExtension: @escaping () -> Disposable?, activeAccounts: Signal<(primary: Account?, accounts: [(AccountRecordId, Account)]), NoError>, liveLocationPolling: Signal<AccountRecordId?, NoError>, watchTasks: Signal<AccountRecordId?, NoError>, inForeground: Signal<Bool, NoError>, hasActiveAudioSession: Signal<Bool, NoError>, notificationManager: SharedNotificationManager?, mediaManager: MediaManager, callManager: PresentationCallManager?, accountUserInterfaceInUse: @escaping (AccountRecordId) -> Signal<Bool, NoError>, accountHasUserInitiatedDownloads: @escaping (AccountRecordId) -> Signal<Bool, NoError>, presentationData: @escaping () -> PresentationData?) {
         assert(Queue.mainQueue().isCurrent())
         
         self.beginBackgroundTask = beginBackgroundTask
@@ -143,6 +208,45 @@ public final class SharedWakeupManager {
             self.enableBackgroundTasks = isEnabled
         })
         
+        // SuperGram: the keep-alive cannot turn anything into a notification while there is no network at all, so
+        // track reachability on the primary account. Only `.waitingForNetwork` counts — that is the state MTProto
+        // derives from reachability; `.connecting` is a live retry and must keep the keep-alive running.
+        self.primaryAccountNetworkDisposable = (activeAccounts
+        |> map { primary, _ -> Account? in
+            return primary
+        }
+        |> distinctUntilChanged(isEqual: { lhs, rhs in
+            return lhs?.id == rhs?.id
+        })
+        |> mapToSignal { primary -> Signal<Bool, NoError> in
+            guard let primary else {
+                return .single(true)
+            }
+            return primary.network.connectionStatus
+            |> map { status -> Bool in
+                if case .waitingForNetwork = status {
+                    return false
+                }
+                return true
+            }
+            |> distinctUntilChanged
+        }
+        |> deliverOnMainQueue).startStrict(next: { [weak self] hasNetwork in
+            guard let self else {
+                return
+            }
+            if self.primaryAccountHasNetwork == hasNetwork {
+                return
+            }
+            self.primaryAccountHasNetwork = hasNetwork
+            if hasNetwork {
+                self.primaryAccountNoNetworkSince = nil
+            } else {
+                self.primaryAccountNoNetworkSince = CFAbsoluteTimeGetCurrent()
+            }
+            self.checkTasks()
+        })
+
         self.inForegroundDisposable = (inForeground
         |> deliverOnMainQueue).startStrict(next: { [weak self] value in
             guard let strongSelf = self else {
@@ -150,6 +254,7 @@ public final class SharedWakeupManager {
             }
             strongSelf.inForeground = value
             if value {
+                strongSelf.backgroundExtensionBudgetExhausted = false
                 strongSelf.activeExplicitExtensionTimer?.invalidate()
                 strongSelf.activeExplicitExtensionTimer = nil
                 if let activeExplicitExtensionTask = strongSelf.activeExplicitExtensionTask {
@@ -257,9 +362,54 @@ public final class SharedWakeupManager {
                 
                 let userInterfaceInUse = accountUserInterfaceInUse(account.id)
                 
-                return combineLatest(queue: .mainQueue(), account.importantTasksRunning, notificationManager?.isPollingState(accountId: account.id) ?? .single(false), hasActiveAudio, keepUpdatesForCalls, hasActiveLiveLocationPolling, hasWatchTasks, userInterfaceInUse)
-                |> map { importantTasksRunning, isPollingState, hasActiveAudio, keepUpdatesForCalls, hasActiveLiveLocationPolling, hasWatchTasks, userInterfaceInUse -> (Account, Bool, AccountTasks) in
-                    return (account, primary?.id == account.id, AccountTasks(stateSynchronization: isPollingState, importantTasks: importantTasksRunning, backgroundLocation: hasActiveLiveLocationPolling, backgroundDownloads: false, backgroundAudio: hasActiveAudio, activeCalls: keepUpdatesForCalls, watchTasks: hasWatchTasks, userInterfaceInUse: userInterfaceInUse))
+                // SuperGram: running user-visible downloads keep the account's download connections and the app
+                // alive in background (Settings → SuperGram → Downloads, "sgBackgroundDownloads", default true).
+                // MediaDownloadActivity is process-wide, so it is attributed to the primary account only: otherwise
+                // any download (even an avatar) made every secondary account a service task master (.always)
+                // and kept its connections for the duration of the download plus the idle tail.
+                //
+                // `MediaDownloadActivity` alone is NOT a sufficient condition, and this is the reason the
+                // FetchManager term below exists. It is driven by the FetchV2 *interactive* part budget, and a
+                // fetch counts as interactive when it is user-initiated, when it is a playhead part **or when the
+                // resource is merely small** (`isSmallResource`, <= 512 KB — FetchV2.swift:986). Chat photos,
+                // avatars, stickers and thumbnails are all under that, so any incoming media auto-download kept
+                // `hasActiveDownloads` true. While the app is kept awake it keeps syncing, which produces more
+                // such fetches, which keeps it awake: on a busy account the keep-alive below — which is
+                // deliberately *not* duty-cycled (see updateKeepAliveDutyCycle) — could run for the whole time the
+                // app was backgrounded, for work the user never asked for and would not miss.
+                //
+                // The user-visible promise is "the download I started keeps going after I leave the app", so the
+                // keep-alive is armed only while the FetchManager actually holds a user-initiated entry. That is
+                // the same predicate as `continueInBackground` (FetchManagerImpl.swift:710 passes
+                // `entry.userInitiated`), which is what already decides whether the media worker connections are
+                // kept (Network.swift:1020) — so the two halves of the feature now agree on what a "background
+                // download" is. Auto-downloaded media is still fetched for as long as the app happens to be
+                // running; it just no longer keeps the process alive by itself.
+                let isPrimaryAccount = primary?.id == account.id
+                let hasDownloadNetwork = account.network.connectionStatus
+                |> map { status -> Bool in
+                    if case .waitingForNetwork = status {
+                        return false
+                    }
+                    return true
+                }
+                |> distinctUntilChanged
+                let hasBackgroundDownloads = combineLatest(queue: .mainQueue(),
+                    MediaDownloadActivity.shared.hasActiveDownloads,
+                    accountHasUserInitiatedDownloads(account.id),
+                    hasDownloadNetwork
+                )
+                |> map { hasActiveDownloads, hasUserInitiatedDownloads, hasNetwork -> Bool in
+                    // Offline entries stay queued, but cannot earn a background audio session.
+                    // Apply the user setting when consuming the task so toggles take effect
+                    // even when neither the download nor its activity signal changes.
+                    return isPrimaryAccount && hasActiveDownloads && hasUserInitiatedDownloads && hasNetwork
+                }
+                |> distinctUntilChanged
+
+                return combineLatest(queue: .mainQueue(), account.importantTasksRunning, notificationManager?.isPollingState(accountId: account.id) ?? .single(false), hasActiveAudio, keepUpdatesForCalls, hasActiveLiveLocationPolling, hasWatchTasks, userInterfaceInUse, hasBackgroundDownloads)
+                |> map { importantTasksRunning, isPollingState, hasActiveAudio, keepUpdatesForCalls, hasActiveLiveLocationPolling, hasWatchTasks, userInterfaceInUse, hasBackgroundDownloads -> (Account, Bool, AccountTasks) in
+                    return (account, primary?.id == account.id, AccountTasks(stateSynchronization: isPollingState, importantTasks: importantTasksRunning, backgroundLocation: hasActiveLiveLocationPolling, backgroundDownloads: hasBackgroundDownloads, backgroundAudio: hasActiveAudio, activeCalls: keepUpdatesForCalls, watchTasks: hasWatchTasks, userInterfaceInUse: userInterfaceInUse))
                 }
             }
             return combineLatest(signals)
@@ -352,9 +502,125 @@ public final class SharedWakeupManager {
             strongSelf.pendingStoryUploadsByKey = pendingStoryUploadsByKey
             strongSelf.updateBackgroundProcessingTaskStateFromPendingStoryUploads()
         })
+
+        self.silenceAudioInterruptionObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: OperationQueue.main, using: { [weak self] notification in
+            guard let self, let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt, let type = AVAudioSession.InterruptionType(rawValue: rawType) else {
+                return
+            }
+            switch type {
+            case .began:
+                self.markSilenceAudioUnavailable(reason: "interrupted")
+            case .ended:
+                superGramNotificationLog("background audio interruption ended (keep-alive was interrupted: \(self.silenceAudioInterrupted))")
+                if self.silenceAudioInterrupted {
+                    self.silenceAudioInterrupted = false
+                    self.checkTasks()
+                }
+            @unknown default:
+                break
+            }
+        })
+
+        // SuperGram: a media services reset tears the session down without an interruption notification; the app is
+        // then no longer kept running by audio, so the keep-alive has to be released the same way.
+        self.silenceAudioResetObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+            self?.markSilenceAudioUnavailable(reason: "media services reset")
+        })
+
+        var previousBackgroundSettings = (superGramBackgroundDownloadsEnabled(), self.superGramBackgroundKeepAliveEnabled)
+        self.backgroundStateObservers.append(NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+            guard let self else {
+                return
+            }
+            let settings = (superGramBackgroundDownloadsEnabled(), self.superGramBackgroundKeepAliveEnabled)
+            if settings != previousBackgroundSettings {
+                previousBackgroundSettings = settings
+                self.checkTasks()
+            }
+        }))
+        // Reading the initial state enables ProcessInfo's thermal change notifications.
+        _ = ProcessInfo.processInfo.thermalState
+        for notification in [Notification.Name.NSProcessInfoPowerStateDidChange, UIDevice.batteryStateDidChangeNotification, ProcessInfo.thermalStateDidChangeNotification] {
+            self.backgroundStateObservers.append(NotificationCenter.default.addObserver(forName: notification, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+                self?.checkTasks()
+            }))
+        }
+
+        sharedWakeupManagerInstance = self
+    }
+
+    // SuperGram: called when the local notification fallback delivers something, i.e. the keep-alive just paid for
+    // itself. Resets the idle deadline and re-arms the keep-alive if it had been stopped for idleness while the app
+    // was still running.
+    fileprivate func noteBackgroundNotificationActivity() {
+        assert(Queue.mainQueue().isCurrent())
+        self.keepAliveLastActivityTimestamp = CFAbsoluteTimeGetCurrent()
+        if self.isKeepAliveSuspendedForIdle {
+            self.checkTasks()
+        }
+    }
+
+    // SuperGram: the silent-audio keep-alive is what stops iOS from suspending the app in background. When it is
+    // gone (interrupted by a call or another app, reset, or never activated at all), the app can be suspended at any
+    // moment. Being suspended while a Postbox/SQLite transaction holds a lock on the app-group container terminates
+    // the process with 0xDEAD10CC, so the keep-alive is released through the regular "no background work" path —
+    // which calls setCanBeginTransactions(false, afterTransactionIfRunning:) — under a short background task that
+    // gives a running transaction time to finish.
+    fileprivate func markSilenceAudioUnavailable(reason: String) {
+        assert(Queue.mainQueue().isCurrent())
+        guard self.silenceAudioRenderer != nil, !self.silenceAudioInterrupted else {
+            return
+        }
+        self.silenceAudioInterrupted = true
+        superGramNotificationLog("background audio session unavailable: \(reason)")
+        self.beginSilenceAudioReleaseTask(name: "silence-audio-interrupted")
+        self.checkTasks()
+    }
+
+    // SuperGram: a short background task that covers the window between "the keep-alive is going away" and
+    // "setCanBeginTransactions(false, afterTransactionIfRunning:) has actually drained the running Postbox
+    // transaction". Without it, iOS can suspend the process while SQLite still holds a lock on the app-group
+    // container, which is terminated as 0xDEAD10CC.
+    private func beginSilenceAudioReleaseTask(name: String) {
+        guard self.silenceAudioInterruptionTask == nil else {
+            return
+        }
+        guard let taskId = self.beginBackgroundTask(name, { [weak self] in
+            self?.endSilenceAudioInterruptionTask()
+        }) else {
+            return
+        }
+        let timer = SwiftSignalKit.Timer(timeout: 5.0, repeat: false, completion: { [weak self] in
+            self?.endSilenceAudioInterruptionTask()
+        }, queue: Queue.mainQueue())
+        self.silenceAudioInterruptionTask = (taskId, timer)
+        timer.start()
+    }
+
+    private func endSilenceAudioInterruptionTask() {
+        if let (taskId, timer) = self.silenceAudioInterruptionTask {
+            self.silenceAudioInterruptionTask = nil
+            timer.invalidate()
+            self.endBackgroundTask(taskId)
+        }
     }
     
     deinit {
+        for observer in self.backgroundStateObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let silenceAudioInterruptionObserver = self.silenceAudioInterruptionObserver {
+            NotificationCenter.default.removeObserver(silenceAudioInterruptionObserver)
+        }
+        if let silenceAudioResetObserver = self.silenceAudioResetObserver {
+            NotificationCenter.default.removeObserver(silenceAudioResetObserver)
+        }
+        if let (taskId, timer) = self.silenceAudioInterruptionTask {
+            timer.invalidate()
+            self.endBackgroundTask(taskId)
+        }
+        self.keepAliveIdleTimer?.invalidate()
+        self.primaryAccountNetworkDisposable?.dispose()
         self.accountSettingsDisposable?.dispose()
         self.inForegroundDisposable?.dispose()
         self.hasActiveAudioSessionDisposable?.dispose()
@@ -520,6 +786,7 @@ public final class SharedWakeupManager {
     }
     
     private func startBackgroundProcessingTaskIfNeeded() {
+#if compiler(>=6.2)
         guard #available(iOS 26.0, *) else {
             return
         }
@@ -693,9 +960,11 @@ public final class SharedWakeupManager {
         } catch let e {
             Logger.shared.log("Wakeup", "BGTaskScheduler submit error: \(e)")
         }
+#endif
     }
     
     private func startBackgroundStoryProcessingTaskIfNeeded() {
+#if compiler(>=6.2)
         guard #available(iOS 26.0, *) else {
             return
         }
@@ -888,10 +1157,12 @@ public final class SharedWakeupManager {
         } catch let e {
             Logger.shared.log("Wakeup", "Story BGTaskScheduler submit error: \(e)")
         }
+#endif
     }
     
     func allowBackgroundTimeExtension(timeout: Double, extendNow: Bool = false) {
-        let shouldCheckTasks = self.allowBackgroundTimeExtensionDeadline == nil
+        let shouldCheckTasks = self.allowBackgroundTimeExtensionDeadline == nil || self.backgroundExtensionBudgetExhausted
+        self.backgroundExtensionBudgetExhausted = false
         self.allowBackgroundTimeExtensionDeadline = CFAbsoluteTimeGetCurrent() + timeout
         
         self.allowBackgroundTimeExtensionDeadlineTimer?.invalidate()
@@ -979,6 +1250,113 @@ public final class SharedWakeupManager {
         self.checkTasks()
     }
     
+    // SuperGram: the silent-audio keep-alive is a user setting (Settings → SuperGram → App,
+    // key "sgBackgroundKeepAlive", default true). It is the only notification path for this fork,
+    // so it stays on by default, but the user must be able to turn the background activity off.
+    private var superGramBackgroundKeepAliveEnabled: Bool {
+        return UserDefaults.standard.object(forKey: "sgBackgroundKeepAlive") as? Bool ?? true
+    }
+
+    // SuperGram: returns whether the notification keep-alive is still able to earn its battery cost, and owns the
+    // timer that re-evaluates that at the next deadline. Never called for the download keep-alive — an active
+    // download is real work and is not duty-cycled.
+    private func updateKeepAliveDutyCycle() -> Bool {
+        if self.inForeground {
+            self.keepAliveIdleTimer?.invalidate()
+            self.keepAliveIdleTimer = nil
+            self.keepAliveIdleTimerDeadline = nil
+            self.isKeepAliveSuspendedForIdle = false
+            self.isKeepAliveSuspendedForNetwork = false
+            self.isKeepAliveSuspendedForThermal = false
+            return true
+        }
+
+        // A charger does not remove CPU, network or thermal cost. Only real foreground/notification activity
+        // advances the idle anchor. Critical heat stops speculative notification work until a thermal callback
+        // reports cooling; actual downloads and audio/calls retain their independent checkTasks() paths.
+        let thermalState = ProcessInfo.processInfo.thermalState
+        if thermalState == .critical {
+            if !self.isKeepAliveSuspendedForThermal {
+                self.isKeepAliveSuspendedForThermal = true
+                superGramNotificationLog("notification keep-alive paused: critical thermal state")
+            }
+            self.keepAliveIdleTimer?.invalidate()
+            self.keepAliveIdleTimer = nil
+            self.keepAliveIdleTimerDeadline = nil
+            return false
+        } else if self.isKeepAliveSuspendedForThermal {
+            self.isKeepAliveSuspendedForThermal = false
+            superGramNotificationLog("notification keep-alive thermal pause ended")
+        }
+
+        // SuperGram: no idle or no-network stop any more. This bundle cannot receive Telegram server pushes (the
+        // server signs APNs with the official app's credentials), so the running process is the only notification
+        // path: once the keep-alive is released iOS suspends the app, and nothing — no new message, no returning
+        // network — can wake it again until the user opens it. Stopping after a quiet stretch or a short network
+        // outage therefore turned notifications off silently for the rest of the day. Only critical heat (handled
+        // above) pauses it; the user switch "sgBackgroundKeepAlive" still turns it off entirely.
+        if self.isKeepAliveSuspendedForIdle || self.isKeepAliveSuspendedForNetwork {
+            self.isKeepAliveSuspendedForIdle = false
+            self.isKeepAliveSuspendedForNetwork = false
+            superGramNotificationLog("keep-alive resumed")
+        }
+        self.keepAliveIdleTimer?.invalidate()
+        self.keepAliveIdleTimer = nil
+        self.keepAliveIdleTimerDeadline = nil
+        return true
+    }
+
+    private func armKeepAliveIdleTimer(deadline: Double) {
+        // Rebuild when activity or power/thermal policy moves the deadline earlier (it must not fire late), and
+        // tolerate up to a minute of drift when it moved later — firing early just re-evaluates and re-arms.
+        if self.keepAliveIdleTimer != nil, let existing = self.keepAliveIdleTimerDeadline, deadline >= existing - 1.0, deadline <= existing + 60.0 {
+            return
+        }
+        self.keepAliveIdleTimer?.invalidate()
+        let timer = SwiftSignalKit.Timer(timeout: max(1.0, deadline - CFAbsoluteTimeGetCurrent()), repeat: false, completion: { [weak self] in
+            guard let self else {
+                return
+            }
+            self.keepAliveIdleTimer = nil
+            self.keepAliveIdleTimerDeadline = nil
+            self.checkTasks()
+        }, queue: Queue.mainQueue())
+        self.keepAliveIdleTimer = timer
+        self.keepAliveIdleTimerDeadline = deadline
+        timer.start()
+    }
+
+    private func beginBackgroundExtensionTaskIfNeeded() {
+        // Reuse the live task: state updates must not reset its expiry timer or
+        // repeatedly acquire/end UIKit background assertions.
+        guard self.currentTask == nil, !self.backgroundExtensionBudgetExhausted else {
+            return
+        }
+        var actualTaskId: UIBackgroundTaskIdentifier?
+        let handleExpiration: () -> Void = { [weak self] in
+            guard let self, let actualTaskId, let (taskId, _, timer) = self.currentTask, taskId == actualTaskId else {
+                return
+            }
+            timer.invalidate()
+            self.backgroundExtensionBudgetExhausted = self.backgroundTimeRemaining() <= 5.0
+            self.currentTask = nil
+            self.isInBackgroundExtension = false
+            self.endBackgroundTask(taskId)
+            self.checkTasks()
+        }
+        if let taskId = self.beginBackgroundTask("background-wakeup", handleExpiration) {
+            actualTaskId = taskId
+            // Acquiring the first assertion can grant time that was unavailable
+            // before beginBackgroundTask. Measure only after it succeeds.
+            let timer = SwiftSignalKit.Timer(timeout: min(30.0, max(0.0, self.backgroundTimeRemaining() - 5.0)), repeat: false, completion: handleExpiration, queue: Queue.mainQueue())
+            self.currentTask = (taskId, CFAbsoluteTimeGetCurrent(), timer)
+            self.isInBackgroundExtension = true
+            timer.start()
+        } else {
+            self.backgroundExtensionBudgetExhausted = true
+        }
+    }
+
     func checkTasks() {
         var hasTasksForBackgroundExtension = false
         
@@ -1029,51 +1407,7 @@ public final class SharedWakeupManager {
             let canBeginBackgroundExtensionTasks = self.allowBackgroundTimeExtensionDeadline.flatMap({ CFAbsoluteTimeGetCurrent() < $0 }) ?? false
             if hasTasksForBackgroundExtension {
                 if canBeginBackgroundExtensionTasks {
-                    var endTaskId: UIBackgroundTaskIdentifier?
-                    
-                    let currentTime = CFAbsoluteTimeGetCurrent()
-                    if let (taskId, startTime, timer) = self.currentTask {
-                        if startTime < currentTime + 1.0 {
-                            self.currentTask = nil
-                            timer.invalidate()
-                            endTaskId = taskId
-                        }
-                    }
-                    
-                    if self.currentTask == nil {
-                        var actualTaskId: UIBackgroundTaskIdentifier?
-                        let handleExpiration: () -> Void = { [weak self] in
-                            guard let strongSelf = self else {
-                                return
-                            }
-                            
-                            if let actualTaskId {
-                                strongSelf.endBackgroundTask(actualTaskId)
-                                
-                                if let (taskId, _, timer) = strongSelf.currentTask, taskId == actualTaskId {
-                                    timer.invalidate()
-                                    strongSelf.currentTask = nil
-                                }
-                            }
-                            
-                            strongSelf.isInBackgroundExtension = false
-                            strongSelf.checkTasks()
-                        }
-                        if let taskId = self.beginBackgroundTask("background-wakeup", {
-                            handleExpiration()
-                        }) {
-                            actualTaskId = taskId
-                            let timer = SwiftSignalKit.Timer(timeout: min(30.0, max(0.0, self.backgroundTimeRemaining() - 5.0)), repeat: false, completion: {
-                                handleExpiration()
-                            }, queue: Queue.mainQueue())
-                            self.currentTask = (taskId, currentTime, timer)
-                            timer.start()
-                            
-                            endTaskId.flatMap(self.endBackgroundTask)
-                            
-                            self.isInBackgroundExtension = true
-                        }
-                    }
+                    self.beginBackgroundExtensionTaskIfNeeded()
                 }
             } else if let (taskId, _, timer) = self.currentTask {
                 self.currentTask = nil
@@ -1097,19 +1431,70 @@ public final class SharedWakeupManager {
             }
         }
         
-        self.updateAccounts(hasTasks: hasTasksForBackgroundExtension, endTaskAfterTransactionsComplete: endTaskAfterTransactionsComplete)
-        
-        /*if !self.inForeground && pendingMessageCount != 0 && !self.hasActiveAudioSession {
+        let hasPrimaryAccount = self.accountsAndTasks.contains(where: { $0.1 })
+        // SuperGram: while downloads are running, background audio keeps the app from being suspended even if
+        // the notification keep-alive is off; it stops again once downloads finish.
+        // AccountTasks applies the current setting to the retained download state. Both directions of
+        // a setting change work without waiting for a download-activity emission.
+        let hasBackgroundDownloads = self.accountsAndTasks.contains(where: { $0.2.hasBackgroundDownloads })
+        if self.inForeground {
+            self.silenceAudioInterrupted = false
+            // SuperGram: the foreground is the strongest possible evidence that the keep-alive is worth running
+            // again — it resets both duty-cycle deadlines.
+            self.keepAliveLastActivityTimestamp = CFAbsoluteTimeGetCurrent()
+        }
+        // Evaluated unconditionally: it also owns the duty-cycle timer, which has to be torn down even when the
+        // keep-alive setting itself is off.
+        let keepAliveDutyCycleAllows = self.updateKeepAliveDutyCycle()
+        let keepAliveForNotifications = self.superGramBackgroundKeepAliveEnabled && telegramLocalNotificationFallbackEnabled && keepAliveDutyCycleAllows
+        // SuperGram: an "active" managed audio session only keeps the app running while something is really playing
+        // (music / voice player, a call). A video left open in the gallery holds the session without producing
+        // sound: iOS then suspends the app in the background — no notifications, and a Postbox transaction caught
+        // mid-flight gets the process killed (device journal 2026-11-12: three suspensions and a crash right after
+        // backgrounding with a gallery video open, keep-alive never started). Only real playback replaces the
+        // silent keep-alive.
+        let audioPlaybackKeepsAppRunning = self.hasActiveAudioSession && (hasActiveCalls || self.accountsAndTasks.contains(where: { $0.2.backgroundAudio || $0.2.activeCalls }))
+        if (keepAliveForNotifications || hasBackgroundDownloads) && hasPrimaryAccount && !self.inForeground && !audioPlaybackKeepsAppRunning && !self.silenceAudioInterrupted {
             if self.silenceAudioRenderer == nil {
-                let audioSession = AVAudioSession()
-                let _ = try? audioSession.setCategory(.ambient)
-                let _ = try? audioSession.setMode(.default)
+                let audioSession = AVAudioSession.sharedInstance()
                 let silenceAudioRenderer = MediaPlayerAudioRenderer(
-                    audioSession: .custom({ control in
-                        let _ = try? audioSession.setActive(true)
+                    audioSession: .custom({ [weak self] control in
+                        var activationError: Error?
+                        do {
+                            try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                            try audioSession.setActive(true)
+                            superGramNotificationLog("background audio session active")
+                        } catch {
+                            activationError = error
+                            superGramNotificationLog("background audio session error: \(error)")
+                        }
                         control.activate()
-                        
-                        return EmptyDisposable
+
+                        if let activationError {
+                            // SuperGram: the session never became active, so nothing keeps the app running. Releasing
+                            // the keep-alive through the interruption path lets updateAccounts() close Postbox
+                            // transactions before iOS suspends the process (otherwise: 0xDEAD10CC).
+                            Queue.mainQueue().async { [weak self] in
+                                self?.markSilenceAudioUnavailable(reason: "activation failed: \(activationError)")
+                            }
+                        }
+
+                        return ActionDisposable { [weak self] in
+                            Queue.mainQueue().async {
+                                // SuperGram: this runs after the stopped renderer is released on the audio queue;
+                                // don't deactivate the shared session if a new silence renderer was started meanwhile
+                                guard let self, !self.hasActiveAudioSession, self.silenceAudioRenderer == nil else {
+                                    return
+                                }
+                                // SuperGram: AVAudioSession.setActive(false:) is a synchronous XPC round trip that
+                                // can take tens of milliseconds. It runs when the keep-alive stops, which is
+                                // typically the moment the app returns to the foreground, so keep it off the main
+                                // thread; only the state check above needs to be on it.
+                                Queue.concurrentDefaultQueue().async {
+                                    try? audioSession.setActive(false, options: [.notifyOthersOnDeactivation])
+                                }
+                            }
+                        }
                     }),
                     forAudioVideoMessage: false,
                     playAndRecord: false,
@@ -1127,28 +1512,39 @@ public final class SharedWakeupManager {
                 silenceAudioRenderer.start()
             }
         } else if let silenceAudioRenderer = self.silenceAudioRenderer {
+            if !self.inForeground && !self.hasActiveAudioSession {
+                self.beginSilenceAudioReleaseTask(name: "silence-audio-finished")
+            }
             self.silenceAudioRenderer = nil
             silenceAudioRenderer.stop()
-        }*/
+            superGramNotificationLog("background audio session stopped")
+        }
+
+        self.updateAccounts(hasTasks: hasTasksForBackgroundExtension, endTaskAfterTransactionsComplete: endTaskAfterTransactionsComplete)
     }
     
     private func updateAccounts(hasTasks: Bool, endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?) {
         let hasBackgroundLocationTask = self.accountsAndTasks.contains(where: { $0.2.backgroundLocation })
+        let hasActiveCallTask = self.accountsAndTasks.contains(where: { $0.2.activeCalls })
         
-        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.silenceAudioRenderer != nil {
+        if self.inForeground || self.hasActiveAudioSession || hasActiveCallTask || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.silenceAudioRenderer != nil {
             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
             
             for (account, primary, tasks) in self.accountsAndTasks {
                 account.postbox.setCanBeginTransactions(true)
                 
-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) {
+                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || (self.silenceAudioRenderer != nil && primary) {
                     account.shouldBeServiceTaskMaster.set(.single(.always))
                 } else {
                     account.shouldBeServiceTaskMaster.set(.single(.never))
                 }
-                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0))
+                // SuperGram: the silent-audio keep-alive needs the *service* connection above (updates -> local
+                // notifications). It must not also pin the media worker connections: with nothing to transfer those
+                // are idle sockets kept alive by pings for as long as the app stays backgrounded, which is pure
+                // battery cost. Worker connections are still kept for the cases that actually use them below.
+                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.hasBackgroundDownloads || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0))
                 account.shouldKeepOnlinePresence.set(.single(primary && self.inForeground))
-                account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
+                account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.hasBackgroundDownloads))
             }
             
             if let endTaskAfterTransactionsComplete {
@@ -1156,7 +1552,7 @@ public final class SharedWakeupManager {
             }
         } else {
             var enableBeginTransactions = false
-            if self.allowBackgroundTimeExtensionDeadlineTimer != nil {
+            if self.allowBackgroundTimeExtensionDeadlineTimer != nil && !self.backgroundExtensionBudgetExhausted {
                 enableBeginTransactions = true
             }
             Logger.shared.log("Wakeup", "enableBeginTransactions: \(enableBeginTransactions)")
@@ -1194,6 +1590,7 @@ public final class SharedWakeupManager {
                     checkCompletionState(accountId)
                 })
                 account.shouldBeServiceTaskMaster.set(.single(.never))
+                account.shouldExplicitelyKeepWorkerConnections.set(.single(false))
                 account.shouldKeepOnlinePresence.set(.single(false))
                 account.shouldKeepBackgroundDownloadConnections.set(.single(false))
             }

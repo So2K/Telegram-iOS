@@ -229,6 +229,11 @@
         _cropPipe = [[SPipe alloc] init];
         _captionAbovePipe = [[SPipe alloc] init];
         _highQualityPhotoPipe = [[SPipe alloc] init];
+        // MARK: Swiftgram
+        // SuperGram (SGM-F5): start the picker in "HD photo" mode when the user asked for it. LegacyComponents
+        // cannot depend on SGSimpleSettings, so the raw key is read with the same default (false) —
+        // see SGSimpleSettings.Keys.sendLargePhotos.
+        _highQualityPhoto = [[[NSUserDefaults standardUserDefaults] objectForKey:@"sendLargePhotos"] boolValue];
         _livePhotoModePipe = [[SPipe alloc] init];
         _forceLivePhotoPipe = [[SPipe alloc] init];
     }

@@ -37,7 +37,8 @@ import ChatMessageItemView
 import ChatMessageBubbleItemNode
 import AdsInfoScreen
 import AdsReportScreen
- 
+import PeerInfoUI
+
 private struct MessageContextMenuData {
     let starStatus: Bool?
     let canReply: Bool
@@ -978,12 +979,15 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                 })
             })))
         }
+        // MARK: Swiftgram
+        // Items whose contextShow* toggle is off go to the "SuperGram" submenu instead of the main menu.
+        var sgActions: [ContextMenuItem] = []
 
         var isPinnedMessages = false
         if case .pinnedMessages = chatPresentationInterfaceState.subject {
             isPinnedMessages = true
         }
-        
+
         if let starStatus = data.starStatus {
             var isPremiumSticker = false
             for media in messages[0].media {
@@ -1071,7 +1075,8 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
         }
         
         var hasRateTranscription = false
-        if hasExpandedAudioTranscription, let audioTranscription = audioTranscription, !didRateAudioTranscription {
+        // SuperGram: local (Apple Speech) transcriptions are stored with id == 0 and cannot be rated on the server
+        if hasExpandedAudioTranscription, let audioTranscription = audioTranscription, audioTranscription.id != 0, !didRateAudioTranscription {
             hasRateTranscription = true
             actions.insert(.custom(ChatRateTranscriptionContextItem(context: context, message: message, action: { [weak context] value in
                 guard let context = context else {
@@ -1126,7 +1131,6 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
             }
         }
         
-        var isDownloading = false
         let resourceAvailable: Bool
         if let resourceStatus = data.resourceStatus {
             if case .Local = resourceStatus {
@@ -1134,43 +1138,12 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
             } else {
                 resourceAvailable = false
             }
-            if case .Fetching = resourceStatus {
-                isDownloading = true
-            }
         } else {
             resourceAvailable = false
         }
-        
-        if !isPremium && isDownloading {
-            var isLargeFile = false
-            for media in message.effectiveMedia {
-                if let file = media as? TelegramMediaFile {
-                    if let size = file.size, size >= 150 * 1024 * 1024 {
-                        isLargeFile = true
-                    }
-                    break
-                }
-            }
-            if isLargeFile {
-                actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_IncreaseSpeed, icon: { theme in
-                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Speed"), color: theme.actionSheet.primaryTextColor)
-                }, action: { _, f in
-                    let context = context
-                    var replaceImpl: ((ViewController) -> Void)?
-                    let controller = context.sharedContext.makePremiumDemoController(context: context, subject: .fasterDownload, forceDark: false, action: {
-                        let controller = context.sharedContext.makePremiumIntroController(context: context, source: .fasterDownload, forceDark: false, dismissed: nil)
-                        replaceImpl?(controller)
-                    }, dismissed: nil)
-                    replaceImpl = { [weak controller] c in
-                        controller?.replace(with: c)
-                    }
-                    controllerInteraction.navigationController()?.pushViewController(controller)
-                    f(.dismissWithoutContent)
-                })))
-                actions.append(.separator)
-            }
-        }
-        
+
+        // SuperGram: no "Increase Speed" Premium upsell item for large downloads.
+
         if data.messageActions.options.contains(.sendGift), !message.id.peerId.isTelegramNotifications {
             let sendGiftTitle: String
             var isIncoming = message.effectivelyIncoming(context.account.peerId)
@@ -1212,8 +1185,9 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                     })
                 })
             })))
+            if !SuperGramContextMenuSettings.showReply { sgActions.append(actions.removeLast()) } // MARK: Swiftgram
         }
-        
+
         if data.messageActions.options.contains(.sendScheduledNow) {
             actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.ScheduledMessages_SendNow, icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Resend"), color: theme.actionSheet.primaryTextColor)
@@ -1308,10 +1282,15 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
         }
         
         let isCopyProtected = chatPresentationInterfaceState.copyProtectionEnabled || message.isCopyProtected()
+        // SuperGram (PROT-5): Copy, Translate/Speak copy, Save Image/Video and Save to Files for protected (noforwards)
+        // messages when sgAllowSaveProtectedContent is on. Forward and Save GIF keep `isCopyProtected` (server-enforced);
+        // secret chats and secret (view-once / short TTL) media are never unlocked.
+        let sgBypassesCopyProtection = SuperGramContextMenuSettings.allowSaveProtectedContent && message.id.peerId.namespace != Namespaces.Peer.SecretChat && !message.containsSecretMedia
+        let isSaveProtected = isCopyProtected && !sgBypassesCopyProtection
         if !messageText.isEmpty || richMessageMarkdown != nil || (resourceAvailable && isImage) || diceEmoji != nil {
             if !isExpired {
                 if !isPoll {
-                    if !isCopyProtected {
+                    if !isSaveProtected {
                         actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_ContextMenuCopy, icon: { theme in
                             return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Copy"), color: theme.actionSheet.primaryTextColor)
                         }, action: { _, f in
@@ -1423,7 +1402,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                             }
                         }
                         
-                        controllerInteraction.performTextSelectionAction(message, !isCopyProtected, NSAttributedString(string: messageText), messageEntities, .translate)
+                        controllerInteraction.performTextSelectionAction(message, !isSaveProtected, NSAttributedString(string: messageText), messageEntities, .translate)
                         f(.default)
                     })))
                 }
@@ -1444,14 +1423,14 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                             text = translation.text
                         }
                         
-                        controllerInteraction.performTextSelectionAction(message, !isCopyProtected, NSAttributedString(string: text), nil, .speak)
+                        controllerInteraction.performTextSelectionAction(message, !isSaveProtected, NSAttributedString(string: text), nil, .speak)
                         f(.default)
                     })))
                 }
             }
         }
         
-        if resourceAvailable, !message.containsSecretMedia && !isCopyProtected {
+        if resourceAvailable, !message.containsSecretMedia && !isSaveProtected {
             var mediaReference: AnyMediaReference?
             var isVideo = false
             for media in message.effectiveMedia {
@@ -1495,7 +1474,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
             }
         }
         
-        if !isCopyProtected {
+        if !isSaveProtected {
             for media in message.effectiveMedia {
                 if let file = media as? TelegramMediaFile {
                     if file.isMusic {
@@ -1505,6 +1484,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                             controllerInteraction.saveMediaToFiles(message.id)
                             f(.default)
                         })))
+                        if !SuperGramContextMenuSettings.showSaveMedia { sgActions.append(actions.removeLast()) } // MARK: Swiftgram
                     }
                     break
                 }
@@ -1521,7 +1501,22 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                 f(.default)
             })))
         }
-        
+
+        // MARK: Swiftgram
+        // SuperGram (SGM-F13): the JSON item is shown only when contextShowJson is on (Swiftgram put it into its submenu
+        // when off), never for secret chats or secret media. Compiled out until TelegramUI depends on //Swiftgram/Wrap.
+        #if canImport(Wrap)
+        if SuperGramContextMenuSettings.showJson && message.id.peerId.namespace != Namespaces.Peer.SecretChat && !message.containsSecretMedia {
+            let showJsonAction: ContextMenuItem = .action(ContextMenuActionItem(text: "JSON", icon: { theme in
+                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Settings"), color: theme.actionSheet.primaryTextColor)
+            }, action: { _, f in
+                showMessageJson(controllerInteraction: controllerInteraction, chatPresentationInterfaceState: chatPresentationInterfaceState, message: message, context: context)
+                f(.default)
+            }))
+            actions.append(showJsonAction)
+        }
+        #endif
+
         var threadId: Int64?
         var threadMessageCount: Int = 0
         if case .peer = chatPresentationInterfaceState.chatLocation, let channel = chatPresentationInterfaceState.renderedPeer?.peer as? TelegramChannel, case .group = channel.info {
@@ -1560,6 +1555,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                     controllerInteraction.openMessageReplies(messages[0].id, true, true)
                 })
             })))
+            if !SuperGramContextMenuSettings.showMessageReplies { sgActions.append(actions.removeLast()) } // MARK: Swiftgram
         }
         
         let isMigrated: Bool
@@ -1710,6 +1706,7 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                     interfaceInteraction.pinMessage(messages[0].id, c)
                 })))
             }
+            if !SuperGramContextMenuSettings.showPin { sgActions.append(actions.removeLast()) } // MARK: Swiftgram
         }
         
         if let activePoll, messages[0].forwardInfo == nil {
@@ -1901,15 +1898,45 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                     interfaceInteraction.forwardMessages(selectAll || isImage ? messages : [message])
                     f(.dismissWithoutContent)
                 })))
+                // MARK: Swiftgram
+                // Both items are forwards, so they stay inside the `.forward` / `!isCopyProtected` gate.
+                if let sgChatController = interfaceInteraction.chatController() as? ChatControllerImpl {
+                    if message.id.peerId != context.account.peerId {
+                        let action: ContextMenuItem = .action(ContextMenuActionItem(text: superGramContextMenuString("ContextMenu.SaveToCloud", chatPresentationInterfaceState.strings.baseLanguageCode), icon: { theme in
+                            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Fave"), color: theme.actionSheet.primaryTextColor)
+                        }, action: { [weak sgChatController] _, f in
+                            sgChatController?.sgContextMenuForwardMessages(selectAll || isImage ? messages : [message], toCloud: true)
+                            f(.dismissWithoutContent)
+                        }))
+                        if SuperGramContextMenuSettings.showSaveToCloud {
+                            actions.append(action)
+                        } else {
+                            sgActions.append(action)
+                        }
+                    }
+                    let action: ContextMenuItem = .action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.NotificationSettings_Stories_CompactHideName, icon: { theme in
+                        return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Forward"), color: theme.actionSheet.primaryTextColor)
+                    }, action: { [weak sgChatController] _, f in
+                        sgChatController?.sgContextMenuForwardMessages(selectAll || isImage ? messages : [message], toCloud: false)
+                        f(.dismissWithoutContent)
+                    }))
+                    if SuperGramContextMenuSettings.showHideForwardName {
+                        actions.append(action)
+                    } else {
+                        sgActions.append(action)
+                    }
+                }
+                //
             }
         }
-        
+
         if data.messageActions.options.contains(.report) {
             actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_ContextMenuReport, icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Report"), color: theme.actionSheet.primaryTextColor)
             }, action: { controller, f in
                 interfaceInteraction.reportMessages(messages, controller)
             })))
+            if !SuperGramContextMenuSettings.showReport { sgActions.append(actions.removeLast()) } // MARK: Swiftgram
         } else if message.id.peerId.isReplies {
             actions.append(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_ContextMenuBlock, textColor: .destructive, icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Restrict"), color: theme.actionSheet.destructiveActionTextColor)
@@ -1917,7 +1944,56 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
                 interfaceInteraction.blockMessageAuthor(message, controller)
             })))
         }
-        
+
+        // MARK: Swiftgram
+        // Restrict / ban the author (group admins with the ban permission).
+        if !isEmbeddedMode, let peer = chatPresentationInterfaceState.renderedPeer?.peer ?? message.peers[message.id.peerId] {
+            let hasRestrictPermission: Bool
+            if let channel = peer as? TelegramChannel {
+                hasRestrictPermission = channel.hasPermission(.banMembers)
+            } else if let group = peer as? TelegramGroup {
+                switch group.role {
+                case .creator:
+                    hasRestrictPermission = true
+                case let .admin(adminRights, _):
+                    hasRestrictPermission = adminRights.rights.contains(.canBanUsers)
+                case .member:
+                    hasRestrictPermission = false
+                }
+            } else {
+                hasRestrictPermission = false
+            }
+
+            if let user = message.author as? TelegramUser {
+                if (user.id != context.account.peerId) && hasRestrictPermission {
+                    let banDisposables = DisposableDict<EnginePeer.Id>()
+                    // TODO(swiftgram): Check is user an admin?
+                    let action: ContextMenuItem = .action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Conversation_ContextMenuBan, icon: { theme in
+                        return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Restrict"), color: theme.actionSheet.primaryTextColor)
+                    }, action: { _, f in
+                        let participantSignal: Signal<ChannelParticipant?, NoError>
+                        if peer is TelegramChannel {
+                            participantSignal = context.engine.peers.fetchChannelParticipant(peerId: peer.id, participantId: user.id)
+                        } else if peer is TelegramGroup {
+                            participantSignal = .single(.member(id: user.id, invitedAt: 0, adminInfo: nil, banInfo: nil, rank: nil, subscriptionUntilDate: nil))
+                        } else {
+                            participantSignal = .single(nil)
+                        }
+                        banDisposables.set((participantSignal
+                            |> deliverOnMainQueue).start(next: { participant in
+                        controllerInteraction.presentController(channelBannedMemberController(context: context, peerId: peer.id, memberId: user.id, initialParticipant: participant, updated: { _ in }, upgradedToSupergroup: { _, f in f() }), ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
+                            }), forKey: user.id)
+                        f(.dismissWithoutContent)
+                    }))
+                    if SuperGramContextMenuSettings.showRestrict {
+                        actions.append(action)
+                    } else {
+                        sgActions.append(action)
+                    }
+                }
+            }
+        }
+
         var clearCacheAsDelete = false
         var hasViewStats = false
         if let channel = message.peers[message.id.peerId] as? TelegramChannel, case .broadcast = channel.info, !isMigrated {
@@ -2060,8 +2136,124 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
             }
         }
 
+        var sgActionsIndex: Int? = nil // MARK: Swiftgram
         if !isPinnedMessages, !isReplyThreadHead, data.canSelect {
+            sgActionsIndex = actions.count // MARK: Swiftgram
             var didAddSeparator = false
+            // MARK: Swiftgram
+            // Select the author's recent messages (local history only). SuperGram: the scan reads at most
+            // `sgScanLimit` newest messages (Swiftgram scanned the whole chat inside one transaction) and skips
+            // scheduled / quick reply / custom chat contents.
+            let sgCanSelectFromAuthor: Bool
+            switch chatPresentationInterfaceState.chatLocation {
+            case .peer, .replyThread:
+                sgCanSelectFromAuthor = !isScheduled && (message.id.namespace == Namespaces.Message.Cloud || message.id.peerId.namespace == Namespaces.Peer.SecretChat)
+            case .customChatContents:
+                sgCanSelectFromAuthor = false
+            }
+            if sgCanSelectFromAuthor, let authorId = message.author?.id {
+                let action: ContextMenuItem = .action(ContextMenuActionItem(text: superGramContextMenuString("ContextMenu.SelectFromUser", chatPresentationInterfaceState.strings.baseLanguageCode), icon: { theme in
+                    return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/SelectAll"), color: theme.actionSheet.primaryTextColor)
+                }, action: { _, f in
+                    let progressSignal = Signal<Never, NoError> { subscriber in
+                        let overlayController = OverlayStatusController(theme: chatPresentationInterfaceState.theme, type: .loading(cancelled: nil))
+                        controllerInteraction.presentGlobalOverlayController(overlayController, nil)
+                        return ActionDisposable { [weak overlayController] in
+                            Queue.mainQueue().async() {
+                                overlayController?.dismiss()
+                            }
+                        }
+                    }
+                    |> runOn(Queue.mainQueue())
+                    |> delay(0.2, queue: Queue.mainQueue())
+                    let progressDisposable = progressSignal.start()
+
+                    let searchPeerId = message.id.peerId
+                    let searchThreadId: Int64?
+                    if case let .replyThread(replyThreadMessage) = chatPresentationInterfaceState.chatLocation {
+                        searchThreadId = replyThreadMessage.threadId
+                    } else {
+                        searchThreadId = nil
+                    }
+                    let searchNamespaces: [Int32]
+                    if searchPeerId.namespace == Namespaces.Peer.SecretChat {
+                        searchNamespaces = [Namespaces.Message.Local, Namespaces.Message.SecretIncoming]
+                    } else {
+                        searchNamespaces = [Namespaces.Message.Cloud]
+                    }
+                    let _ = (context.account.postbox.transaction { transaction -> [EngineMessage.Id] in
+                        let limit = 500
+                        let sgScanLimit = 3000
+                        var result: [EngineMessage.Id] = []
+
+                        let consider: (EngineRawMessage) -> Void = { searchMessage in
+                            if result.count >= limit {
+                                return
+                            }
+                            if searchMessage.author?.id == authorId {
+                                // Only messages from current opened thread
+                                if let searchThreadId, searchMessage.threadId != searchThreadId {
+                                    return
+                                }
+                                // No service messages
+                                if searchMessage.media.contains(where: { $0 is TelegramMediaAction }) {
+                                    return
+                                }
+                                result.append(searchMessage.id)
+                            }
+                        }
+
+                        for namespace in searchNamespaces {
+                            if let searchThreadId {
+                                var upperBound = EngineMessage.Index.upperBound(peerId: searchPeerId, namespace: namespace)
+                                let lowerBound = EngineMessage.Index.lowerBound(peerId: searchPeerId, namespace: namespace)
+                                var scanned = 0
+                                while scanned < sgScanLimit && result.count < limit {
+                                    let batch = transaction.getMessagesWithThreadId(peerId: searchPeerId, namespace: namespace, threadId: searchThreadId, from: upperBound, includeFrom: false, to: lowerBound, limit: 100)
+                                    if batch.isEmpty {
+                                        break
+                                    }
+                                    for searchMessage in batch {
+                                        consider(searchMessage)
+                                    }
+                                    scanned += batch.count
+                                    if let last = batch.last {
+                                        upperBound = last.index
+                                    }
+                                }
+                            } else {
+                                transaction.scanTopMessages(peerId: searchPeerId, namespace: namespace, limit: sgScanLimit, { searchMessage in
+                                    consider(searchMessage)
+                                    return result.count < limit
+                                })
+                            }
+                        }
+                        return result
+                    }
+                    |> deliverOnMainQueue).startStandalone(next: { ids in
+                        Queue.mainQueue().async {
+                            progressDisposable.dispose()
+                        }
+                        if ids.isEmpty {
+                            f(.default)
+                            return
+                        }
+                        interfaceInteraction.beginMessageSelection(ids, { transition in
+                            f(.custom(transition))
+                        })
+                    })
+                }))
+                if SuperGramContextMenuSettings.showSelectFromUser {
+                    if !actions.isEmpty && !didAddSeparator {
+                        didAddSeparator = true
+                        actions.append(.separator)
+                    }
+                    actions.append(action)
+                } else {
+                    sgActions.append(action)
+                }
+            }
+            //
             if !selectAll || messages.count == 1 {
                 if !actions.isEmpty && !didAddSeparator {
                     didAddSeparator = true
@@ -2107,7 +2299,44 @@ func contextMenuForChatPresentationInterfaceState(chatPresentationInterfaceState
         } else if let messageReadStatsAreHidden = infoSummaryData.messageReadStatsAreHidden, !messageReadStatsAreHidden {
             canViewStats = canViewReadStats(message: message, participantCount: infoSummaryData.participantCount, isMessageRead: isMessageRead, isPremium: isPremium, appConfig: appConfig)
         }
-        
+
+        // MARK: Swiftgram
+        if !sgActions.isEmpty {
+            var popSGItems: (() -> Void)? = nil
+            sgActions.insert(.action(ContextMenuActionItem(text: chatPresentationInterfaceState.strings.Common_Back, icon: { theme in
+                return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Back"), color: theme.actionSheet.primaryTextColor)
+            }, iconPosition: .left, action: { _, _ in
+                popSGItems?()
+            })), at: 0)
+            sgActions.insert(.separator, at: 1)
+
+            let sgSubmenuItems = sgActions
+            let swiftgramSubMenu: ContextMenuItem = .action(ContextMenuActionItem(text: "SuperGram", icon: { theme in
+                return generateTintedImage(image: UIImage(bundleImageName: "SwiftgramContextMenu"), color: theme.actionSheet.primaryTextColor)
+            }, action: { c, f in
+                popSGItems = { [weak c] in
+                    c?.popItems()
+                }
+                c?.pushItems(items: .single(ContextController.Items(content: .list(sgSubmenuItems))))
+            }))
+
+            // Swiftgram: a separator plus the submenu right before the select block (or at the end of the menu)
+            if let sgActionsIndex = sgActionsIndex, sgActionsIndex <= actions.count {
+                if sgActionsIndex > 0 {
+                    actions.insert(.separator, at: sgActionsIndex)
+                    actions.insert(swiftgramSubMenu, at: sgActionsIndex + 1)
+                } else {
+                    actions.insert(swiftgramSubMenu, at: 0)
+                }
+            } else {
+                if !actions.isEmpty {
+                    actions.append(.separator)
+                }
+                actions.append(swiftgramSubMenu)
+            }
+        }
+        //
+
         var reactionCount = 0
         for reaction in mergedMessageReactionsAndPeers(accountPeerId: context.account.peerId, accountPeer: nil, message: message).reactions {
             reactionCount += Int(reaction.count)

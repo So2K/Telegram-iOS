@@ -646,7 +646,7 @@ extension PeerInfoScreenNode {
                         }
                     }
                     
-                    if let cachedData = data.cachedData as? CachedUserData, canTranslateChats(context: strongSelf.context), cachedData.flags.contains(.translationHidden) {
+                    if let cachedData = data.cachedData as? CachedUserData, canTranslateChats(context: strongSelf.context), (cachedData.flags.contains(.translationHidden) || !SuperGramTranslatePanel.isShown(peerId: strongSelf.peerId)) {
                         items.append(.action(ContextMenuActionItem(text: presentationData.strings.Conversation_ContextMenuTranslate, icon: { theme in
                             generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Translate"), color: theme.contextMenu.primaryColor)
                         }, action: { [weak self] _, f in
@@ -658,7 +658,8 @@ extension PeerInfoScreenNode {
                                 }).startStandalone()
                                 
                                 Queue.mainQueue().after(0.2, {
-                                    let _ = (strongSelf.context.engine.messages.togglePeerMessagesTranslationHidden(peerId: strongSelf.peerId, hidden: false)
+                                    SuperGramTranslatePanel.setShown(peerId: strongSelf.peerId, true)
+                                        let _ = (strongSelf.context.engine.messages.togglePeerMessagesTranslationHidden(peerId: strongSelf.peerId, hidden: false)
                                     |> deliverOnMainQueue).startStandalone(completed: { [weak self] in
                                         self?.openChatForTranslation()
                                     })
@@ -934,7 +935,7 @@ extension PeerInfoScreenNode {
                                 self?.openStats(section: .stats)
                             })))
                         }
-                        if cachedData.flags.contains(.translationHidden) {
+                        if (cachedData.flags.contains(.translationHidden) || !SuperGramTranslatePanel.isShown(peerId: strongSelf.peerId)) {
                             items.append(.action(ContextMenuActionItem(text: presentationData.strings.Conversation_ContextMenuTranslate, icon: { theme in
                                 generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Translate"), color: theme.contextMenu.primaryColor)
                             }, action: { [weak self] _, f in
@@ -946,6 +947,7 @@ extension PeerInfoScreenNode {
                                     }).startStandalone()
                                     
                                     Queue.mainQueue().after(0.2, {
+                                        SuperGramTranslatePanel.setShown(peerId: strongSelf.peerId, true)
                                         let _ = (strongSelf.context.engine.messages.togglePeerMessagesTranslationHidden(peerId: strongSelf.peerId, hidden: false)
                                         |> deliverOnMainQueue).startStandalone(completed: { [weak self] in
                                             self?.openChatForTranslation()
@@ -1193,7 +1195,7 @@ extension PeerInfoScreenNode {
                         })))
                     }
 
-                    if let cachedData = data.cachedData as? CachedGroupData, cachedData.flags.contains(.translationHidden) {
+                    if let cachedData = data.cachedData as? CachedGroupData, (cachedData.flags.contains(.translationHidden) || !SuperGramTranslatePanel.isShown(peerId: strongSelf.peerId)) {
                         items.append(.action(ContextMenuActionItem(text: presentationData.strings.Conversation_ContextMenuTranslate, icon: { theme in
                             generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Translate"), color: theme.contextMenu.primaryColor)
                         }, action: { [weak self] _, f in
@@ -1205,7 +1207,8 @@ extension PeerInfoScreenNode {
                                 }).startStandalone()
                                 
                                 Queue.mainQueue().after(0.2, {
-                                    let _ = (strongSelf.context.engine.messages.togglePeerMessagesTranslationHidden(peerId: strongSelf.peerId, hidden: false)
+                                    SuperGramTranslatePanel.setShown(peerId: strongSelf.peerId, true)
+                                        let _ = (strongSelf.context.engine.messages.togglePeerMessagesTranslationHidden(peerId: strongSelf.peerId, hidden: false)
                                     |> deliverOnMainQueue).startStandalone(completed: { [weak self] in
                                         self?.openChatForTranslation()
                                     })

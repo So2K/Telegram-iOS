@@ -7,6 +7,13 @@ func compressFrame(width: Int, height: Int, rgbData: Data, unpremultiply: Bool) 
         return nil
     }
     let bytesPerRow = rgbData.count / height
+    // SuperGram: encodeRGBAToYUVA passes this stride straight to vImage as `rowBytes` for an ARGB8888
+    // buffer, so it has to describe at least one full 4-byte pixel per column. With a short buffer vImage
+    // fails (and the zeroed YUVA frame would then be cached as a black sticker frame). `bytesPerRow * height
+    // <= rgbData.count` holds by construction of the integer division above.
+    guard bytesPerRow >= width * 4 else {
+        return nil
+    }
     
     let yuvaPixelsPerAlphaRow = (Int(width) + 1) & (~1)
     assert(yuvaPixelsPerAlphaRow % 2 == 0)

@@ -1322,7 +1322,7 @@ func openResolvedUrlImpl(
                                 guard let navigationController else {
                                     return
                                 }
-                                let _ = context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peer), attachBotStart: ChatControllerInitialAttachBotStart(botId: bot.peer.id, payload: payload, justInstalled: false), keepStack: .never, useExisting: true))
+                                let _ = context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(peer), attachBotStart: ChatControllerInitialAttachBotStart(botId: bot.peer.id, payload: payload, justInstalled: false), keepStack: superGramKeepsNavigationStack() ? .default : .never, useExisting: true)) // SuperGram: was .never
                             }
                             navigationController.pushViewController(controller)
                         }
@@ -1333,7 +1333,7 @@ func openResolvedUrlImpl(
                                 guard let navigationController = navigationController, let chatPeer else {
                                     return
                                 }
-                                let _ = context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(chatPeer), attachBotStart: ChatControllerInitialAttachBotStart(botId: peerId, payload: payload, justInstalled: false), keepStack: .never, useExisting: true))
+                                let _ = context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: context, chatLocation: .peer(chatPeer), attachBotStart: ChatControllerInitialAttachBotStart(botId: peerId, payload: payload, justInstalled: false), keepStack: superGramKeepsNavigationStack() ? .default : .never, useExisting: true)) // SuperGram: was .never
                             })
                         } else {
                             presentError(presentationData.strings.WebApp_AddToAttachmentAlreadyAddedError)

@@ -689,12 +689,7 @@ extension ChatControllerImpl {
                     isPremiumRequiredForMessaging = .single(false)
                 }
                 
-                let adMessage: Signal<Message?, NoError>
-                if let adMessagesContext {
-                    adMessage = adMessagesContext.state |> map { $0.messages.first }
-                } else {
-                    adMessage = .single(nil)
-                }
+                let adMessage: Signal<Message?, NoError> = .single(nil)
                 
                 let displayedPeerVerification: Signal<Bool, NoError>
                 if let peerId = chatLocation.peerId {
@@ -1100,7 +1095,7 @@ extension ChatControllerImpl {
                         } else {
                             isRegularChat = true
                         }
-                        if strongSelf.nextChannelToReadDisposable == nil, let peerId = chatLocation.peerId, let customChatNavigationStack {
+                        if strongSelf.nextChannelToReadDisposable == nil, let peerId = chatLocation.peerId, let customChatNavigationStack, !SuperGramChatHistorySettings.disableScrollToNextChannel /* MARK: Swiftgram */ {
                             if let index = customChatNavigationStack.firstIndex(of: peerId), index != customChatNavigationStack.count - 1 {
                                 let nextPeerId = customChatNavigationStack[index + 1]
                                 strongSelf.nextChannelToReadDisposable = (combineLatest(queue: .mainQueue(),
@@ -1144,7 +1139,7 @@ extension ChatControllerImpl {
                                     }
                                 })
                             }
-                        } else if isRegularChat, strongSelf.nextChannelToReadDisposable == nil {
+                        } else if isRegularChat, strongSelf.nextChannelToReadDisposable == nil, !SuperGramChatHistorySettings.disableScrollToNextChannel /* MARK: Swiftgram */ {
                             //TODO:loc optimize
                             let accountPeerId = context.account.peerId
                             strongSelf.nextChannelToReadDisposable = (combineLatest(queue: .mainQueue(),
@@ -1785,7 +1780,7 @@ extension ChatControllerImpl {
                         strongSelf.state.alwaysShowGiftButton = alwaysShowGiftButton
                         strongSelf.state.disallowedGifts = disallowedGifts
                         
-                        if let replyThreadId, let channel = renderedPeer?.peer as? TelegramChannel, channel.isForumOrMonoForum, strongSelf.nextChannelToReadDisposable == nil {
+                        if let replyThreadId, let channel = renderedPeer?.peer as? TelegramChannel, channel.isForumOrMonoForum, strongSelf.nextChannelToReadDisposable == nil, !SuperGramChatHistorySettings.disableScrollToNextTopic /* MARK: Swiftgram */ {
                             strongSelf.nextChannelToReadDisposable = (combineLatest(queue: .mainQueue(),
                             context.engine.peers.getNextUnreadForumTopic(peerId: channel.id, topicId: Int32(clamping: replyThreadId)),
                                 ApplicationSpecificNotice.getNextChatSuggestionTip(accountManager: context.sharedContext.accountManager)
@@ -2170,7 +2165,14 @@ extension ChatControllerImpl {
                         return peer?.isPremium ?? false
                     } |> distinctUntilChanged
                     
-                    let isHidden = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.TranslationHidden(id: peerId))
+                    // SuperGram: the translate bar is opt-in per chat (profile menu → Translate)
+                    let isHidden = combineLatest(
+                        context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.TranslationHidden(id: peerId)),
+                        SuperGramTranslatePanel.shown(peerId: peerId)
+                    )
+                    |> map { serverHidden, locallyShown -> Bool in
+                        return serverHidden || !locallyShown
+                    }
                     |> distinctUntilChanged
                     
                     let hasAutoTranslate = context.engine.data.subscribe(TelegramEngine.EngineData.Item.Peer.AutoTranslateEnabled(id: peerId))
@@ -2188,7 +2190,7 @@ extension ChatControllerImpl {
                         if counterAndTimestamp.0 >= 3 {
                             maybeSuggestPremium = true
                         }
-                        if (isPremium || maybeSuggestPremium || hasAutoTranslate) && !isHidden {
+                        if (isPremium || sgCanTranslateChatsWithoutPremium() || maybeSuggestPremium || hasAutoTranslate) && !isHidden { // MARK: Swiftgram
                             return chatTranslationState(context: context, peerId: peerId, threadId: chatLocation.threadId)
                             |> map { translationState -> ChatPresentationTranslationState? in
                                 if let translationState, !translationState.fromLang.isEmpty && (translationState.fromLang != baseLanguageCode || translationState.isEnabled) {

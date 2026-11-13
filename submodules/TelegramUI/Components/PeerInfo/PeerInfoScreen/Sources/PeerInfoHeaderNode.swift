@@ -44,6 +44,8 @@ import PlainButtonComponent
 import BundleIconComponent
 import MarqueeComponent
 import EdgeEffect
+// MARK: Swiftgram
+import SGSimpleSettings
 
 final class PeerInfoHeaderNavigationTransition {
     let sourceNavigationBar: NavigationBar
@@ -1220,8 +1222,11 @@ final class PeerInfoHeaderNode: ASDisplayNode {
             if title.replacingOccurrences(of: "\u{fe0e}", with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 title = "" //"\u{00A0}"
             }
+            // MARK: Swiftgram
+            // SuperGram: hidePhoneInSettings is read directly (no init plumbing) and only hides the account's own number.
+            let superGramHideOwnPhone = SGSimpleSettings.shared.hidePhoneInSettings && (self.isSettings || self.isMyProfile)
             if title.isEmpty {
-                if case let .user(user) = peer, let phone = user.phone {
+                if case let .user(user) = peer, let phone = user.phone, !superGramHideOwnPhone {
                     title = formatPhoneNumber(context: self.context, number: phone)
                 } else if let addressName = peer.addressName {
                     title = "@\(addressName)"
@@ -1235,10 +1240,20 @@ final class PeerInfoHeaderNode: ASDisplayNode {
             smallTitleAttributes = MultiScaleTextState.Attributes(font: Font.medium(28.0), color: .white, shadowColor: titleShadowColor)
             
             if self.isSettings, case let .user(user) = peer {
-                var subtitle = formatPhoneNumber(context: self.context, number: user.phone ?? "")
-                
+                // MARK: Swiftgram
+                var formattedPhone = formatPhoneNumber(context: self.context, number: user.phone ?? "")
+                if !formattedPhone.isEmpty && superGramHideOwnPhone {
+                    formattedPhone = ""
+                }
+
+                var subtitle = formattedPhone
+
                 if let mainUsername = user.addressName, !mainUsername.isEmpty {
-                    subtitle = "\(subtitle) • @\(mainUsername)"
+                    if !subtitle.isEmpty {
+                        subtitle = "\(subtitle) • @\(mainUsername)"
+                    } else {
+                        subtitle = "@\(mainUsername)"
+                    }
                 }
                 subtitleStringText = subtitle
                 subtitleAttributes = MultiScaleTextState.Attributes(font: Font.regular(17.0), color: .white)
@@ -1492,7 +1507,8 @@ final class PeerInfoHeaderNode: ASDisplayNode {
         let _ = panelSubtitleNodeLayout[TitleNodeStateRegular]!.size
         let usernameSize = usernameNodeLayout[TitleNodeStateRegular]!.size
         
-        if let statusData, statusData.isHiddenStatus, !self.isPremiumDisabled {
+        // SuperGram: no "Show" badge next to a hidden last seen that leads to the Premium privacy upsell (UPS-11)
+        if let statusData, statusData.isHiddenStatus, !self.isPremiumDisabled, !superGramHidePremiumUpsell {
             let subtitleBadgeView: PeerInfoSubtitleBadgeView
             if let current = self.subtitleBadgeView {
                 subtitleBadgeView = current

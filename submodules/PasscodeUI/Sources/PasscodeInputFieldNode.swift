@@ -117,7 +117,8 @@ private class PasscodeEntryDotNode: ASImageNode {
         if self.currentImage !== image {
             let currentContents = self.layer.contents
             self.layer.removeAnimation(forKey: "contents")
-            if let currentContents = currentContents as? CGImage, let imageContents = image.cgImage, animated {
+            if let currentContents = currentContents, CFGetTypeID(currentContents as CFTypeRef) == CGImage.typeID, let imageContents = image.cgImage, animated {
+                let currentContents = currentContents as! CGImage
                 self.layer.animate(from: currentContents, to: imageContents, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.easeOut.rawValue, duration: image === self.regularImage ? 0.25 : 0.05, delay: delay, removeOnCompletion: false, completion: { finished in
                     if finished {
                         self.image = image

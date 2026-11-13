@@ -142,6 +142,9 @@ public enum MediaQualityPreset: Int32 {
     case sticker
     case passthrough
     case quality
+    // MARK: Swiftgram
+    // SuperGram: appended at the end, raw values are persisted (MediaEditorValues.qualityPreset)
+    case videoMessageHD
 
     var hasAudio: Bool {
         switch self {
@@ -164,6 +167,9 @@ public enum MediaQualityPreset: Int32 {
             return 1280.0
         case .compressedVeryHigh:
             return 1920.0
+        // MARK: Swiftgram
+        case .videoMessageHD:
+            return 384.0
         case .videoMessage:
             return 400.0
         case .profileLow:
@@ -189,6 +195,9 @@ public enum MediaQualityPreset: Int32 {
             return 3000
         case .compressedVeryHigh:
             return 6600
+        // MARK: Swiftgram
+        case .videoMessageHD:
+            return 2000
         case .videoMessage:
             return 1000
         case .profileLow:
@@ -210,7 +219,7 @@ public enum MediaQualityPreset: Int32 {
         switch self {
         case .compressedVeryLow, .compressedLow:
             return 32
-        case .compressedMedium, .compressedHigh, .compressedVeryHigh, .videoMessage:
+        case .compressedMedium, .compressedHigh, .compressedVeryHigh, .videoMessage, .videoMessageHD:
             return 64
         default:
             return 0

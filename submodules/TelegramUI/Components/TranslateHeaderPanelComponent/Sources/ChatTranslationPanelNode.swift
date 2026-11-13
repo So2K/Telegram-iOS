@@ -21,6 +21,7 @@ import ComponentDisplayAdapters
 import LocalMediaResources
 import AppBundle
 import TranslationLanguagesContextMenuContent
+import UndoUI
 
 final class ChatTranslationPanelNode: ASDisplayNode {
     private let context: AccountContext
@@ -39,7 +40,14 @@ final class ChatTranslationPanelNode: ASDisplayNode {
     private var theme: PresentationTheme?
     
     private var currentInfo: TranslateHeaderPanelComponent.Info?
-    
+
+    // SuperGram: translation failures of this chat (server refusal for non-Premium, flood, on-device errors)
+    private let sgFailureDisposable = MetaDisposable()
+    private var sgFailurePeerId: EnginePeer.Id?
+    private var sgFailureToLang: String?
+    private var sgFailureIsActive: Bool = false
+    private var sgLastFailureTimestamp: Double = 0.0
+
     init(context: AccountContext, close: @escaping () -> Void, toggle: @escaping () -> Void, changeLanguage: @escaping (String) -> Void, addDoNotTranslateLanguage: @escaping (String) -> Void, controller: @escaping () -> ViewController?) {
         self.context = context
         self.close = close
@@ -85,7 +93,11 @@ final class ChatTranslationPanelNode: ASDisplayNode {
         self.closeButton.addTarget(self, action: #selector(self.closePressed), forControlEvents: [.touchUpInside])
         self.addSubnode(self.closeButton)
     }
-    
+
+    deinit {
+        self.sgFailureDisposable.dispose()
+    }
+
     func animateOut() {
         self.layer.animateBounds(from: self.bounds, to: self.bounds.offsetBy(dx: 0.0, dy: self.bounds.size.height), duration: 0.4, timingFunction: kCAMediaTimingFunctionSpring, removeOnCompletion: false)
     }
@@ -102,7 +114,25 @@ final class ChatTranslationPanelNode: ASDisplayNode {
         
         let previousInfo = self.currentInfo
         self.currentInfo = info
-        
+
+        // End the old subscription before changing selection. deliverOnMainQueue may
+        // already have queued its error; disposing drops that value across language/active ABA.
+        let effectiveToLang = info.toLang.map(normalizeTranslationLanguage)
+        if self.sgFailurePeerId != info.peer?.id || self.sgFailureToLang != effectiveToLang || self.sgFailureIsActive != info.isActive {
+            self.sgFailureDisposable.set(nil)
+            self.sgFailurePeerId = info.peer?.id
+            self.sgFailureToLang = effectiveToLang
+            self.sgFailureIsActive = info.isActive
+            if info.isActive, let peerId = info.peer?.id, effectiveToLang != nil {
+                self.sgFailureDisposable.set((sgChatTranslationFailures(accountId: self.context.account.id.int64, peerId: peerId)
+                |> deliverOnMainQueue).startStrict(next: { [weak self] failure in
+                    self?.sgHandleTranslationFailure(failure)
+                }))
+            } else {
+                self.sgFailureDisposable.set(nil)
+            }
+        }
+
         var themeUpdated = false
         if theme !== self.theme {
             themeUpdated = true
@@ -179,7 +209,8 @@ final class ChatTranslationPanelNode: ASDisplayNode {
         let closeButtonSize = self.closeButton.measure(CGSize(width: 100.0, height: 100.0))
         self.closeButton.frame = CGRect(origin: CGPoint(x: width - contentRightInset - closeButtonSize.width, y: floorToScreenPixels((panelHeight - closeButtonSize.height) / 2.0)), size: closeButtonSize)
         
-        if info.isPremium {
+        // MARK: Swiftgram
+        if info.isPremium || sgCanTranslateChatsWithoutPremium() {
             self.moreButton.isHidden = false
             self.closeButton.isHidden = true
         } else {
@@ -212,12 +243,13 @@ final class ChatTranslationPanelNode: ASDisplayNode {
             return
         }
         let isPremium = info.isPremium
-        
-        var translationAvailable = isPremium
+
+        // MARK: Swiftgram
+        var translationAvailable = isPremium || sgCanTranslateChatsWithoutPremium()
         if case let .channel(channel) = info.peer, channel.flags.contains(.autoTranslateEnabled) {
             translationAvailable = true
         }
-        
+
         if translationAvailable {
             self.close()
         } else if !isPremium {
@@ -231,16 +263,20 @@ final class ChatTranslationPanelNode: ASDisplayNode {
         }
         
         let isPremium = info.isPremium
-        
-        var translationAvailable = isPremium
+
+        // MARK: Swiftgram
+        var translationAvailable = isPremium || sgCanTranslateChatsWithoutPremium()
         if case let .channel(channel) = info.peer, channel.flags.contains(.autoTranslateEnabled) {
             translationAvailable = true
         }
-        
+
         if translationAvailable {
             self.toggle()
         } else if !info.isActive {
-            if !isPremium {
+            if !isPremium && superGramHidePremiumUpsell {
+                // SuperGram: no Premium demo from the translate bar; the suggestion is dismissed like the close button does (UPS-11)
+                let _ = ApplicationSpecificNotice.incrementTranslationSuggestion(accountManager: self.context.sharedContext.accountManager, count: -100, timestamp: Int32(Date().timeIntervalSince1970) + 60 * 60 * 24 * 7).startStandalone()
+            } else if !isPremium {
                 let context = self.context
                 var replaceImpl: ((ViewController) -> Void)?
                 let controller = PremiumDemoScreen(context: context, subject: .translation, action: {
@@ -255,6 +291,55 @@ final class ChatTranslationPanelNode: ASDisplayNode {
         }
     }
     
+    // SuperGram: a translation request of this chat failed (e.g. the server refused to translate an entire chat for an
+    // account without Premium). Explain it instead of failing silently, switch back to the original text so the
+    // request isn't repeated on every scroll, and offer on-device translation when it can help. No Google fallback.
+    private func sgHandleTranslationFailure(_ failure: SGChatTranslationFailureEvent) {
+        // A response can wait on the main queue while the user switches chat/language.
+        // Reject it before changing the cooldown, toggling state or presenting a toast.
+        guard failure.accountId == self.context.account.id.int64,
+              let info = self.currentInfo, info.isActive,
+              info.peer?.id == failure.peerId,
+              let toLang = info.toLang, normalizeTranslationLanguage(toLang) == failure.toLang,
+              let controller = self.controller() else {
+            return
+        }
+        let reason = failure.reason
+        let timestamp = CFAbsoluteTimeGetCurrent()
+        if timestamp - self.sgLastFailureTimestamp < 10.0 {
+            return
+        }
+        self.sgLastFailureTimestamp = timestamp
+
+        let didDisable = info.isActive
+        if didDisable {
+            self.toggle()
+        }
+
+        let presentationData = self.context.sharedContext.currentPresentationData.with { $0 }
+        let offerOnDevice = (reason == .serverRejected || reason == .serverUnavailable) && sgIsOnDeviceTranslationAvailable() && !sgPrefersOnDeviceChatTranslation()
+        let text = sgChatTranslationFailureText(reason: reason, isPremium: info.isPremium, offerOnDevice: offerOnDevice, strings: presentationData.strings)
+        let undoText: String? = offerOnDevice ? sgUseOnDeviceTranslationActionTitle(strings: presentationData.strings) : nil
+        let content: UndoOverlayContent
+        if let image = generateTintedImage(image: UIImage(bundleImageName: "Chat/Title Panels/Translate"), color: .white) {
+            content = .image(image: image, title: nil, text: text, round: false, undoText: undoText)
+        } else {
+            content = .info(title: nil, text: text, timeout: nil, customUndoText: undoText)
+        }
+        controller.present(UndoOverlayController(presentationData: presentationData, content: content, elevatedLayout: false, animateInAsReplacement: false, action: { [weak self] action in
+            if case .undo = action {
+                // This explicit Undo choice still selects the global on-device backend.
+                sgSetPrefersOnDeviceChatTranslation(true)
+                if let self, didDisable, let currentInfo = self.currentInfo, !currentInfo.isActive,
+                   currentInfo.peer?.id == failure.peerId,
+                   currentInfo.toLang.map(normalizeTranslationLanguage) == failure.toLang {
+                    self.toggle()
+                }
+            }
+            return true
+        }), in: .current)
+    }
+
     @objc private func morePressed(node: ContextReferenceContentNode, gesture: ContextGesture?) {
         guard let info = self.currentInfo else {
             return
@@ -367,9 +452,24 @@ final class ChatTranslationPanelNode: ASDisplayNode {
                     )
                 )))
             })))
-            
+
+            // SuperGram: translate this chat on the device (Apple Translation, iOS 18+) instead of Telegram's server
+            if sgIsOnDeviceTranslationAvailable() {
+                let isOnDevice = sgPrefersOnDeviceChatTranslation()
+                items.append(.action(ContextMenuActionItem(text: sgOnDeviceTranslationMenuTitle(strings: presentationData.strings), icon: { theme in
+                    if isOnDevice {
+                        return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Check"), color: theme.contextMenu.primaryColor)
+                    } else {
+                        return nil
+                    }
+                }, action: { c, _ in
+                    c?.dismiss(completion: nil)
+                    sgSetPrefersOnDeviceChatTranslation(!isOnDevice)
+                })))
+            }
+
             items.append(.separator)
-            
+
             items.append(.action(ContextMenuActionItem(text: doNotTranslateTitle, icon: { theme in
                 return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Restrict"), color: theme.contextMenu.primaryColor)
             }, action: { [weak self] c, _ in

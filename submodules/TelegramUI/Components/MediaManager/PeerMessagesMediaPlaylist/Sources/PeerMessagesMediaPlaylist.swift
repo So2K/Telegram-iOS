@@ -917,6 +917,11 @@ public final class PeerMessagesMediaPlaylist: SharedMediaPlaylist {
                 default:
                     break
             }
+            // SuperGram: "sgSkipReadReceipts" also keeps voice/round messages "unlistened" for the sender (CRIT-15).
+            // Secret chats and self-destructing (view-once / timer) media are always consumed, so their timers still start.
+            if SuperGramGhostSettings.shouldSkipReadReceipts(peerId: item.message.id.peerId) && !item.message.isSelfExpiring {
+                return
+            }
             let _ = self.context.engine.messages.markMessageContentAsConsumedInteractively(messageId: item.message.id).startStandalone()
         }
     }

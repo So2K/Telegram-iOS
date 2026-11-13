@@ -27,6 +27,7 @@ import ChatControllerInteraction
 import InteractiveTextComponent
 import ShimmeringMask
 import StreamingTextReveal
+import TranslateUI
 
 private final class CachedChatMessageText {
     let text: String
@@ -416,7 +417,8 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                         messageEntities = updatingMedia.entities?.entities ?? []
                     }
                     
-                    let translateToLanguage = item.associatedData.translateToLanguage
+                    // MARK: Swiftgram: a message quick-translated with the bubble button is shown like a translated chat
+                    let translateToLanguage = item.associatedData.translateToLanguage ?? sgQuickTranslationLanguage(messageId: item.message.id)
                     var isSummarized = false
                     if item.controllerInteraction.summarizedMessageIds.contains(item.message.id) {
                         isSummarized = true
@@ -1616,7 +1618,16 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 }
                 
                 let textSelectionNode = TextSelectionNode(theme: TextSelectionTheme(selection: selectionColor, knob: knobColor, isDark: item.presentationData.theme.theme.overallDarkAppearance), strings: item.presentationData.strings, textNodeOrView: .node(self.textNode.textNode), updateIsActive: { [weak self] value in
-                    self?.updateIsTextSelectionActive?(value)
+                    guard let self else {
+                        return
+                    }
+                    self.updateIsTextSelectionActive?(value)
+                    // SuperGram: an inline (double tap) selection ends together with the selection itself
+                    if !value && self.superGramInlineSelectionActive {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.superGramEndInlineSelection()
+                        }
+                    }
                 }, present: { [weak self] c, a in
                     guard let self, let item = self.item else {
                         return
@@ -1654,9 +1665,12 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                     }
                 }
                 
-                let enableCopy = (!item.associatedData.isCopyProtectionEnabled && !item.message.isCopyProtected()) || item.message.id.peerId.isVerificationCodes
+                let isProtectedForCopy = !((!item.associatedData.isCopyProtectionEnabled && !item.message.isCopyProtected()) || item.message.id.peerId.isVerificationCodes)
+                // SuperGram (PROT-6): Copy / Share of selected text in protected chats (never secret chats or secret media);
+                // Quote below keeps the original protection value because it replies into another chat
+                let enableCopy = !isProtectedForCopy || (TextSelectionSuperGramProtection.allowCopyOfProtectedContent && item.message.id.peerId.namespace != Namespaces.Peer.SecretChat && !item.message.containsSecretMedia)
                 textSelectionNode.enableCopy = enableCopy
-                
+
                 var enableQuote = !item.message.text.isEmpty
                 var enableOtherActions = true
                 if let subject = item.associatedData.subject, case let .messageOptions(_, _, info) = subject, case .reply = info {
@@ -1665,7 +1679,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                     //enableOtherActions = false
                 }
                 
-                if !item.controllerInteraction.canSendMessages() && !enableCopy {
+                if !item.controllerInteraction.canSendMessages() && isProtectedForCopy {
                     enableQuote = false
                 }
                 if item.message.id.peerId.namespace == Namespaces.Peer.SecretChat || item.message.id.peerId.isVerificationCodes {
@@ -1674,7 +1688,7 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 if item.message.containsSecretMedia {
                     enableQuote = false
                 }
-                if item.associatedData.translateToLanguage != nil {
+                if item.associatedData.translateToLanguage != nil || sgQuickTranslationLanguage(messageId: item.message.id) != nil /* MARK: Swiftgram */ {
                     enableQuote = false
                 }
                 
@@ -1689,6 +1703,10 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
                 textSelectionNode.highlightAreaNode.frame = self.textNode.textNode.frame
             }
         } else {
+            self.superGramInlineSelectionActive = false
+            if ChatMessageTextBubbleContentNode.superGramActiveInlineSelection === self {
+                ChatMessageTextBubbleContentNode.superGramActiveInlineSelection = nil
+            }
             if let textSelectionNode = self.textSelectionNode {
                 self.textSelectionNode = nil
                 self.updateIsTextSelectionActive?(false)
@@ -1773,6 +1791,100 @@ public class ChatMessageTextBubbleContentNode: ChatMessageBubbleContentNode {
         textSelectionNode.setSelection(range: range, displayMenu: displayMenu)
     }
     
+    // SuperGram: double tap selects text. Range of the word under `point` (in this node's coordinates), or nil when
+    // the point is not over the text.
+    public func superGramWordRange(at point: CGPoint) -> NSRange? {
+        let textNodeFrame = self.textNode.textNode.frame
+        guard textNodeFrame.insetBy(dx: -8.0, dy: -8.0).contains(point) else {
+            return nil
+        }
+        let textPoint = CGPoint(x: point.x - textNodeFrame.minX, y: point.y - textNodeFrame.minY)
+        guard let (index, _) = self.textNode.textNode.attributesAtPoint(textPoint, orNearest: false) ?? self.textNode.textNode.attributesAtPoint(textPoint, orNearest: true) else {
+            return nil
+        }
+        guard let string = self.textNode.textNode.cachedLayout?.attributedString?.string, !string.isEmpty else {
+            return nil
+        }
+        let nsString = string as NSString
+        let clampedIndex = max(0, min(index, nsString.length - 1))
+        var result: NSRange?
+        nsString.enumerateSubstrings(in: NSRange(location: 0, length: nsString.length), options: [.byWords, .substringNotRequired], using: { _, range, _, stop in
+            if NSLocationInRange(clampedIndex, range) || (range.location > clampedIndex && result == nil) {
+                result = range
+                stop.pointee = true
+            }
+        })
+        return result ?? NSRange(location: clampedIndex, length: 1)
+    }
+
+    // SuperGram: inline text selection started by a double tap — the word is selected right in the chat (no
+    // context menu, no dimming), with the regular copy / quote / translate bubble menu above it. It ends when the
+    // selection is cleared (tap on the text, a menu action) or on a tap anywhere outside it
+    // (`superGramHandleTouchDown`, driven by a window-level touch observer).
+    public private(set) var superGramInlineSelectionActive = false
+    public static weak var superGramActiveInlineSelection: ChatMessageTextBubbleContentNode?
+
+    /// Whether `point` (in this node's coordinates) is on the inline-selected text or close to its knobs — a long
+    /// press there belongs to the selection (dragging a knob), not to the message context menu.
+    public func superGramInlineSelectionContains(_ point: CGPoint) -> Bool {
+        guard self.superGramInlineSelectionActive, self.textSelectionNode != nil else {
+            return false
+        }
+        return self.textNode.textNode.frame.insetBy(dx: -32.0, dy: -32.0).contains(point)
+    }
+
+    @discardableResult
+    public func superGramBeginInlineSelection(at point: CGPoint) -> Bool {
+        guard let range = self.superGramWordRange(at: point) else {
+            return false
+        }
+        if let current = ChatMessageTextBubbleContentNode.superGramActiveInlineSelection, current !== self {
+            current.superGramEndInlineSelection()
+        }
+        if self.textSelectionNode == nil {
+            self.updateIsExtractedToContextPreview(true)
+        }
+        guard self.textSelectionNode != nil else {
+            return false
+        }
+        self.superGramInlineSelectionActive = true
+        ChatMessageTextBubbleContentNode.superGramActiveInlineSelection = self
+        self.beginTextSelection(range: range, displayMenu: true)
+        return true
+    }
+
+    public func superGramEndInlineSelection() {
+        guard self.superGramInlineSelectionActive else {
+            return
+        }
+        self.superGramInlineSelectionActive = false
+        if ChatMessageTextBubbleContentNode.superGramActiveInlineSelection === self {
+            ChatMessageTextBubbleContentNode.superGramActiveInlineSelection = nil
+        }
+        self.textSelectionNode?.cancelSelection()
+        self.updateIsExtractedToContextPreview(false)
+    }
+
+    /// Called for every touch-down in the window. A touch outside the selected text dismisses the bubble menu by
+    /// itself; once it is gone (the touch was not a menu action) the inline selection is cleared as well.
+    public static func superGramHandleTouchDown(hitView: UIView?) {
+        guard let node = ChatMessageTextBubbleContentNode.superGramActiveInlineSelection, node.superGramInlineSelectionActive, let selectionNode = node.textSelectionNode else {
+            return
+        }
+        if let hitView, hitView.isDescendant(of: selectionNode.view) {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: { [weak node] in
+            guard let node, node.superGramInlineSelectionActive else {
+                return
+            }
+            if let selectionNode = node.textSelectionNode, selectionNode.isMenuDisplayed {
+                return
+            }
+            node.superGramEndInlineSelection()
+        })
+    }
+
     public func cancelTextSelection() {
         guard let textSelectionNode = self.textSelectionNode else {
             return

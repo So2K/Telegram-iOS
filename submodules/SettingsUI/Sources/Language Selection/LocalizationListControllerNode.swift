@@ -460,7 +460,10 @@ final class LocalizationListControllerNode: ViewControllerTracingNode {
         default:
             break
         }
-        
+        if sgCanTranslateChatsWithoutPremium() { // SuperGram
+            chatTranslationAvailable = true
+        }
+
         let previousState = Atomic<LocalizationListState?>(value: nil)
         let previousEntriesHolder = Atomic<([LanguageListEntry], PresentationTheme, PresentationStrings)?>(value: nil)
         self.listDisposable = combineLatest(
@@ -478,7 +481,8 @@ final class LocalizationListControllerNode: ViewControllerTracingNode {
             }
             
             let isPremium = peer?.isPremium ?? false
-                        
+            let chatTranslationUnlocked = isPremium || sgCanTranslateChatsWithoutPremium() // SuperGram
+
             var entries: [LanguageListEntry] = []
             var activeLanguageCode: String?
             if let localizationSettings = sharedData.entries[SharedDataKeys.localizationSettings]?.get(LocalizationSettings.self) {
@@ -491,7 +495,7 @@ final class LocalizationListControllerNode: ViewControllerTracingNode {
             var ignoredLanguages: [String] = []
             if let translationSettings = sharedData.entries[ApplicationSpecificSharedDataKeys.translationSettings]?.get(TranslationSettings.self) {
                 showTranslate = translationSettings.showTranslate
-                translateChats = isPremium ? translationSettings.translateChats : false
+                translateChats = chatTranslationUnlocked ? translationSettings.translateChats : false
                 if let languages = translationSettings.ignoredLanguages {
                     ignoredLanguages = languages
                 } else {
@@ -512,7 +516,7 @@ final class LocalizationListControllerNode: ViewControllerTracingNode {
                     }
                 }
             } else {
-                translateChats = isPremium
+                translateChats = chatTranslationUnlocked
                 if let activeLanguage = activeLanguageCode, supportedTranslationLanguages.contains(activeLanguage) {
                     ignoredLanguages = [activeLanguage]
                 }
@@ -533,7 +537,7 @@ final class LocalizationListControllerNode: ViewControllerTracingNode {
                         entries.append(.translate(text: presentationData.strings.Localization_ShowTranslate, value: showTranslate))
                     }
                     if chatTranslationAvailable {
-                        entries.append(.translateEntire(text: presentationData.strings.Localization_TranslateEntireChat, value: translateChats, locked: !isPremium))
+                        entries.append(.translateEntire(text: presentationData.strings.Localization_TranslateEntireChat, value: translateChats, locked: !chatTranslationUnlocked))
                     }
                     
                     var value = ""

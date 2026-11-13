@@ -1,4 +1,5 @@
 import Foundation
+import SGSimpleSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -829,7 +830,7 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
                 selectionFraction = 0.0
             }
             
-            itemNode.updateText(strings: presentationData.strings, title: filter.title(strings: presentationData.strings), shortTitle: i == 0 ? filter.shortTitle(strings: presentationData.strings) : filter.title(strings: presentationData.strings), unreadCount: unreadCount, unreadHasUnmuted: unreadHasUnmuted, isNoFilter: isNoFilter, selectionFraction: selectionFraction, isEditing: isEditing, isReordering: isReordering, canReorderAllChats: canReorderAllChats, isDisabled: isDisabled, presentationData: presentationData, transition: itemNodeTransition)
+            itemNode.updateText(strings: presentationData.strings, title: filter.title(strings: presentationData.strings), shortTitle: filter.shortTitle(strings: presentationData.strings), unreadCount: unreadCount, unreadHasUnmuted: unreadHasUnmuted, isNoFilter: isNoFilter, selectionFraction: selectionFraction, isEditing: isEditing, isReordering: isReordering, canReorderAllChats: canReorderAllChats, isDisabled: isDisabled, presentationData: presentationData, transition: itemNodeTransition)
         }
         var removeKeys: [ChatListFilterTabEntryId] = []
         for (id, _) in self.itemNodes {
@@ -876,7 +877,7 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
             }
         }
         
-        let minSpacing: CGFloat = 26.0
+        let minSpacing: CGFloat = 26.0 / (SGSimpleSettings.shared.compactFolderNames ? 2.5 : 1.0)
         
         let resolvedSideInset: CGFloat = 14.0
         var leftOffset: CGFloat = resolvedSideInset
@@ -899,7 +900,7 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
                 itemNodeTransition = .immediate
             }
             
-            let useShortTitle = itemId == .all && useShortTitles
+            let useShortTitle = itemId == .all && sgUseShortAllChatsTitle(useShortTitles)
             let paneNodeSize = useShortTitle ? paneNodeShortSize : paneNodeLongSize
             
             let paneFrame = CGRect(origin: CGPoint(x: leftOffset, y: floor((backgroundSize.height - paneNodeSize.height) / 2.0)), size: paneNodeSize)

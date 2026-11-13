@@ -145,11 +145,21 @@ public func navigateToChatControllerImpl(_ params: NavigateToChatControllerParam
         
         var found = false
         var isFirst = true
+        // SuperGram: keep the chain of screens (channel → comments → profile → chat …) instead of dropping back to
+        // the chat list. Settings → SuperGram → Chat List, "sgKeepNavigationStack", default on.
+        let superGramKeepStack = superGramKeepsNavigationStack()
+        var superGramPassedOtherChat = false
         if params.useExisting {
             for controller in params.navigationController.viewControllers.reversed() {
                 guard let controller = controller as? ChatControllerImpl else {
                     isFirst = false
                     continue
+                }
+                // SuperGram: only return to the nearest chat below (e.g. profile → "Message" back into that chat);
+                // jumping back past other chats would throw away every screen opened after it. Explicit resets
+                // (.never) and the back-button history menu (useBackAnimation) still go back to an older chat.
+                if superGramKeepStack && superGramPassedOtherChat && params.keepStack != .never && !params.useBackAnimation {
+                    break
                 }
                 
                 var canMatchThread = controller.chatLocation.threadId == params.chatLocation.asChatLocation.threadId
@@ -230,6 +240,7 @@ public func navigateToChatControllerImpl(_ params: NavigateToChatControllerParam
                     break
                 }
                 isFirst = false
+                superGramPassedOtherChat = true
             }
         }
         if !found {
@@ -275,7 +286,10 @@ public func navigateToChatControllerImpl(_ params: NavigateToChatControllerParam
                 if params.navigationController.viewControllers.contains(where: { $0 is StoryContainerScreen }) {
                     resolvedKeepStack = true
                 } else {
-                    resolvedKeepStack = params.context.sharedContext.immediateExperimentalUISettings.keepChatNavigationStack
+                    // SuperGram: a chat opened from a chat list (main list, archive, its search, contacts) still replaces
+                    // the stack like upstream — on iPad the list is the master pane and detail chats must not pile up
+                    let superGramOpenedFromChatList = params.parentGroupId != nil || params.options.contains(.removeOnMasterDetails)
+                    resolvedKeepStack = params.context.sharedContext.immediateExperimentalUISettings.keepChatNavigationStack || (superGramKeepStack && !superGramOpenedFromChatList)
                 }
             case .always:
                 resolvedKeepStack = true
@@ -285,6 +299,12 @@ public func navigateToChatControllerImpl(_ params: NavigateToChatControllerParam
             if resolvedKeepStack {
                 if let pushController = params.pushController {
                     pushController(controller, params.animated, {
+                        params.completion(controller)
+                    })
+                } else if superGramKeepStack, let trimmed = superGramTrimmedNavigationStack(params.navigationController.viewControllers) {
+                    // SuperGram: bound the memory a very long chain can hold — drop the oldest screens above the
+                    // root (they stay reachable through the History button)
+                    params.navigationController.replaceControllersAndPush(controllers: trimmed, controller: controller, animated: params.animated, options: params.options, completion: {
                         params.completion(controller)
                     })
                 } else {
@@ -496,4 +516,29 @@ public func navigateToForumChannelImpl(context: AccountContext, peerId: EnginePe
     let controller = ChatListControllerImpl(context: context, location: .forum(peerId: peerId), controlsHistoryPreload: false, enableDebugActions: false)
     controller.navigationPresentation = .master
     navigationController.pushViewController(controller)
+}
+
+
+// SuperGram: navigation chain settings shared by the chat navigation helpers
+let superGramMaxNavigationStackDepth = 12
+
+func superGramKeepsNavigationStack() -> Bool {
+    return UserDefaults.standard.object(forKey: "sgKeepNavigationStack") as? Bool ?? true
+}
+
+/// The stack with its oldest screens above the root dropped so that pushing one more controller stays within
+/// `superGramMaxNavigationStackDepth`, or nil when no trim is needed or possible. Only plainly pushed screens are
+/// dropped: when the range holds a modal, a master-pane controller or the story viewer, the stack is left alone.
+func superGramTrimmedNavigationStack(_ controllers: [UIViewController]) -> [UIViewController]? {
+    let keepCount = superGramMaxNavigationStackDepth - 2
+    guard controllers.count >= superGramMaxNavigationStackDepth else {
+        return nil
+    }
+    let dropped = controllers[1 ..< controllers.count - keepCount]
+    for controller in dropped {
+        guard let controller = controller as? ViewController, case .default = controller.navigationPresentation, !(controller is StoryContainerScreen) else {
+            return nil
+        }
+    }
+    return [controllers[0]] + controllers.suffix(keepCount)
 }

@@ -1273,17 +1273,34 @@ final class StoryItemSetContainerSendMessage: @unchecked(Sendable) {
             let presentationData = component.context.sharedContext.currentPresentationData.with({ $0 }).withUpdated(theme: component.theme)
             let actionSheet = ActionSheetController(presentationData: presentationData)
 
-            actionSheet.setItemGroups([
-                ActionSheetItemGroup(items: [
-                    ActionSheetButtonItem(title: presentationData.strings.Story_Context_CopyLink, color: .accent, action: { [weak self, weak view, weak actionSheet] in
-                        actionSheet?.dismissAnimated()
+            var actionItems: [ActionSheetItem] = [
+                ActionSheetButtonItem(title: presentationData.strings.Story_Context_CopyLink, color: .accent, action: { [weak self, weak view, weak actionSheet] in
+                    actionSheet?.dismissAnimated()
 
-                        guard let self, let view else {
-                            return
-                        }
-                        self.performCopyLinkAction(view: view)
-                    })
-                ]),
+                    guard let self, let view else {
+                        return
+                    }
+                    self.performCopyLinkAction(view: view)
+                })
+            ]
+            // SuperGram: protected stories can still be saved to the gallery
+            var isLiveStream = false
+            if case .liveStream = focusedItem.storyItem.media {
+                isLiveStream = true
+            }
+            if !isLiveStream && SuperGramStoryGates.allowSaveProtectedContent {
+                actionItems.append(ActionSheetButtonItem(title: presentationData.strings.Story_Context_SaveToGallery, color: .accent, action: { [weak view, weak actionSheet] in
+                    actionSheet?.dismissAnimated()
+
+                    guard let view else {
+                        return
+                    }
+                    view.requestSave()
+                }))
+            }
+
+            actionSheet.setItemGroups([
+                ActionSheetItemGroup(items: actionItems),
                 ActionSheetItemGroup(items: [
                     ActionSheetButtonItem(title: presentationData.strings.Common_Cancel, color: .accent, font: .bold, action: { [weak actionSheet] in
                         actionSheet?.dismissAnimated()

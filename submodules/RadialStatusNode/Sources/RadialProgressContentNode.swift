@@ -42,12 +42,30 @@ private final class RadialProgressContentSpinnerNode: ASDisplayNode {
         }
     }
     
+    private var progressAnimationTarget: CGFloat?
+
     var progress: CGFloat? {
         didSet {
+            // SuperGram: tiny progress steps (one per downloaded part) must not restart the POP animation every time
+            if let progress = self.progress, oldValue != nil {
+                if let progressAnimationTarget = self.progressAnimationTarget, self.pop_animation(forKey: "progress") != nil {
+                    // Never swallow the final value. A last step smaller than the threshold (large file, small
+                    // parts) would otherwise leave the ring animating to e.g. 0.996 and never closing the circle.
+                    if progress < 1.0, abs(progress - progressAnimationTarget) < 0.01 {
+                        return
+                    }
+                } else if self.pop_animation(forKey: "indefiniteProgress") == nil, abs(progress - self.effectiveProgress) < 0.01 {
+                    self.effectiveProgress = progress
+                    return
+                }
+            }
+
             self.pop_removeAnimation(forKey: "progress")
+            self.progressAnimationTarget = nil
             if let progress = self.progress {
                 self.pop_removeAnimation(forKey: "indefiniteProgress")
-                
+                self.progressAnimationTarget = progress
+
                 let animation = POPBasicAnimation()
                 animation.property = (POPAnimatableProperty.property(withName: "progress", initializer: { property in
                     property?.readBlock = { node, values in

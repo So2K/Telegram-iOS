@@ -310,7 +310,7 @@ public final class SheetComponent<ChildEnvironmentType: Sendable & Equatable>: C
         private func animateIn() {
             self.dimView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
             
-            let transition = ContainedViewLayoutTransition.animated(duration: 0.4, curve: .spring)
+            let transition = ContainedViewLayoutTransition.animated(duration: 0.3, curve: .spring)
             let targetPosition = self.scrollView.center
             var offset: CGFloat = self.scrollView.contentSize.height
             if self.isCentered {
@@ -344,7 +344,7 @@ public final class SheetComponent<ChildEnvironmentType: Sendable & Equatable>: C
                 return
             }
             if let initialVelocity = initialVelocity {
-                let transition = ContainedViewLayoutTransition.animated(duration: 0.35, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity))
+                let transition = ContainedViewLayoutTransition.animated(duration: 0.28, curve: .customSpring(damping: 124.0, initialVelocity: initialVelocity))
                 
                 let contentOffset = (self.scrollView.contentOffset.y + self.scrollView.contentInset.top - self.scrollView.contentSize.height) * -1.0
                 let dismissalOffset = self.scrollView.contentSize.height + abs(contentView.frame.minY)

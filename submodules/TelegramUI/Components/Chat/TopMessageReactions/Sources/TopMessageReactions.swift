@@ -454,7 +454,8 @@ public func topMessageReactions(context: AccountContext, message: EngineRawMessa
         
         if allowedReactionsAndFiles.areStarsEnabled {
             result.removeAll(where: { $0.reaction.rawValue == .stars })
-            if let reaction = availableReactions.reactions.first(where: { $0.value == .stars }) {
+            // SuperGram: the paid Stars reaction is not auto-inserted at the front of the quick reaction bar (UPS-08)
+            if !superGramHidePremiumUpsell, let reaction = availableReactions.reactions.first(where: { $0.value == .stars }) {
                 if let centerAnimation = reaction.centerAnimation, let aroundAnimation = reaction.aroundAnimation {
                     existingIds.insert(reaction.value)
                     

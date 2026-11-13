@@ -15,6 +15,7 @@ final class ChatListSearchMessageSelectionPanelNode: ASDisplayNode {
     
     private let deleteMessages: () -> Void
     private let shareMessages: () -> Void
+    private let getSelectedMessageIds: () -> Set<EngineMessage.Id>?
     private let forwardMessages: () -> Void
     private let displayCopyProtectionTip: (UIView, Bool) -> Void
     
@@ -60,10 +61,11 @@ final class ChatListSearchMessageSelectionPanelNode: ASDisplayNode {
         }
     }
     
-    init(context: AccountContext, deleteMessages: @escaping () -> Void, shareMessages: @escaping () -> Void, forwardMessages: @escaping () -> Void, displayCopyProtectionTip: @escaping (UIView, Bool) -> Void) {
+    init(context: AccountContext, getSelectedMessageIds: @escaping () -> Set<EngineMessage.Id>?, deleteMessages: @escaping () -> Void, shareMessages: @escaping () -> Void, forwardMessages: @escaping () -> Void, displayCopyProtectionTip: @escaping (UIView, Bool) -> Void) {
         self.context = context
         self.deleteMessages = deleteMessages
         self.shareMessages = shareMessages
+        self.getSelectedMessageIds = getSelectedMessageIds
         self.forwardMessages = forwardMessages
         self.displayCopyProtectionTip = displayCopyProtectionTip
         
@@ -149,7 +151,9 @@ final class ChatListSearchMessageSelectionPanelNode: ASDisplayNode {
             
 
             self.deleteButton.isEnabled = !actions.options.intersection([.deleteLocally, .deleteGlobally]).isEmpty
-            self.shareButton.isImplicitlyDisabled = actions.options.intersection([.forward]).isEmpty
+            // SuperGram: protected (noforwards) messages have no .forward option; with sgAllowSaveProtectedContent the
+            // external share (iOS share sheet, immediateExternalShare) stays available, the press handler refuses secret content
+            self.shareButton.isImplicitlyDisabled = actions.options.intersection([.forward]).isEmpty && !self.sgAllowsExternalShareOfProtectedContent(actions: actions)
         } else {
             self.deleteButton.isEnabled = false
             self.forwardButton.isImplicitlyDisabled = true
@@ -183,9 +187,55 @@ final class ChatListSearchMessageSelectionPanelNode: ASDisplayNode {
     
     @objc func shareButtonPressed() {
         if let actions = self.actions, actions.isCopyProtected {
-            self.displayCopyProtectionTip(self.shareButton.view, true)
+            if self.sgAllowsExternalShareOfProtectedContent(actions: actions) && !self.shareButton.isImplicitlyDisabled {
+                self.sgShareProtectedSelectedMessages()
+            } else {
+                self.displayCopyProtectionTip(self.shareButton.view, true)
+            }
         } else {
             self.shareMessages()
         }
+    }
+
+    // MARK: SuperGram
+    private func sgAllowsExternalShareOfProtectedContent(actions: ChatAvailableMessageActions) -> Bool {
+        return actions.isCopyProtected && actions.options.contains(.externalShare) && SuperGramContentProtection.allowSaveProtectedContent
+    }
+
+    // Secret chats, self-destructing and view-once media (also reported as isCopyProtected) keep the copy protection tip.
+    private func sgShareProtectedSelectedMessages() {
+        let messageIds = self.selectedMessages
+        guard !messageIds.isEmpty, self.getSelectedMessageIds() == messageIds else {
+            return
+        }
+        let context = self.context
+        let _ = (context.engine.data.get(EngineDataMap(
+            messageIds.map(TelegramEngine.EngineData.Item.Messages.Message.init)
+        ))
+        |> deliverOnMainQueue).startStandalone(next: { [weak self, weak context] messageMap in
+            guard let self, let context, self.context === context,
+                self.selectedMessages == messageIds,
+                self.getSelectedMessageIds() == messageIds,
+                SuperGramContentProtection.allowSaveProtectedContent,
+                !self.shareButton.isImplicitlyDisabled,
+                messageMap.count == messageIds.count else {
+                return
+            }
+            var hasSecretContent = false
+            for messageId in messageIds {
+                guard let maybeMessage = messageMap[messageId], let message = maybeMessage,
+                    message.id == messageId else {
+                    return
+                }
+                if message.sgIsSecretContent {
+                    hasSecretContent = true
+                }
+            }
+            if hasSecretContent {
+                self.displayCopyProtectionTip(self.shareButton.view, true)
+            } else {
+                self.shareMessages()
+            }
+        })
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import UserNotifications
 import SwiftSignalKit
 import Postbox
@@ -28,7 +29,8 @@ private var installedSharedLogger = false
 private func setupSharedLogger(rootPath: String, path: String) {
     if !installedSharedLogger {
         installedSharedLogger = true
-        Logger.setSharedLogger(Logger(rootPath: rootPath, basePath: path))
+        // SuperGram: logging stays off until the stored logging settings are applied
+        Logger.setSharedLogger(Logger(rootPath: rootPath, basePath: path, logToFile: false, logToConsole: false))
     }
 }
 
@@ -184,11 +186,21 @@ private func notificationPayloadInt(_ value: Any?) -> Int? {
     return Int(value)
 }
 
+private func notificationPackedPeerId(_ value: Int64) -> PeerId? {
+    // PeerId's packed representation has 56 ID bits and three namespace bits. Its initializer
+    // asserts on larger/negative input and on the noncanonical namespace-max/id-zero encoding.
+    // Retain malformed or sentinel notifications instead of invoking that checked initializer.
+    guard value >= 0, value <= 0x07ffffffffffffff, value != 0x0000000700000000 else {
+        return nil
+    }
+    return PeerId(value)
+}
+
 private func notificationPayloadPeerId(_ userInfo: [AnyHashable: Any]) -> PeerId? {
     guard let value = notificationPayloadInt64(userInfo["peerId"]), value != 0 else {
         return nil
     }
-    return PeerId(value)
+    return notificationPackedPeerId(value)
 }
 
 private func notificationPayloadMessageId(_ userInfo: [AnyHashable: Any]) -> MessageId? {
@@ -203,6 +215,165 @@ private func notificationPayloadStoryId(_ userInfo: [AnyHashable: Any]) -> (peer
         return nil
     }
     return (peerId, storyId)
+}
+
+private func notificationCleanupInt64(_ value: Any?) -> Int64? {
+    if let number = value as? NSNumber {
+        guard CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            return nil
+        }
+        return Int64(number.stringValue)
+    } else if let string = value as? String {
+        return Int64(string)
+    }
+    return nil
+}
+
+private func notificationCleanupInt32(_ value: Any?) -> Int32? {
+    guard let value = notificationCleanupInt64(value), value >= Int64(Int32.min), value <= Int64(Int32.max) else {
+        return nil
+    }
+    return Int32(value)
+}
+
+private struct NotificationCleanupIdentity {
+    var accountId: Int64
+    var messageId: MessageId?
+    var storyId: (peerId: PeerId, storyId: Int32)?
+}
+
+private let notificationCleanupMessageKeyExpr = try? NSRegularExpression(pattern: "^m(-?[0-9]+):(-?[0-9]+):(-?[0-9]+)(?:_.*)?$", options: [])
+private let notificationCleanupAccountMessageKeyExpr = try? NSRegularExpression(pattern: "^a(-?[0-9]+):m(-?[0-9]+):(-?[0-9]+):(-?[0-9]+)$", options: [])
+
+@available(iOSApplicationExtension 10.0, iOS 10.0, *)
+private func notificationCleanupIdentity(_ request: UNNotificationRequest) -> NotificationCleanupIdentity? {
+    let payload = request.content.userInfo
+    let identifier = request.identifier
+    var identifierAccountId: Int64?
+    var identifierMessageId: MessageId?
+
+    // Only recognize the scoped syntax when it has its delimiter. APNs identifiers are otherwise opaque
+    // and can legitimately begin with "a"; their explicit account metadata is still usable.
+    let scopedIdentifier = identifier.hasPrefix("a") && identifier.contains(":m")
+    let legacyIdentifier = identifier.hasPrefix("m") && identifier.contains(":")
+    if scopedIdentifier || legacyIdentifier {
+        let expression = scopedIdentifier ? notificationCleanupAccountMessageKeyExpr : notificationCleanupMessageKeyExpr
+        let nsIdentifier = identifier as NSString
+        let range = NSRange(location: 0, length: nsIdentifier.length)
+        guard let match = expression?.firstMatch(in: identifier, options: [], range: range), match.range == range else {
+            return nil
+        }
+        let offset = scopedIdentifier ? 1 : 0
+        if scopedIdentifier {
+            guard let accountId = Int64(nsIdentifier.substring(with: match.range(at: 1))) else {
+                return nil
+            }
+            identifierAccountId = accountId
+        }
+        guard let peerIdValue = Int64(nsIdentifier.substring(with: match.range(at: offset + 1))),
+              let peerId = notificationPackedPeerId(peerIdValue),
+              let namespace = Int32(nsIdentifier.substring(with: match.range(at: offset + 2))),
+              let id = Int32(nsIdentifier.substring(with: match.range(at: offset + 3))) else {
+            return nil
+        }
+        identifierMessageId = MessageId(peerId: peerId, namespace: namespace, id: id)
+    }
+
+    var accountId = identifierAccountId
+    if let value = payload["accountId"] {
+        guard let payloadAccountId = notificationCleanupInt64(value), accountId == nil || accountId == payloadAccountId else {
+            return nil
+        }
+        accountId = payloadAccountId
+    }
+    guard let accountId else {
+        return nil
+    }
+
+    var payloadPeerId: PeerId?
+    if let value = payload["peerId"] {
+        guard let value = notificationCleanupInt64(value), let peerId = notificationPackedPeerId(value) else {
+            return nil
+        }
+        payloadPeerId = peerId
+    } else {
+        for (key, namespace) in [("from_id", Namespaces.Peer.CloudUser), ("chat_id", Namespaces.Peer.CloudGroup), ("channel_id", Namespaces.Peer.CloudChannel)] {
+            if let value = payload[key] {
+                // These are scalar protocol IDs, unlike the packed Int64 peerId above. Reject values outside
+                // PeerId.Id's 56-bit positive range before its checked initializer can assert.
+                guard let value = notificationCleanupInt64(value), value > 0, value <= 0x00ffffffffffffff else {
+                    return nil
+                }
+                payloadPeerId = PeerId(namespace: namespace, id: PeerId.Id._internalFromInt64Value(value))
+                break
+            }
+        }
+    }
+    if let payloadPeerId, let identifierMessageId, payloadPeerId != identifierMessageId.peerId {
+        return nil
+    }
+    let peerId = payloadPeerId ?? identifierMessageId?.peerId
+
+    var payloadMessageId: MessageId?
+    if payload["messageId.namespace"] != nil || payload["messageId.id"] != nil {
+        guard let peerId, let namespace = notificationCleanupInt32(payload["messageId.namespace"]),
+              let id = notificationCleanupInt32(payload["messageId.id"]) else {
+            return nil
+        }
+        payloadMessageId = MessageId(peerId: peerId, namespace: namespace, id: id)
+    }
+    if let value = payload["msg_id"] {
+        guard let peerId, let id = notificationCleanupInt32(value), payloadMessageId == nil || payloadMessageId?.id == id else {
+            return nil
+        }
+        if payloadMessageId == nil {
+            payloadMessageId = MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: id)
+        }
+    }
+    if let identifierMessageId, let payloadMessageId, identifierMessageId != payloadMessageId {
+        return nil
+    }
+
+    var storyId: (peerId: PeerId, storyId: Int32)?
+    if let value = payload["story_id"] {
+        guard let peerId, let id = notificationCleanupInt32(value) else {
+            return nil
+        }
+        storyId = (peerId, id)
+    }
+    return NotificationCleanupIdentity(accountId: accountId, messageId: identifierMessageId ?? payloadMessageId, storyId: storyId)
+}
+
+@available(iOSApplicationExtension 10.0, iOS 10.0, *)
+private func removeNotificationRequestsForAccount(accountId: Int64, matching: @escaping (NotificationCleanupIdentity, UNNotificationRequest) -> Bool, completion: @escaping (Bool) -> Void) {
+    let notificationCenter = UNUserNotificationCenter.current()
+    notificationCenter.getDeliveredNotifications(completionHandler: { notifications in
+        let deliveredIdentifiers = notifications.compactMap { notification -> String? in
+            guard let identity = notificationCleanupIdentity(notification.request), identity.accountId == accountId,
+                  matching(identity, notification.request) else {
+                return nil
+            }
+            return notification.request.identifier
+        }
+        notificationCenter.getPendingNotificationRequests(completionHandler: { requests in
+            let pendingIdentifiers = requests.compactMap { request -> String? in
+                guard let identity = notificationCleanupIdentity(request), identity.accountId == accountId,
+                      matching(identity, request) else {
+                    return nil
+                }
+                return request.identifier
+            }
+            // Filter each pool independently: a legacy identifier can refer to different account metadata in
+            // delivered and pending notifications. Sharing one removal list would cross that boundary.
+            if !deliveredIdentifiers.isEmpty {
+                notificationCenter.removeDeliveredNotifications(withIdentifiers: deliveredIdentifiers)
+            }
+            if !pendingIdentifiers.isEmpty {
+                notificationCenter.removePendingNotificationRequests(withIdentifiers: pendingIdentifiers)
+            }
+            completion(!deliveredIdentifiers.isEmpty || !pendingIdentifiers.isEmpty)
+        })
+    })
 }
 
 private func copyNotificationDataPart(targetData: inout Data, missingRanges: inout RangeSet<Int64>, resourceOffset: Int64, sourceData: Data, dataRange: Range<Int64>) {
@@ -710,7 +881,10 @@ private struct NotificationContent: CustomStringConvertible {
             content.subtitle = subtitle
         }
         if let body = self.body {
-            if #available(iOS 18.0, *) {
+            if let isLockedMessage = self.isLockedMessage {
+                // Do not install attributedBody with the private message text before masking the plain body.
+                content.body = isLockedMessage
+            } else if #available(iOS 18.0, *) {
                 if !self.resolvedEmojiFiles.isEmpty {
                     let attributedString = NSMutableAttributedString(string: body)
                     
@@ -873,11 +1047,13 @@ private final class NotificationServiceHandler {
         let baseAppBundleId = String(appBundleIdentifier[..<lastDotRange.lowerBound])
         let buildConfig = BuildConfig(baseAppBundleId: baseAppBundleId)
 
-        let apiId: Int32 = buildConfig.apiId
-        let apiHash: String = buildConfig.apiHash
+        let sharedApiCredentials = SharedApiCredentialsStore.currentOverride(baseAppBundleId: baseAppBundleId)
+        let apiId: Int32 = sharedApiCredentials?.apiId ?? buildConfig.apiId
+        let apiHash: String = sharedApiCredentials?.apiHash ?? buildConfig.apiHash
         let languagesCategory = "ios"
 
-        let appGroupName = "group.\(baseAppBundleId)"
+        // SuperGram: the provisioned app group; must match telegramAppGroupIdentifier (TelegramUI/AppDelegate.swift).
+        let appGroupName = "group.ffcd1c12e1a9728e.1"
         let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
 
         guard let appGroupUrl = maybeAppGroupUrl else {
@@ -905,10 +1081,8 @@ private final class NotificationServiceHandler {
         self.encryptionParameters = ValueBoxEncryptionParameters(forceEncryptionIfNoSet: false, key: ValueBoxEncryptionParameters.Key(data: deviceSpecificEncryptionParameters.key)!, salt: ValueBoxEncryptionParameters.Salt(data: deviceSpecificEncryptionParameters.salt)!)
         
         let semaphore = DispatchSemaphore(value: 0)
+        // SuperGram: no forced file logging for internal builds; the stored settings mirror the app's "sgFileLogging" switch
         var loggingSettings = LoggingSettings.defaultSettings
-        if buildConfig.isInternalBuild {
-            loggingSettings = LoggingSettings(logToFile: true, logToConsole: false, redactSensitiveData: true)
-        }
         let _ = (self.accountManager.transaction { transaction -> LoggingSettings? in
             if let value = transaction.getSharedData(SharedDataKeys.loggingSettings)?.get(LoggingSettings.self) {
                 return value
@@ -1014,9 +1188,8 @@ private final class NotificationServiceHandler {
 
             guard let strongSelf = self, let recordId = recordId else {
                 Logger.shared.log("NotificationService \(episode)", "Couldn't find a matching decryption key")
-
-                let content = NotificationContent(isLockedMessage: nil)
-                updateCurrentContent(content)
+                // Preserve the original server alert when processing is unavailable. Empty generated content
+                // is reserved for intentional read/delete/already-displayed suppression below.
                 completed()
 
                 return
@@ -1036,9 +1209,6 @@ private final class NotificationServiceHandler {
                 }
                 guard let stateManager = stateManager else {
                     Logger.shared.log("NotificationService \(episode)", "Didn't receive stateManager")
-
-                    let content = NotificationContent(isLockedMessage: nil)
-                    updateCurrentContent(content)
                     completed()
                     return
                 }
@@ -1055,35 +1225,24 @@ private final class NotificationServiceHandler {
                     settings
                 ) |> deliverOn(strongSelf.queue)).start(next: { notificationsKey, notificationSoundList in
                     guard let strongSelf = self else {
-                        let content = NotificationContent(isLockedMessage: nil)
-                        updateCurrentContent(content)
                         completed()
 
                         return
                     }
                     guard let notificationsKey = notificationsKey else {
                         Logger.shared.log("NotificationService \(episode)", "Didn't receive decryption key")
-
-                        let content = NotificationContent(isLockedMessage: nil)
-                        updateCurrentContent(content)
                         completed()
 
                         return
                     }
                     guard let decryptedPayload = decryptedNotificationPayload(key: notificationsKey, data: payloadData) else {
                         Logger.shared.log("NotificationService \(episode)", "Couldn't decrypt payload")
-
-                        let content = NotificationContent(isLockedMessage: nil)
-                        updateCurrentContent(content)
                         completed()
 
                         return
                     }
                     guard let payloadJson = try? JSONSerialization.jsonObject(with: decryptedPayload, options: []) as? [String: Any] else {
                         Logger.shared.log("NotificationService \(episode)", "Couldn't process payload as JSON")
-
-                        let content = NotificationContent(isLockedMessage: nil)
-                        updateCurrentContent(content)
                         completed()
 
                         return
@@ -1126,14 +1285,15 @@ private final class NotificationServiceHandler {
                     messageId = notificationPayloadInt32(payloadJson["msg_id"])
                     storyId = notificationPayloadInt32(payloadJson["story_id"])
 
-                    if let userIdValue = notificationPayloadInt64(payloadJson["from_id"]), userIdValue > 0 {
+                    if let userIdValue = notificationPayloadInt64(payloadJson["from_id"]), userIdValue > 0, userIdValue <= 0x00ffffffffffffff {
                         peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(userIdValue))
-                    } else if let chatIdValue = notificationPayloadInt64(payloadJson["chat_id"]), chatIdValue > 0 {
+                    } else if let chatIdValue = notificationPayloadInt64(payloadJson["chat_id"]), chatIdValue > 0, chatIdValue <= 0x00ffffffffffffff {
                         peerId = PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(chatIdValue))
-                    } else if let channelIdValue = notificationPayloadInt64(payloadJson["channel_id"]), channelIdValue > 0 {
+                    } else if let channelIdValue = notificationPayloadInt64(payloadJson["channel_id"]), channelIdValue > 0, channelIdValue <= 0x00ffffffffffffff {
                         peerId = PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(channelIdValue))
-                    } else if let encryptionIdValue = notificationPayloadInt64(payloadJson["encryption_id"]), encryptionIdValue > 0 {
-                        peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(encryptionIdValue))
+                    } else if let encryptionIdValue = notificationPayloadInt32(payloadJson["encryption_id"]), encryptionIdValue != 0 {
+                        // Secret chat IDs use the signed Int32 namespace encoding, unlike cloud scalar IDs.
+                        peerId = PeerId(namespace: Namespaces.Peer.SecretChat, id: PeerId.Id._internalFromInt64Value(Int64(encryptionIdValue)))
                     }
                     
                     #if DEBUG
@@ -1856,7 +2016,7 @@ private final class NotificationServiceHandler {
                                             |> timeout(10.0, queue: queue, alternate: .single(nil)),
                                             wasDisplayed,
                                             resolvedEmojiFiles
-                                            |> timeout(10.0, queue: queue, alternate: .single([:])),
+                                            |> timeout(10.0, queue: queue, alternate: .single([:]))
                                         )
                                         |> deliverOn(queue)).start(next: { mediaData, notificationSoundData, wasDisplayed, resolvedEmojiFiles in
                                             guard let strongSelf = self, let stateManager = strongSelf.stateManager else {
@@ -2423,17 +2583,12 @@ private final class NotificationServiceHandler {
                                 _internal_deleteMessages(transaction: transaction, mediaBox: mediaBox, ids: ids, deleteMedia: true)
                             }
                             |> deliverOn(strongSelf.queue)).start(completed: {
-                                UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
-                                    var removeIdentifiers: [String] = []
-                                    for notification in notifications {
-                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
-                                            for id in ids {
-                                                if messageId == id {
-                                                    removeIdentifiers.append(notification.request.identifier)
-                                                }
-                                            }
-                                        }
+                                removeNotificationRequestsForAccount(accountId: recordId.int64, matching: { identity, _ in
+                                    guard let messageId = identity.messageId else {
+                                        return false
                                     }
+                                    return ids.contains(messageId)
+                                }, completion: { didRemove in
 
                                     let completeRemoval: () -> Void = {
                                         guard let strongSelf = self else {
@@ -2457,9 +2612,7 @@ private final class NotificationServiceHandler {
                                         })
                                     }
 
-                                    if !removeIdentifiers.isEmpty {
-                                        Logger.shared.log("NotificationService \(episode)", "Will try to remove \(removeIdentifiers.count) notifications")
-                                        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: removeIdentifiers)
+                                    if didRemove {
                                         queue.after(1.0, {
                                             completeRemoval()
                                         })
@@ -2470,20 +2623,12 @@ private final class NotificationServiceHandler {
                             })
                         case let .readReactions(ids):
                             Logger.shared.log("NotificationService \(episode)", "Will read reactions \(ids)")
-                            UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
-                                var removeIdentifiers: [String] = []
-                                for notification in notifications {
-                                    if notification.request.content.categoryIdentifier != "t" {
-                                        continue
-                                    }
-                                    if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
-                                        for id in ids {
-                                            if messageId == id {
-                                                removeIdentifiers.append(notification.request.identifier)
-                                            }
-                                        }
-                                    }
+                            removeNotificationRequestsForAccount(accountId: recordId.int64, matching: { identity, request in
+                                guard request.content.categoryIdentifier == "t", let messageId = identity.messageId else {
+                                    return false
                                 }
+                                return ids.contains(messageId)
+                            }, completion: { didRemove in
                                 
                                 let completeRemoval: () -> Void = {
                                     let content = NotificationContent(isLockedMessage: nil)
@@ -2494,9 +2639,7 @@ private final class NotificationServiceHandler {
                                     completed()
                                 }
                                 
-                                if !removeIdentifiers.isEmpty {
-                                    Logger.shared.log("NotificationService \(episode)", "Will try to remove \(removeIdentifiers.count) notifications")
-                                    UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: removeIdentifiers)
+                                if didRemove {
                                     queue.after(1.0, {
                                         completeRemoval()
                                     })
@@ -2510,24 +2653,12 @@ private final class NotificationServiceHandler {
                                 transaction.applyIncomingReadMaxId(id)
                             }
                             |> deliverOn(strongSelf.queue)).start(completed: {
-                                UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
-                                    let notificationDebugList = notifications.map { notification -> String in
-                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
-                                            return "peerId: \(messageId.peerId.toInt64()), messageId: \(messageId.id)"
-                                        } else {
-                                            return "unknown: \(String(describing: notification.request.content.userInfo))"
-                                        }
-                                    }.joined(separator: "\n")
-                                    Logger.shared.log("NotificationService \(episode)", "Filtering delivered notifications: \(notificationDebugList)")
-                                    
-                                    var removeIdentifiers: [String] = []
-                                    for notification in notifications {
-                                        if let messageId = notificationPayloadMessageId(notification.request.content.userInfo) {
-                                            if messageId.peerId == id.peerId && messageId.id <= id.id {
-                                                removeIdentifiers.append(notification.request.identifier)
-                                            }
-                                        }
+                                removeNotificationRequestsForAccount(accountId: recordId.int64, matching: { identity, _ in
+                                    guard let messageId = identity.messageId else {
+                                        return false
                                     }
+                                    return messageId.peerId == id.peerId && messageId.namespace == id.namespace && messageId.id <= id.id
+                                }, completion: { didRemove in
 
                                     let completeRemoval: () -> Void = {
                                         guard let strongSelf = self else {
@@ -2552,9 +2683,7 @@ private final class NotificationServiceHandler {
                                         })
                                     }
 
-                                    if !removeIdentifiers.isEmpty {
-                                        Logger.shared.log("NotificationService \(episode)", "Will try to remove \(removeIdentifiers.count) notifications")
-                                        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: removeIdentifiers)
+                                    if didRemove {
                                         queue.after(1.0, {
                                             completeRemoval()
                                         })
@@ -2568,15 +2697,12 @@ private final class NotificationServiceHandler {
                             let _ = (stateManager.postbox.transaction { transaction -> Void in
                             }
                             |> deliverOn(strongSelf.queue)).start(completed: {
-                                UNUserNotificationCenter.current().getDeliveredNotifications(completionHandler: { notifications in
-                                    var removeIdentifiers: [String] = []
-                                    for notification in notifications {
-                                        if let storyId = notificationPayloadStoryId(notification.request.content.userInfo) {
-                                            if storyId.peerId == peerId && storyId.storyId <= maxId {
-                                                removeIdentifiers.append(notification.request.identifier)
-                                            }
-                                        }
+                                removeNotificationRequestsForAccount(accountId: recordId.int64, matching: { identity, _ in
+                                    guard let storyId = identity.storyId else {
+                                        return false
                                     }
+                                    return storyId.peerId == peerId && storyId.storyId <= maxId
+                                }, completion: { didRemove in
 
                                     let completeRemoval: () -> Void = {
                                         let content = NotificationContent(isLockedMessage: nil)
@@ -2585,9 +2711,7 @@ private final class NotificationServiceHandler {
                                         completed()
                                     }
 
-                                    if !removeIdentifiers.isEmpty {
-                                        Logger.shared.log("NotificationService \(episode)", "Will try to remove \(removeIdentifiers.count) notifications")
-                                        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: removeIdentifiers)
+                                    if didRemove {
                                         queue.after(1.0, {
                                             completeRemoval()
                                         })
@@ -2624,14 +2748,57 @@ private final class BoxedNotificationServiceHandler {
 }
 
 @available(iOSApplicationExtension 10.0, iOS 10.0, *)
+private final class NotificationServiceRequestState {
+    private struct State {
+        var content: NotificationContent?
+        var contentHandler: ((UNNotificationContent) -> Void)?
+    }
+
+    let episode: String
+    let initialContent: UNNotificationContent
+    private let state: Atomic<State>
+
+    init(episode: String, initialContent: UNNotificationContent, contentHandler: @escaping (UNNotificationContent) -> Void) {
+        self.episode = episode
+        self.initialContent = initialContent
+        self.state = Atomic(value: State(content: nil, contentHandler: contentHandler))
+    }
+
+    var isCompleted: Bool {
+        return self.state.with({ $0.contentHandler == nil })
+    }
+
+    func updateContent(_ content: NotificationContent) {
+        let _ = self.state.modify { state in
+            var state = state
+            if state.contentHandler != nil {
+                state.content = content
+            }
+            return state
+        }
+    }
+
+    func complete() {
+        // Freeze the selected content and claim its handler under the same lock. Late updates cannot change
+        // the value delivered by an expiration or retain media after completion.
+        let state = self.state.swap(State(content: nil, contentHandler: nil))
+        guard let contentHandler = state.contentHandler else {
+            return
+        }
+        if let content = state.content {
+            contentHandler(content.generate())
+        } else {
+            contentHandler(self.initialContent)
+        }
+    }
+}
+
+@available(iOSApplicationExtension 10.0, iOS 10.0, *)
 @objc(NotificationService)
 final class NotificationService: UNNotificationServiceExtension {
+    // Only the service queue owns impl. Request completion is atomic because expiration can arrive on another queue.
     private var impl: QueueLocalObject<BoxedNotificationServiceHandler>?
-
-    private var initialContent: UNNotificationContent?
-    private let content = Atomic<NotificationContent?>(value: nil)
-    private var contentHandler: ((UNNotificationContent) -> Void)?
-    private var episode: String?
+    private let currentRequest = Atomic<NotificationServiceRequestState?>(value: nil)
     
     override init() {
         super.init()
@@ -2639,58 +2806,55 @@ final class NotificationService: UNNotificationServiceExtension {
     
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         let episode = String(UInt32.random(in: 0 ..< UInt32.max), radix: 16)
-        self.episode = episode
-        
-        self.initialContent = request.content
-        self.contentHandler = contentHandler
+        let requestState = NotificationServiceRequestState(episode: episode, initialContent: request.content, contentHandler: contentHandler)
+        let previousRequest = self.currentRequest.swap(requestState)
+        // Replacing a pending request must not lose its handler. Later callbacks remain bound to that request.
+        previousRequest?.complete()
 
-        self.impl = nil
+        queue.async { [weak self] in
+            guard let strongSelf = self, strongSelf.currentRequest.with({ $0 === requestState }), !requestState.isCompleted else {
+                requestState.complete()
+                return
+            }
+            strongSelf.impl = nil
+            strongSelf.impl = QueueLocalObject(queue: queue, generate: { [weak self] in
+                let handler = NotificationServiceHandler(
+                    queue: queue,
+                    episode: episode,
+                    updateCurrentContent: { value in
+                        requestState.updateContent(value)
+                    },
+                    completed: { [weak self] in
+                        requestState.complete()
+                        self?.disposeRequest(requestState)
+                    },
+                    payload: request.content.userInfo
+                )
+                if handler == nil {
+                    requestState.complete()
+                    self?.disposeRequest(requestState)
+                }
+                return BoxedNotificationServiceHandler(value: handler)
+            })
+        }
+    }
 
-        let content = self.content
-
-        self.impl = QueueLocalObject(queue: queue, generate: { [weak self] in
-            return BoxedNotificationServiceHandler(value: NotificationServiceHandler(
-                queue: queue,
-                episode: episode,
-                updateCurrentContent: { value in
-                    let _ = content.swap(value)
-                },
-                completed: {
-                    guard let strongSelf = self else {
-                        return
-                    }
-                    strongSelf.impl = nil
-
-                    if let contentHandler = strongSelf.contentHandler {
-                        Logger.shared.log("NotificationService \(episode)", "Complete handling notification")
-                        
-                        strongSelf.contentHandler = nil
-                        
-                        if let content = content.with({ $0 }) {
-                            contentHandler(content.generate())
-                        } else if let initialContent = strongSelf.initialContent {
-                            contentHandler(initialContent)
-                        }
-                    } else {
-                        Logger.shared.log("NotificationService \(episode)", "Attempted to repeatedly complete handling notification")
-                    }
-                },
-                payload: request.content.userInfo
-            ))
-        })
+    private func disposeRequest(_ requestState: NotificationServiceRequestState) {
+        // Defer even synchronous completion until QueueLocalObject has been assigned. An old completion must
+        // never dispose the worker belonging to a replacement request.
+        queue.justDispatch { [weak self] in
+            guard let strongSelf = self, strongSelf.currentRequest.with({ $0 === requestState }) else {
+                return
+            }
+            strongSelf.impl = nil
+        }
     }
     
     override func serviceExtensionTimeWillExpire() {
-        if let contentHandler = self.contentHandler {
-            self.contentHandler = nil
-            
-            Logger.shared.log("NotificationService \(self.episode ?? "???")", "Completing due to serviceExtensionTimeWillExpire")
-            
-            if let content = self.content.with({ $0 }) {
-                contentHandler(content.generate())
-            } else if let initialContent = self.initialContent {
-                contentHandler(initialContent)
-            }
+        if let requestState = self.currentRequest.with({ $0 }) {
+            Logger.shared.log("NotificationService \(requestState.episode)", "Completing due to serviceExtensionTimeWillExpire")
+            requestState.complete()
+            self.disposeRequest(requestState)
         }
     }
 }

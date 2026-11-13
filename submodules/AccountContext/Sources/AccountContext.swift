@@ -51,6 +51,7 @@ public final class TelegramApplicationBindings {
     public let applicationInForeground: Signal<Bool, NoError>
     public let applicationIsActive: Signal<Bool, NoError>
     public let clearMessageNotifications: ([EngineMessage.Id]) -> Void
+    public let clearMessageNotificationsForAccount: (AccountRecordId, [EngineMessage.Id]) -> Void
     public let pushIdleTimerExtension: () -> Disposable
     public let openSettings: () -> Void
     public let openAppStorePage: () -> Void
@@ -66,7 +67,7 @@ public final class TelegramApplicationBindings {
     public let requestSetAlternateIconName: (String?, @escaping (Bool) -> Void) -> Void
     public let forceOrientation: (UIInterfaceOrientation) -> Void
     
-    public init(isMainApp: Bool, appBundleId: String, appBuildType: TelegramAppBuildType, containerPath: String, appSpecificScheme: String, openUrl: @escaping (String) -> Void, openUniversalUrl: @escaping (String, TelegramApplicationOpenUrlCompletion) -> Void, canOpenUrl: @escaping (String) -> Bool, getTopWindow: @escaping () -> UIWindow?, displayNotification: @escaping (String) -> Void, applicationInForeground: Signal<Bool, NoError>, applicationIsActive: Signal<Bool, NoError>, clearMessageNotifications: @escaping ([EngineMessage.Id]) -> Void, pushIdleTimerExtension: @escaping () -> Disposable, openSettings: @escaping () -> Void, openAppStorePage: @escaping () -> Void, openSubscriptions: @escaping () -> Void, registerForNotifications: @escaping (@escaping (Bool) -> Void) -> Void, requestSiriAuthorization: @escaping (@escaping (Bool) -> Void) -> Void, siriAuthorization: @escaping () -> AccessType, getWindowHost: @escaping () -> WindowHost?, presentNativeController: @escaping (UIViewController) -> Void, dismissNativeController: @escaping () -> Void, getAvailableAlternateIcons: @escaping () -> [PresentationAppIcon], getAlternateIconName: @escaping () -> String?, requestSetAlternateIconName: @escaping (String?, @escaping (Bool) -> Void) -> Void, forceOrientation: @escaping (UIInterfaceOrientation) -> Void) {
+    public init(isMainApp: Bool, appBundleId: String, appBuildType: TelegramAppBuildType, containerPath: String, appSpecificScheme: String, openUrl: @escaping (String) -> Void, openUniversalUrl: @escaping (String, TelegramApplicationOpenUrlCompletion) -> Void, canOpenUrl: @escaping (String) -> Bool, getTopWindow: @escaping () -> UIWindow?, displayNotification: @escaping (String) -> Void, applicationInForeground: Signal<Bool, NoError>, applicationIsActive: Signal<Bool, NoError>, clearMessageNotifications: @escaping ([EngineMessage.Id]) -> Void, pushIdleTimerExtension: @escaping () -> Disposable, openSettings: @escaping () -> Void, openAppStorePage: @escaping () -> Void, openSubscriptions: @escaping () -> Void, registerForNotifications: @escaping (@escaping (Bool) -> Void) -> Void, requestSiriAuthorization: @escaping (@escaping (Bool) -> Void) -> Void, siriAuthorization: @escaping () -> AccessType, getWindowHost: @escaping () -> WindowHost?, presentNativeController: @escaping (UIViewController) -> Void, dismissNativeController: @escaping () -> Void, getAvailableAlternateIcons: @escaping () -> [PresentationAppIcon], getAlternateIconName: @escaping () -> String?, requestSetAlternateIconName: @escaping (String?, @escaping (Bool) -> Void) -> Void, forceOrientation: @escaping (UIInterfaceOrientation) -> Void, clearMessageNotificationsForAccount: ((AccountRecordId, [EngineMessage.Id]) -> Void)? = nil) {
         self.isMainApp = isMainApp
         self.appBundleId = appBundleId
         self.appBuildType = appBuildType
@@ -80,6 +81,9 @@ public final class TelegramApplicationBindings {
         self.applicationInForeground = applicationInForeground
         self.applicationIsActive = applicationIsActive
         self.clearMessageNotifications = clearMessageNotifications
+        self.clearMessageNotificationsForAccount = clearMessageNotificationsForAccount ?? { _, ids in
+            clearMessageNotifications(ids)
+        }
         self.pushIdleTimerExtension = pushIdleTimerExtension
         self.openSettings = openSettings
         self.openAppStorePage = openAppStorePage

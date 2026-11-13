@@ -9,7 +9,10 @@ def remove_directory(path):
     if os.path.isdir(path):
         shutil.rmtree(path)
 
-def generate_xcodeproj(build_environment: BuildEnvironment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name):
+def generate_xcodeproj(build_environment: BuildEnvironment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name, notification_service_only=False):
+    if notification_service_only and target_name != 'Telegram':
+        raise ValueError('--notificationServiceOnly requires the Telegram target')
+
     if '/' in target_name:
         app_target_spec = target_name.split('/')[0] + '/' + target_name.split('/')[1] + ':' + target_name.split('/')[1]
         app_target = target_name
@@ -26,6 +29,10 @@ def generate_xcodeproj(build_environment: BuildEnvironment, disable_extensions, 
     if target_name == 'Telegram':
         if disable_extensions:
             bazel_generate_arguments += ['--//{}:disableExtensions'.format(app_target)]
+        if notification_service_only:
+            bazel_generate_arguments += ['--//{}:notificationServiceOnly'.format(app_target)]
+        if disable_provisioning_profiles:
+            bazel_generate_arguments += ['--//{}:disableProvisioningProfiles'.format(app_target)]
         bazel_generate_arguments += ['--//{}:disableStripping'.format(app_target)]
 
     project_bazel_arguments = []
@@ -35,6 +42,10 @@ def generate_xcodeproj(build_environment: BuildEnvironment, disable_extensions, 
     if target_name == 'Telegram':
         if disable_extensions:
             project_bazel_arguments += ['--//{}:disableExtensions'.format(app_target)]
+        if notification_service_only:
+            project_bazel_arguments += ['--//{}:notificationServiceOnly'.format(app_target)]
+        if disable_provisioning_profiles:
+            project_bazel_arguments += ['--//{}:disableProvisioningProfiles'.format(app_target)]
         project_bazel_arguments += ['--//{}:disableStripping'.format(app_target)]
 
     project_bazel_arguments += ['--features=-swift.debug_prefix_map']
@@ -53,5 +64,5 @@ def generate_xcodeproj(build_environment: BuildEnvironment, disable_extensions, 
     return xcodeproj_path
 
 
-def generate(build_environment: BuildEnvironment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name) -> str:
-    return generate_xcodeproj(build_environment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name)
+def generate(build_environment: BuildEnvironment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name, notification_service_only=False) -> str:
+    return generate_xcodeproj(build_environment, disable_extensions, disable_provisioning_profiles, include_release, generate_dsym, bazel_app_arguments, target_name, notification_service_only)

@@ -30,8 +30,29 @@ private func FFMpegLookaheadReader_readPacketCallback(userData: UnsafeMutableRaw
         isCancelled = true
         semaphore.signal()
     })
-    semaphore.wait()
-    
+
+    // SuperGram: this thread blocks until the requested block is on disk. If the ranged fetch behind it never lands
+    // (a terminal FetchV2 failure, a rejected range, nothing fetching this part of the file) the lookahead never
+    // produces another state, the player keeps buffering and the item "loads forever". Wake up periodically and,
+    // after a short stall, ask for the plain full-file download as a fallback; already downloaded bytes stay usable.
+    var waitedDuration: Double = 0.0
+    while true {
+        if semaphore.wait(timeout: DispatchTime.now() + FFMpegLookaheadReader.readWaitStep) == .success {
+            break
+        }
+        if context.isCancelled {
+            isCancelled = true
+            break
+        }
+        waitedDuration += FFMpegLookaheadReader.readWaitStep
+        if waitedDuration >= FFMpegLookaheadReader.readFallbackDelay {
+            context.params.requestFallbackFullFetch()
+        }
+        if waitedDuration >= FFMpegLookaheadReader.readGiveUpDelay {
+            break
+        }
+    }
+
     if isCancelled {
         context.isCancelled = true
     }
@@ -87,8 +108,13 @@ private func range(_ outer: Range<Int64>, fullyContains inner: Range<Int64>) -> 
 }
 
 private final class FFMpegLookaheadReader {
+    // SuperGram: stall handling for the blocking reads, see FFMpegLookaheadReader_readPacketCallback.
+    static let readWaitStep: Double = 1.0
+    static let readFallbackDelay: Double = 4.0
+    static let readGiveUpDelay: Double = 90.0
+
     let params: FFMpegLookaheadThread.Params
-    
+
     var avIoContext: FFMpegAVIOContext?
     var avFormatContext: FFMpegAVFormatContext?
     
@@ -340,10 +366,13 @@ private final class FFMpegLookaheadThread: NSObject {
         let fetchInRange: (Range<Int64>) -> Disposable
         let getDataInRange: (Range<Int64>, @escaping (Data?) -> Void) -> Disposable
         let isDataCachedInRange: (Range<Int64>) -> Bool
+        // SuperGram: called from the reader thread when a read has been blocked for too long, see
+        // FFMpegLookaheadReader_readPacketCallback.
+        let requestFallbackFullFetch: () -> Void
         let size: Int64
         let cancel: Signal<Void, NoError>
         let currentTimestamp: Atomic<Double?>
-        
+
         init(
             seekToTimestamp: Double,
             lookaheadDuration: Double,
@@ -351,6 +380,7 @@ private final class FFMpegLookaheadThread: NSObject {
             fetchInRange: @escaping (Range<Int64>) -> Disposable,
             getDataInRange: @escaping (Range<Int64>, @escaping (Data?) -> Void) -> Disposable,
             isDataCachedInRange: @escaping (Range<Int64>) -> Bool,
+            requestFallbackFullFetch: @escaping () -> Void,
             size: Int64,
             cancel: Signal<Void, NoError>,
             currentTimestamp: Atomic<Double?>
@@ -361,6 +391,7 @@ private final class FFMpegLookaheadThread: NSObject {
             self.fetchInRange = fetchInRange
             self.getDataInRange = getDataInRange
             self.isDataCachedInRange = isDataCachedInRange
+            self.requestFallbackFullFetch = requestFallbackFullFetch
             self.size = size
             self.cancel = cancel
             self.currentTimestamp = currentTimestamp
@@ -447,6 +478,7 @@ final class FFMpegLookahead {
         fetchInRange: @escaping (Range<Int64>) -> Disposable,
         getDataInRange: @escaping (Range<Int64>, @escaping (Data?) -> Void) -> Disposable,
         isDataCachedInRange: @escaping (Range<Int64>) -> Bool,
+        requestFallbackFullFetch: @escaping () -> Void,
         size: Int64
     ) {
         self.thread = Thread(
@@ -459,6 +491,7 @@ final class FFMpegLookahead {
                 fetchInRange: fetchInRange,
                 getDataInRange: getDataInRange,
                 isDataCachedInRange: isDataCachedInRange,
+                requestFallbackFullFetch: requestFallbackFullFetch,
                 size: size,
                 cancel: self.cancel.get(),
                 currentTimestamp: self.currentTimestamp
@@ -520,8 +553,22 @@ final class ChunkMediaPlayerDirectFetchSourceImpl: ChunkMediaPlayerSourceImpl {
     func seek(id: Int, position: Double) {
         if self.resource.size == 0 && self.resolvedResourceSize == nil {
             self.pendingSeek = (id, position)
-            
+
             if self.resourceSizeDisposable == nil {
+                // SuperGram: with an unknown resource size the only way to learn it is to wait for the complete file.
+                // Without fetchAutomatically nothing is downloading it, so the seek stays pending and the player
+                // buffers forever. Make sure something is actually fetching before waiting on it.
+                if self.completeFetchDisposable == nil {
+                    self.completeFetchDisposable = fetchedMediaResource(
+                        mediaBox: self.resource.postbox.mediaBox,
+                        userLocation: self.resource.userLocation,
+                        userContentType: self.resource.userContentType,
+                        reference: self.resource.reference,
+                        statsCategory: self.resource.statsCategory,
+                        preferBackgroundReferenceRevalidation: true
+                    ).startStrict()
+                }
+
                 self.resourceSizeDisposable = (self.resource.postbox.mediaBox.resourceData(self.resource.reference.resource, option: .complete(waitUntilFetchStatus: false))
                 |> deliverOnMainQueue).start(next: { [weak self] data in
                     guard let self else {
@@ -619,7 +666,7 @@ final class ChunkMediaPlayerDirectFetchSourceImpl: ChunkMediaPlayerSourceImpl {
                                 return ChunkMediaPlayerPartsState.DirectReader.Stream(
                                     mediaBox: resource.postbox.mediaBox,
                                     resource: resource.reference.resource,
-                                    size: resource.size,
+                                    size: resourceSize,
                                     index: media.info.index,
                                     seek: (streamIndex: state.seek.streamIndex, pts: state.seek.pts),
                                     maxReadablePts: (streamIndex: maxReadablePts.streamIndex, pts: maxReadablePts.pts, isEnded: state.isEnded),
@@ -659,6 +706,11 @@ final class ChunkMediaPlayerDirectFetchSourceImpl: ChunkMediaPlayerSourceImpl {
                     in: range
                 )
             },
+            requestFallbackFullFetch: { [weak self] in
+                Queue.mainQueue().async {
+                    self?.requestFallbackFullFetch()
+                }
+            },
             size: resourceSize
         )
     }
@@ -667,5 +719,22 @@ final class ChunkMediaPlayerDirectFetchSourceImpl: ChunkMediaPlayerSourceImpl {
         if self.seekTimestamp == seekTimestamp {
             self.lookahead?.updateCurrentTimestamp(timestamp: position)
         }
+    }
+
+    // SuperGram: the lookahead's ranged fetches are not making progress. Start the plain full-file download that a
+    // non-streaming player would use, so the blocked read eventually gets its bytes. Never cancels or replaces a
+    // download that is already running.
+    private func requestFallbackFullFetch() {
+        if self.completeFetchDisposable != nil {
+            return
+        }
+        self.completeFetchDisposable = fetchedMediaResource(
+            mediaBox: self.resource.postbox.mediaBox,
+            userLocation: self.resource.userLocation,
+            userContentType: self.resource.userContentType,
+            reference: self.resource.reference,
+            statsCategory: self.resource.statsCategory,
+            preferBackgroundReferenceRevalidation: true
+        ).startStrict()
     }
 }

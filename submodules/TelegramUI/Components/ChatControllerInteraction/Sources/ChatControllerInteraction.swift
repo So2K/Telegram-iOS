@@ -195,6 +195,9 @@ public final class ChatControllerInteraction: ChatControllerInteractionProtocol 
     }
     
     public let openMessage: (EngineRawMessage, OpenMessageParams) -> Bool
+    // MARK: Swiftgram
+    /// Starts editing the message (double-tap on an own message). Returns false when the message can't be edited.
+    public let sgStartMessageEdit: (EngineRawMessage) -> Bool
     public let openPeer: (EnginePeer, ChatControllerInteractionNavigateToPeer, MessageReference?, OpenPeerSource) -> Void
     public let openPeerMention: (String, Promise<Bool>?) -> Void
     public let openMessageContextMenu: (EngineRawMessage, Bool, ASDisplayNode, CGRect, UIGestureRecognizer?, CGPoint?) -> Void
@@ -375,6 +378,7 @@ public final class ChatControllerInteraction: ChatControllerInteractionProtocol 
     
     public init(
         openMessage: @escaping (EngineRawMessage, OpenMessageParams) -> Bool,
+        sgStartMessageEdit: @escaping (EngineRawMessage) -> Bool = { _ in return false },
         openPeer: @escaping (EnginePeer, ChatControllerInteractionNavigateToPeer, MessageReference?, OpenPeerSource) -> Void,
         openPeerMention: @escaping (String, Promise<Bool>?) -> Void,
         openMessageContextMenu: @escaping (EngineRawMessage, Bool, ASDisplayNode, CGRect, UIGestureRecognizer?, CGPoint?) -> Void,
@@ -507,6 +511,7 @@ public final class ChatControllerInteraction: ChatControllerInteractionProtocol 
         presentationContext: ChatPresentationContext
     ) {
         self.openMessage = openMessage
+        self.sgStartMessageEdit = sgStartMessageEdit
         self.openPeer = openPeer
         self.openPeerMention = openPeerMention
         self.openMessageContextMenu = openMessageContextMenu

@@ -65,7 +65,7 @@ public final class StoryContentContextImpl: StoryContentContext {
             )
             |> map { setting, peer -> Bool in
                 let isPremium = peer?.isPremium ?? false
-                return setting && isPremium
+                return setting && (isPremium || SuperGramStoryGates.storyHDWithoutPremium) // SuperGram: HD stories without Premium (W1-STORIES request)
             }
             |> distinctUntilChanged
             
@@ -1042,7 +1042,7 @@ public final class StoryContentContextImpl: StoryContentContext {
         for (id, info) in resultResources.sorted(by: { $0.value.priority < $1.value.priority }) {
             validIds.append(id)
             if self.preloadStoryResourceDisposables[id] == nil {
-                self.preloadStoryResourceDisposables[id] = preloadStoryMedia(context: context, info: info).startStrict()
+                self.preloadStoryResourceDisposables[id] = preloadStoryMedia(context: context, info: info, lane: .foreground).startStrict()
             }
         }
         
@@ -1191,7 +1191,7 @@ public final class SingleStoryContentContextImpl: StoryContentContext {
         )
         |> map { setting, peer -> Bool in
             let isPremium = peer?.isPremium ?? false
-            return setting && isPremium
+            return setting && (isPremium || SuperGramStoryGates.storyHDWithoutPremium) // SuperGram: HD stories without Premium (W1-STORIES request)
         }
         |> distinctUntilChanged
         
@@ -1518,7 +1518,7 @@ public final class PeerStoryListContentContextImpl: StoryContentContext {
         )
         |> map { setting, peer -> Bool in
             let isPremium = peer?.isPremium ?? false
-            return setting && isPremium
+            return setting && (isPremium || SuperGramStoryGates.storyHDWithoutPremium) // SuperGram: HD stories without Premium (W1-STORIES request)
         }
         |> distinctUntilChanged
         
@@ -1748,7 +1748,7 @@ public final class PeerStoryListContentContextImpl: StoryContentContext {
                         if let mediaId = info.media.id {
                             validIds.append(mediaId)
                             if self.preloadStoryResourceDisposables[mediaId] == nil {
-                                self.preloadStoryResourceDisposables[mediaId] = preloadStoryMedia(context: context, info: info).startStrict()
+                                self.preloadStoryResourceDisposables[mediaId] = preloadStoryMedia(context: context, info: info, lane: .foreground).startStrict()
                             }
                         }
                     }
@@ -1836,7 +1836,14 @@ public final class PeerStoryListContentContextImpl: StoryContentContext {
     }
 }
 
-public func preloadStoryMedia(context: AccountContext, info: StoryPreloadInfo) -> Signal<Never, NoError> {
+// SuperGram: story preloads are best effort. The chat list asks for up to 10 at once (background lane), the open
+// viewer for its neighbours (foreground lane); MediaPreloadGate.stories runs at most 3 together and backs off
+// under MediaDownloadPressure.
+public func preloadStoryMedia(context: AccountContext, info: StoryPreloadInfo, lane: MediaPreloadGate.Lane = .background) -> Signal<Never, NoError> {
+    return MediaPreloadGate.stories.wrap(lane: lane, preloadStoryMediaImpl(context: context, info: info))
+}
+
+private func preloadStoryMediaImpl(context: AccountContext, info: StoryPreloadInfo) -> Signal<Never, NoError> {
     var signals: [Signal<Never, NoError>] = []
     
     let selectedMedia: EngineMedia = info.media
@@ -2013,7 +2020,7 @@ public func waitUntilStoryMediaPreloaded(context: AccountContext, peerId: Engine
     )
     |> map { setting, peer -> Bool in
         let isPremium = peer?.isPremium ?? false
-        return setting && isPremium
+        return setting && (isPremium || SuperGramStoryGates.storyHDWithoutPremium) // SuperGram: HD stories without Premium (W1-STORIES request)
     }
     |> distinctUntilChanged
     
@@ -2378,7 +2385,7 @@ public final class RepostStoriesContentContextImpl: StoryContentContext {
             )
             |> map { setting, peer -> Bool in
                 let isPremium = peer?.isPremium ?? false
-                return setting && isPremium
+                return setting && (isPremium || SuperGramStoryGates.storyHDWithoutPremium) // SuperGram: HD stories without Premium (W1-STORIES request)
             }
             |> distinctUntilChanged
             
@@ -3006,7 +3013,7 @@ public final class RepostStoriesContentContextImpl: StoryContentContext {
         for (id, info) in resultResources.sorted(by: { $0.value.priority < $1.value.priority }) {
             validIds.append(id)
             if self.preloadStoryResourceDisposables[id] == nil {
-                self.preloadStoryResourceDisposables[id] = preloadStoryMedia(context: context, info: info).startStrict()
+                self.preloadStoryResourceDisposables[id] = preloadStoryMedia(context: context, info: info, lane: .foreground).startStrict()
             }
         }
         

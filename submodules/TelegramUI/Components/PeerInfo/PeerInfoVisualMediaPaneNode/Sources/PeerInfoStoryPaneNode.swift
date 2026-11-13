@@ -46,6 +46,8 @@ import LanguageSelectionScreen
 import PromptUI
 import BottomButtonPanelComponent
 import BundleIconComponent
+import SaveToCameraRoll
+import SaveProgressScreen
 
 private let mediaBadgeBackgroundColor = UIColor(white: 0.0, alpha: 0.6)
 private let mediaBadgeTextColor = UIColor.white
@@ -1156,7 +1158,8 @@ private final class SparseItemGridBindingImpl: SparseItemGridBinding {
     }
 
     func createLayer(item: SparseItemGrid.Item) -> SparseItemGridLayer? {
-        if let item = item as? VisualMediaItem, item.story.isForwardingDisabled {
+        // SuperGram: sgAllowScreenCaptureProtected keeps protected story thumbnails visible in screenshots
+        if let item = item as? VisualMediaItem, item.story.isForwardingDisabled, !SuperGramStoryGates.allowScreenCaptureProtected {
             let layer = ItemLayer()
             setLayerDisableScreenshots(layer, true)
             return layer
@@ -2252,6 +2255,8 @@ public final class PeerInfoStoryPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScr
             
             if !strongSelf.canManageStories {
                 if !storyItem.story.isForwardingDisabled, case .everyone = storyItem.story.privacy?.base {
+                } else if strongSelf.sgCanSaveStory(item: storyItem.story) {
+                    // SuperGram: the menu offers Save to Gallery
                 } else {
                     return false
                 }
@@ -2500,6 +2505,56 @@ public final class PeerInfoStoryPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScr
         |> runOn(.mainQueue())
     }
     
+    // SuperGram: bot previews, pending uploads and live streams are not saved; protected stories need sgAllowSaveProtectedContent
+    private func sgCanSaveStory(item: EngineStoryItem) -> Bool {
+        if case .botPreview = self.scope {
+            return false
+        }
+        if item.isPending {
+            return false
+        }
+        switch item.media {
+        case .image, .file:
+            break
+        default:
+            return false
+        }
+        if item.isForwardingDisabled && !SuperGramStoryGates.allowSaveProtectedContent {
+            return false
+        }
+        return true
+    }
+
+    // SuperGram: same flow as StoryItemSetContainerComponent.requestSave / PeerInfoStoryGridScreen.saveSelected
+    private func sgSaveStoryToGallery(peer peerReference: PeerReference, item: EngineStoryItem) {
+        guard let parentController = self.parentController else {
+            return
+        }
+        let strings = self.presentationData.strings
+        let saveScreen = SaveProgressScreen(context: self.context, content: .progress(strings.Story_TooltipSaving, 0.0))
+        parentController.present(saveScreen, in: .current)
+
+        let disposable = (saveToCameraRoll(context: self.context, userLocation: .peer(peerReference.id), customUserContentType: .story, mediaReference: .story(peer: peerReference, id: item.id, media: item.media._asMedia()))
+        |> deliverOnMainQueue).startStandalone(next: { [weak saveScreen] progress in
+            guard let saveScreen else {
+                return
+            }
+            saveScreen.content = .progress(strings.Story_TooltipSaving, progress)
+        }, completed: { [weak saveScreen] in
+            guard let saveScreen else {
+                return
+            }
+            saveScreen.content = .completion(strings.Story_TooltipSaved)
+            Queue.mainQueue().after(3.0, { [weak saveScreen] in
+                saveScreen?.dismiss()
+            })
+        })
+
+        saveScreen.cancelled = {
+            disposable.dispose()
+        }
+    }
+
     private func openContextMenu(item: EngineStoryItem, itemLayer: ItemLayer, rect: CGRect, gesture: ContextGesture?) {
         guard let parentController = self.parentController else {
             return
@@ -2750,6 +2805,18 @@ public final class PeerInfoStoryPaneNode: ASDisplayNode, PeerInfoPaneNode, ASScr
             })))
         }
         
+        // SuperGram: Save to Gallery from the profile story grid (other peers included, no Premium)
+        if self.sgCanSaveStory(item: item), let peerReference = itemLayer.item?.peer {
+            items.append(.action(ContextMenuActionItem(text: self.presentationData.strings.Story_Context_SaveToGallery, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Download"), color: theme.contextMenu.primaryColor) }, action: { [weak self] c, _ in
+                c?.dismiss(completion: {
+                    guard let self else {
+                        return
+                    }
+                    self.sgSaveStoryToGallery(peer: peerReference, item: item)
+                })
+            })))
+        }
+
         if !item.isForwardingDisabled, case .everyone = item.privacy?.base {
             items.append(.action(ContextMenuActionItem(text: self.presentationData.strings.StoryList_ItemAction_Forward, icon: { theme in generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Forward"), color: theme.contextMenu.primaryColor) }, action: { [weak self] c, _ in
                 c?.dismiss(completion: {

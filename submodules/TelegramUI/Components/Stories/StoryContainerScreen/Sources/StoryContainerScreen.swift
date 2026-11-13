@@ -19,6 +19,8 @@ import TooltipUI
 import ChatEntityKeyboardInputNode
 import notify
 import TelegramNotices
+// MARK: Swiftgram
+import SGSimpleSettings
 
 func hasFirstResponder(_ view: UIView) -> Bool {
     if view.isFirstResponder {
@@ -424,7 +426,15 @@ private final class StoryContainerScreenComponent: Component {
         var longPressRecognizer: StoryLongPressRecognizer?
         
         private var pendingNavigationToItemId: EngineStoryId?
-                
+
+        // MARK: Swiftgram
+        private let storiesWarning = ComponentView<Empty>()
+        private var isDisplayingStoriesWarning: Bool = false
+        // SuperGram: set when `warnOnStoriesOpen` is on but the slice has not resolved yet, so the "is this my own
+        // story?" exemption cannot be evaluated on the first `update(component:)` pass. Resolved as soon as a slice
+        // arrives; see the `if self.component == nil` block below.
+        private var isPendingStoriesWarningDecision: Bool = false
+
         private let interactionGuide = ComponentView<Empty>()
         private var isDisplayingInteractionGuide: Bool = false
         private var displayInteractionGuideDisposable: Disposable?
@@ -457,7 +467,7 @@ private final class StoryContainerScreenComponent: Component {
                 guard let self, let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id], let itemSetComponentView = itemSetView.view.view as? StoryItemSetContainerComponent.View else {
                     return []
                 }
-                if self.isDisplayingInteractionGuide {
+                if self.isDisplayingInteractionGuide || self.isDisplayingStoriesWarning {
                     return []
                 }
                 if let environment = self.environment, case .regular = environment.metrics.widthClass {
@@ -590,7 +600,7 @@ private final class StoryContainerScreenComponent: Component {
                 guard let self else {
                     return false
                 }
-                if self.isDisplayingInteractionGuide {
+                if self.isDisplayingInteractionGuide || self.isDisplayingStoriesWarning {
                     return false
                 }
                 if let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id] {
@@ -1074,7 +1084,7 @@ private final class StoryContainerScreenComponent: Component {
                     guard let self else {
                         return
                     }
-                    if !value && !self.isDisplayingInteractionGuide {
+                    if !value && !self.isDisplayingInteractionGuide && !self.isDisplayingStoriesWarning {
                         if let stateValue = self.stateValue, let slice = stateValue.slice, let itemSetView = self.visibleItemSetViews[slice.peer.id], let currentItemView = itemSetView.view.view as? StoryItemSetContainerComponent.View {
                             currentItemView.maybeDisplayReactionTooltip()
                         }
@@ -1324,10 +1334,32 @@ private final class StoryContainerScreenComponent: Component {
                         let _ = ApplicationSpecificNotice.setDisplayStoryInteractionGuide(accountManager: accountManager).startStandalone()
                     }
                 })
-                
+
+                // MARK: Swiftgram
+                // SuperGram: never asked for the account's own stories. The slice is usually already resolved here
+                // (`openStories` / `openArchivedStories` take `state |> take(1)` before building the screen), but an
+                // entry point that constructs the screen before the content resolves would compare `nil` against the
+                // account peer id and warn on your own stories. Defer the decision in that case instead of guessing.
+                if SGSimpleSettings.shared.warnOnStoriesOpen {
+                    if let slicePeerId = component.content.stateValue?.slice?.peer.id {
+                        self.isDisplayingStoriesWarning = slicePeerId != component.context.account.peerId
+                    } else {
+                        self.isPendingStoriesWarningDecision = true
+                    }
+                }
+
                 update = true
             }
-            
+
+            // MARK: Swiftgram
+            // SuperGram: resolve a deferred warn-before-open decision as soon as the first slice arrives. This runs
+            // before `isProgressPaused` and before the overlay is built further down, so the decision still takes
+            // effect within this same pass.
+            if self.isPendingStoriesWarningDecision, let slicePeerId = component.content.stateValue?.slice?.peer.id {
+                self.isPendingStoriesWarningDecision = false
+                self.isDisplayingStoriesWarning = slicePeerId != component.context.account.peerId
+            }
+
             if self.component?.content !== component.content {
                 if self.component == nil {
                     var update = false
@@ -1511,7 +1543,7 @@ private final class StoryContainerScreenComponent: Component {
             if self.pendingNavigationToItemId != nil {
                 isProgressPaused = true
             }
-            if self.isDisplayingInteractionGuide {
+            if self.isDisplayingInteractionGuide || self.isDisplayingStoriesWarning {
                 isProgressPaused = true
             }
             
@@ -1975,7 +2007,68 @@ private final class StoryContainerScreenComponent: Component {
                 )
                 controller.presentationContext.containerLayoutUpdated(subLayout, transition: transition.containedViewLayoutTransition)
             }
-            
+
+            // MARK: Swiftgram
+            if self.isDisplayingStoriesWarning {
+                let _ = self.storiesWarning.update(
+                    transition: .immediate,
+                    component: AnyComponent(
+                        SGStoryWarningComponent(
+                            context: component.context,
+                            theme: environment.theme,
+                            strings: environment.strings,
+                            peer: component.content.stateValue?.slice?.peer,
+                            isInStealthMode: stealthModeTimeout != nil || SGSimpleSettings.shared.sgStoryGhostMode,
+                            action: { [weak self] in
+                                self?.isDisplayingStoriesWarning = false
+                                self?.state?.updated(transition: .immediate)
+                                if let view = self?.storiesWarning.view as? SGStoryWarningComponent.View {
+                                    view.animateOut(completion: {
+                                        view.removeFromSuperview()
+                                    })
+                                }
+                            },
+                            close: { [weak self] in
+                                // SuperGram: clear the flag as `action` does. Leaving it set kept `update()` in the
+                                // branch below, which re-adds the view once `animateOut` has removed it — and
+                                // `animateIn()` does not undo the root-layer fade, so the re-added overlay would be an
+                                // invisible, touch-blocking layer at zPosition 1000 if the dismissal is interrupted.
+                                self?.isDisplayingStoriesWarning = false
+                                self?.environment?.controller()?.dismiss()
+                                if let view = self?.storiesWarning.view as? SGStoryWarningComponent.View {
+                                    view.animateOut(completion: {
+                                        view.removeFromSuperview()
+                                    })
+                                }
+                            }
+                        )
+                    ),
+                    environment: {},
+                    containerSize: availableSize
+                )
+                if let view = self.storiesWarning.view as? SGStoryWarningComponent.View {
+                    if view.superview == nil {
+                        self.addSubview(view)
+
+                        view.animateIn()
+                    }
+                    view.layer.zPosition = 1000.0
+                    view.frame = CGRect(origin: .zero, size: availableSize)
+                }
+            } else if let view = self.storiesWarning.view as? SGStoryWarningComponent.View, view.superview != nil {
+                // SuperGram: Swiftgram cast this to StoryInteractionGuideComponent.View, so it never matched.
+                // `animateOut` is idempotent via `didAnimateOut`, but a second call returns *without* running the
+                // completion. The `action`/`close` closures start their own `animateOut`, so if that one already ran
+                // this branch would never remove the view and an alpha-0 overlay would keep swallowing touches.
+                if view.didAnimateOut {
+                    view.removeFromSuperview()
+                } else {
+                    view.animateOut(completion: {
+                        view.removeFromSuperview()
+                    })
+                }
+            }
+
             if self.isDisplayingInteractionGuide {
                 let _ = self.interactionGuide.update(
                     transition: .immediate,

@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import SwiftSignalKit
@@ -844,8 +847,14 @@ public final class ChatPresentationInterfaceState: Equatable {
         self.reportReason = reportReason
         self.showCommands = showCommands
         self.hasBotCommands = hasBotCommands
-        self.showSendAsPeers = showSendAsPeers
-        self.sendAsPeers = sendAsPeers
+        // MARK: Swiftgram
+        if SGSimpleSettings.shared.disableSendAsButton {
+            self.showSendAsPeers = false
+            self.sendAsPeers = nil
+        } else {
+            self.showSendAsPeers = showSendAsPeers
+            self.sendAsPeers = sendAsPeers
+        }
         self.botMenuButton = botMenuButton
         self.showWebView = showWebView
         self.currentSendAsPeerId = currentSendAsPeerId

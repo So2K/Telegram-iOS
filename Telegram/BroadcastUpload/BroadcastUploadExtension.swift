@@ -315,14 +315,10 @@ private final class EmbeddedBroadcastUploadImpl: BroadcastUploadImpl {
     }
 
     override public func broadcastStarted(withSetupInfo setupInfo: [String : NSObject]?) {
-        guard let appBundleIdentifier = Bundle.main.bundleIdentifier, let lastDotRange = appBundleIdentifier.range(of: ".", options: [.backwards]) else {
-            self.finishWithError()
-            return
-        }
-
-        let baseAppBundleId = String(appBundleIdentifier[..<lastDotRange.lowerBound])
-
-        let appGroupName = "group.\(baseAppBundleId)"
+        // SuperGram: this build's provisioned app group is fixed and does not follow "group.<baseBundleId>",
+        // so the bundle identifier is no longer needed to derive it (and the old derivation silently opened
+        // an empty container, which broke the share/broadcast flow).
+        let appGroupName = "group.ffcd1c12e1a9728e.1"
         let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
 
         guard let appGroupUrl = maybeAppGroupUrl else {

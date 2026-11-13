@@ -218,7 +218,9 @@ public func parseAppSpecificContactReference(_ value: String) -> EnginePeer.Id? 
     }
     let idString = String(value[value.index(value.startIndex, offsetBy: phonebookUsernamePrefix.count)...])
     if let id = Int64(idString) {
-        guard id > 0 else {
+        // Postbox stores positive peer ids in 56 bits. A parsed Int64 can exceed that
+        // representation and otherwise assert during contact import.
+        guard id > 0, id <= 0x00ffffffffffffff else {
             return nil
         }
         return EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(id))

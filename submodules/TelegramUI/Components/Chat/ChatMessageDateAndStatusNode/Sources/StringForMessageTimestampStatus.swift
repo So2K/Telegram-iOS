@@ -1,3 +1,4 @@
+import SGSimpleSettings
 import Foundation
 import TelegramCore
 import TelegramPresentationData
@@ -90,7 +91,11 @@ public func stringForMessageTimestampStatus(accountPeerId: EnginePeer.Id, messag
         timestamp = orignalDate
     }
     
-    var dateText = stringForMessageTimestamp(timestamp: timestamp, dateTimeFormat: dateTimeFormat)
+    // MARK: Swiftgram
+    // secondsInMessages: Swiftgram forces seconds in TextFormat's stringForMessageTimestamp for the whole app
+    // (schedule pickers, auto-night theme times, giveaways...). SuperGram applies it to message bubbles only.
+    let withSeconds = SGSimpleSettings.shared.secondsInMessages
+    var dateText = stringForMessageTimestamp(timestamp: timestamp, dateTimeFormat: dateTimeFormat, withSeconds: withSeconds)
     if timestamp == scheduleWhenOnlineTimestamp {
         dateText = "         "
     }
@@ -148,9 +153,9 @@ public func stringForMessageTimestampStatus(accountPeerId: EnginePeer.Id, messag
         } else {
             dayText = strings.Date_ChatDateHeaderYear(monthAtIndex(Int(timeinfo.tm_mon), strings: strings), "\(timeinfo.tm_mday)", "\(1900 + timeinfo.tm_year)").string
         }
-        dateText = strings.Message_FullDateFormat(dayText, stringForMessageTimestamp(timestamp: timestamp, dateTimeFormat: dateTimeFormat)).string
+        dateText = strings.Message_FullDateFormat(dayText, stringForMessageTimestamp(timestamp: timestamp, dateTimeFormat: dateTimeFormat, withSeconds: withSeconds)).string
     } else if let forwardInfo = message.forwardInfo, forwardInfo.flags.contains(.isImported) {
-        dateText = strings.Message_ImportedDateFormat(dateStringForDay(strings: strings, dateTimeFormat: dateTimeFormat, timestamp: forwardInfo.date), stringForMessageTimestamp(timestamp: forwardInfo.date, dateTimeFormat: dateTimeFormat), dateText).string
+        dateText = strings.Message_ImportedDateFormat(dateStringForDay(strings: strings, dateTimeFormat: dateTimeFormat, timestamp: forwardInfo.date), stringForMessageTimestamp(timestamp: forwardInfo.date, dateTimeFormat: dateTimeFormat, withSeconds: withSeconds), dateText).string
     }
     
     var authorTitle: String?

@@ -3,6 +3,8 @@
 set -e
 set -x
 
+export PATH="/usr/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 ARCH="$1"
 
 SOURCE_DIR="$2"

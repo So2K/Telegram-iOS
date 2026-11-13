@@ -114,6 +114,10 @@ swift_library(
         "//submodules/Utils/LokiRng",
         "//submodules/TelegramUI/Components/PeerNameTextComponent",
         "//submodules/TelegramUI/Components/AlertComponent",
+        # SuperGram (W2-GHOST): SGStoryWarnComponent / warnOnStoriesOpen
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
+        "//Swiftgram/SGStrings:SGStrings",
+        "//submodules/TelegramUI/Components/ButtonComponent",
     ],
     visibility = [
         "//visibility:public",

@@ -87,7 +87,7 @@ private final class InnerActionsContainerNode: ASDisplayNode {
         self.containerNode = ASDisplayNode()
         self.containerNode.clipsToBounds = true
         self.containerNode.cornerRadius = 14.0
-        self.containerNode.backgroundColor = presentationData.theme.contextMenu.backgroundColor
+        self.containerNode.backgroundColor = presentationData.theme.contextMenu.backgroundColor.withAlphaComponent(1.0)
 
         var requestUpdateAction: ((AnyHashable, ContextMenuActionItem) -> Void)?
         
@@ -304,7 +304,7 @@ private final class InnerActionsContainerNode: ASDisplayNode {
             }
         }
         
-        self.containerNode.backgroundColor = presentationData.theme.contextMenu.backgroundColor
+        self.containerNode.backgroundColor = presentationData.theme.contextMenu.backgroundColor.withAlphaComponent(1.0)
     }
     
     func actionNode(at point: CGPoint) -> ContextActionNodeProtocol? {

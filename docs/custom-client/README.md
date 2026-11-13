@@ -1,6 +1,17 @@
 # Custom Client Stabilization Track
 
-Last reviewed: 2026-07-02
+Last reviewed: 2026-10-10
+
+## Fix guides (аудит 2026-09-15)
+
+Разбор багов с готовыми инструкциями «какой файл/строка, что менять, как проверять» — начните с навигатора:
+
+- [`fix-guide.md`](fix-guide.md) — навигатор: топ-блокеры, порядок волн, чеклист ревью, связь с `SUPERGRAM_ULTRA_PLAN.md`.
+- [`fix-guide-media.md`](fix-guide-media.md) — overlay/мини-плеер (MEDIA-25/26/27, VIS-14), плеер, gallery, жесты, HLS, сеть.
+- [`fix-guide-voice.md`](fix-guide-voice.md) — локальная расшифровка голосовых и её настройки.
+- [`fix-guide-push.md`](fix-guide-push.md) — расширения, push, app group, bundle id, локальный fallback.
+- [`fix-guide-build.md`](fix-guide-build.md) — сборка, подпись, иконки, релиз-чеклист.
+- [`fix-guide-misc.md`](fix-guide-misc.md) — реклама, hideStories, override api_id, остатки бэклога.
 
 ## Baseline
 
@@ -30,11 +41,11 @@ Upstream `versions.json` currently requires:
 - Bazel `8.4.2`
 - macOS `26`
 
-This machine currently reports Xcode `16.2`. The upstream build system downloaded the pinned local Bazel binary to `build-input/bazel-8.4.2-darwin-arm64`, so Bazel itself is no longer the blocker.
+This machine uses Xcode `16.2` / SDK `18.2`, macOS `15.1`, and the pinned local Bazel binary at `build-input/bazel-8.4.2-darwin-arm64`. The original upstream toolchain check still fails; it does not describe the outcome of the current local compatibility build.
 
-A project-generation smoke test with `--overrideXcodeVersion`, `--disableProvisioningProfiles`, and `--disableExtensions` reached Bazel analysis, then failed because upstream Telegram now assigns Icon Composer `.icon` bundles that are only supported by Xcode 26 or later. Build, profiling, and device installation remain blocked until Xcode is upgraded to the required Xcode `26.2` toolchain.
+With the existing local compatibility changes and explicit Xcode override, complete device builds succeed. Main-only `10030` was signed, installed and checked on the phone; unsigned `10032` also compiled NotificationService. Main-only `10033`, `10034` and `10035` completed with matching app and five-framework build numbers. These are historical checkpoints, not the latest installed-version claim. No OS or Xcode upgrade was performed. The latest build, signing, installation, source-review coverage and phone checks are recorded separately in [the stability review](stability-review-2026-10-07.md).
 
-The connected iPhone is visible through `xcrun devicectl`; device visibility is not the active blocker. The missing pieces for a physical install are Xcode `26.2`, a local development configuration with personal `api_id` / `api_hash` / bundle id / team id, generated project files, and a signed app bundle.
+The remaining NotificationService signing blocker is a genuine compatible profile for `app.tomato7991.lime1486.NotificationService`, team `G6TLPRYW6Y`, and App Group `group.ffcd1c12e1a9728e.1`. A main-only IPA does not repair sender/preview processing in encrypted incoming push. Apple FoundationModels is unavailable in the installed SDK; generation is not entirely local. Gallery OS picture-in-picture remains disabled and has not been restored by this stability pass.
 
 Run:
 

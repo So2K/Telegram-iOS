@@ -134,7 +134,10 @@ public final class AuthorizationSequenceSplashController: ViewController {
         alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         if current != nil {
             alertController.addAction(UIAlertAction(title: "Clear", style: .destructive, handler: { [weak self] _ in
-                AuthorizationApiCredentialsStore.clear()
+                guard AuthorizationApiCredentialsStore.clear() else {
+                    self?.presentInvalidApiCredentials("Please try again.", title: "Couldn't Clear API Credentials")
+                    return
+                }
                 self?.apiCredentialsUpdated?(nil)
             }))
         }
@@ -143,7 +146,10 @@ public final class AuthorizationSequenceSplashController: ViewController {
             let apiHashText = alertController?.textFields?.dropFirst().first?.text ?? ""
             switch AuthorizationApiCredentialsStore.parse(apiIdText: apiIdText, apiHashText: apiHashText) {
             case let .success(credentials):
-                AuthorizationApiCredentialsStore.store(credentials)
+                guard AuthorizationApiCredentialsStore.store(credentials) else {
+                    self?.presentInvalidApiCredentials("Please try again.", title: "Couldn't Save API Credentials")
+                    return
+                }
                 self?.apiCredentialsUpdated?(credentials)
             case let .failure(error):
                 self?.presentInvalidApiCredentials(error.displayText)
@@ -152,8 +158,8 @@ public final class AuthorizationSequenceSplashController: ViewController {
         self.present(alertController, animated: true)
     }
 
-    private func presentInvalidApiCredentials(_ message: String) {
-        let alertController = UIAlertController(title: "Invalid API Credentials", message: message, preferredStyle: .alert)
+    private func presentInvalidApiCredentials(_ message: String, title: String = "Invalid API Credentials") {
+        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alertController.addAction(UIAlertAction(title: "OK", style: .default))
         self.present(alertController, animated: true)
     }

@@ -90,10 +90,14 @@ extension ChatControllerImpl {
                             break
                         }
                     }
+                    // SuperGram: the "saving content is restricted" tip is hidden when Copy/Save are unlocked for this
+                    // message (same gate as the context menu items); secret chats and secret media keep it.
+                    let sgHidesCopyProtectionTip = SuperGramContextMenuSettings.allowSaveProtectedContent && message.id.peerId.namespace != Namespaces.Peer.SecretChat && !message.containsSecretMedia
                     if self.presentationInterfaceState.myCopyProtectionEnabled && !isAction && !isAd {
                         tip = .messageCopyProtection(text: self.presentationData.strings.Conversation_CopyProtectionInfoPrivateYou)
                     } else if self.presentationInterfaceState.copyProtectionEnabled && !isAction && !isAd {
                         if case .scheduledMessages = self.subject {
+                        } else if sgHidesCopyProtectionTip {
                         } else {
                             if let peer = self.presentationInterfaceState.renderedPeer?.peer {
                                 if peer is TelegramUser {
@@ -331,7 +335,8 @@ extension ChatControllerImpl {
                     }
                 }
                 
-                let isSecret = self.presentationInterfaceState.copyProtectionEnabled || self.presentationInterfaceState.myCopyProtectionEnabled || self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat
+                // SuperGram: copy protection honours sgAllowScreenCaptureProtected; secret chats stay protected.
+                let isSecret = SuperGramContentProtection.shouldDisableScreenCapture(isSecret: self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat, isCopyProtected: self.presentationInterfaceState.copyProtectionEnabled || self.presentationInterfaceState.myCopyProtectionEnabled)
                 let controller = makeContextController(presentationData: self.presentationData, source: source, items: actionsSignal, recognizer: recognizer, gesture: gesture, disableScreenshots: isSecret, hideReactionPanelTail: hideReactionPanelTail)
                 controller.dismissed = { [weak self] in
                     self?.canReadHistory.set(true)

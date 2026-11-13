@@ -92,6 +92,14 @@ final class OverlayInstantVideoNode: OverlayMediaItemNode {
     override func dismiss() {
         self.close()
     }
+
+    override func setShouldAcquireContext(_ value: Bool) {
+        // SuperGram: once removed from the overlay controller the node must release the video content, otherwise a
+        // detached player keeps decoding (and playing sound) with nothing on screen. `true` has to be honoured as
+        // well: `addNode` calls this with `true`, so ignoring it left any node that had been removed and re-added
+        // (MediaManager.setOverlayVideoNode does exactly that) permanently detached — a blank, silent circle.
+        self.canAttachContent = value
+    }
     
     override func updateLayout(_ size: CGSize) {
         if size != self.validLayoutSize {

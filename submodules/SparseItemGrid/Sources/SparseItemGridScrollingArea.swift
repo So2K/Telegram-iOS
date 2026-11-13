@@ -896,7 +896,6 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
             super.reset()
 
             self.initialLocation = nil
-            self.initialLocation = nil
             
             self.beginDelayTimer?.invalidate()
             self.beginDelayTimer = nil
@@ -917,9 +916,8 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
                         self.initialLocation = location
                         
                         if shouldBeginValue.shouldDelay {
-                            self.state = .began
                             if self.beginDelayTimer == nil {
-                                self.beginDelayTimer = SwiftSignalKit.Timer(timeout: 0.2, repeat: false, completion: { [weak self] in
+                                self.beginDelayTimer = SwiftSignalKit.Timer(timeout: 0.16, repeat: false, completion: { [weak self] in
                                     guard let self else {
                                         return
                                     }
@@ -927,6 +925,7 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
                                     self.beginDelayTimer = nil
                                     
                                     if self.initialLocation != nil {
+                                        self.state = .began
                                         self.began()
                                     }
                                 }, queue: .mainQueue())
@@ -949,6 +948,8 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
             super.touchesEnded(touches, with: event)
 
             self.initialLocation = nil
+            self.beginDelayTimer?.invalidate()
+            self.beginDelayTimer = nil
 
             if self.state == .began || self.state == .changed {
                 self.ended()
@@ -960,6 +961,8 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
             super.touchesCancelled(touches, with: event)
 
             self.initialLocation = nil
+            self.beginDelayTimer?.invalidate()
+            self.beginDelayTimer = nil
 
             if self.state == .began || self.state == .changed {
                 self.ended()
@@ -974,11 +977,10 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
                 let offset = location.y - initialLocation.y
                 
                 if self.beginDelayTimer != nil {
-                    if abs(offset) > 16.0 {
-                        self.ended()
+                    if abs(offset) > 8.0 {
+                        self.beginDelayTimer?.invalidate()
+                        self.beginDelayTimer = nil
                         self.state = .failed
-                    } else {
-                        self.initialLocation = location
                     }
                 } else if (self.state == .began || self.state == .changed) {
                     self.state = .changed
@@ -1072,6 +1074,8 @@ public final class SparseItemGridScrollingArea: ASDisplayNode {
                     strongSelf.beganAtDateIndicator = false
                 }
 
+                // SuperGram: hold-to-grab only while the grid is still decelerating (an accidental touch during a fling);
+                // an idle scroller can be grabbed and dragged immediately.
                 return ShouldBegin(shouldDelay: strongSelf.isDecelerating?() ?? false)
             },
             began: { [weak self] in

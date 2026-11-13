@@ -1,4 +1,5 @@
 import Foundation
+import SGSimpleSettings
 import UIKit
 import AsyncDisplayKit
 import Display
@@ -180,7 +181,11 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
     private let sharedOpenStoryDisposable = MetaDisposable()
     private var recentAppsDisposable: Disposable?
     private var refreshedGlobalPostSearchStateDisposable: Disposable?
-    
+    // MARK: Swiftgram
+    // SuperGram (W1AUD-11): drives whether the Global Posts tab is offered at all — see `defaultAvailableSearchPanes`.
+    private var sgIsPremium: Bool = false
+    private var sgIsPremiumDisposable: Disposable?
+
     public init(context: AccountContext, animationCache: AnimationCache, animationRenderer: MultiAnimationRenderer, updatedPresentationData: (initial: PresentationData, signal: Signal<PresentationData, NoError>)? = nil, filter: ChatListNodePeersFilter, requestPeerType: [ReplyMarkupButtonRequestPeerType]?, location: ChatListControllerLocation, folder: (Int32, String)?, displaySearchFilters: Bool, hasDownloads: Bool, initialFilter: ChatListSearchFilter = .chats, openPeer originalOpenPeer: @escaping (EnginePeer, EnginePeer?, Int64?, Bool) -> Void, openDisabledPeer: @escaping (EnginePeer, Int64?, ChatListDisabledPeerReason) -> Void, openRecentPeerOptions: @escaping (EnginePeer) -> Void, openMessage originalOpenMessage: @escaping (EnginePeer, Int64?, EngineMessage.Id, Bool) -> Void, addContact: ((String) -> Void)?, peerContextAction: ((EnginePeer, ChatListSearchContextActionSource, ASDisplayNode, ContextGesture?, CGPoint?) -> Void)?, present: @escaping (ViewController, Any?) -> Void, presentInGlobalOverlay: @escaping (ViewController, Any?) -> Void, navigationController: NavigationController?, parentController: @escaping () -> ViewController?) {
         var initialFilter = initialFilter
         if case .chats = initialFilter, case .forum = location {
@@ -578,11 +583,36 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         
         self.recentAppsDisposable = context.engine.peers.managedUpdatedRecentApps().startStrict()
         self.refreshedGlobalPostSearchStateDisposable = context.engine.messages.refreshGlobalPostSearchState().startStrict()
-        
+
+        // MARK: Swiftgram
+        // SuperGram (W1AUD-11): same source as `ChatListSearchListPaneNode.isPremium`, so the tab list and the pane
+        // agree. Cached locally because it is read on every filter-bar and pane-container layout pass. Seeded from
+        // the context's already-resolved value so the first layout is correct and the tab does not pop in or out.
+        self.sgIsPremium = context.isPremium
+        self.sgIsPremiumDisposable = (context.engine.data.subscribe(
+            TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)
+        )
+        |> map { peer -> Bool in
+            guard case let .user(user) = peer else {
+                return false
+            }
+            return user.isPremium
+        }
+        |> distinctUntilChanged
+        |> deliverOnMainQueue).startStrict(next: { [weak self] isPremium in
+            guard let self, self.sgIsPremium != isPremium else {
+                return
+            }
+            self.sgIsPremium = isPremium
+            if let (layout, navigationBarHeight) = self.validLayout {
+                self.containerLayoutUpdated(layout, navigationBarHeight: navigationBarHeight, transition: .immediate)
+            }
+        })
+
         self._ready.set(self.paneContainerNode.isReady.get()
         |> map { _ in Void() })
     }
-    
+
     deinit {
         self.activeActionDisposable.dispose()
         self.presentationDataDisposable?.dispose()
@@ -591,7 +621,8 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         self.sharedOpenStoryDisposable.dispose()
         self.recentAppsDisposable?.dispose()
         self.refreshedGlobalPostSearchStateDisposable?.dispose()
-        
+        self.sgIsPremiumDisposable?.dispose() // MARK: Swiftgram
+
         self.copyProtectionTooltipController?.dismiss()
     }
     
@@ -813,7 +844,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if let suggestedFilters = self.suggestedFilters, !suggestedFilters.isEmpty {
             filters = suggestedFilters
         } else {
-            filters = defaultAvailableSearchPanes(isForum: isForum, hasDownloads: self.hasDownloads, hasPublicPosts: self.showPublicPostsTab).map(\.filter)
+            filters = defaultAvailableSearchPanes(isForum: isForum, hasDownloads: self.hasDownloads, hasPublicPosts: self.showPublicPostsTab, hasGlobalPosts: self.sgIsPremium).map(\.filter)
         }
         
         var filtersInsets = UIEdgeInsets(top: 0.0, left: 12.0, bottom: layout.insets(options: [.input]).bottom + 34.0, right: 12.0)
@@ -853,7 +884,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
         if self.stateValue.selectedMessageIds != nil {
             filtersInsets.bottom += 48.0
         }
-        
+
+        // MARK: Swiftgram
+        // TODO(swiftgram): too high if used from top bar
+        // SuperGram (W2A-10): the +16 compensates for the shorter tab bar that "Show tab names" off produces
+        // (56 -> 40 pt, see TabBarComponent). With `hideTabBar` there is no tab bar under the filter row at all, so
+        // the compensation would lift it off the bottom of the screen for no reason.
+        if !SGSimpleSettings.shared.showTabNames && !SGSimpleSettings.shared.hideTabBar { filtersInsets.bottom += 16.0 }
+
         transition.updateFrame(node: self.filterContainerNode, frame: CGRect(origin: CGPoint(x: layout.safeInsets.left + filtersInsets.left, y: layout.size.height - filtersInsets.bottom - 40.0), size: CGSize(width: layout.size.width - (layout.safeInsets.left + filtersInsets.left) * 2.0, height: 40.0)))
         self.updateFilterContainerNode(layout: layout, transition: transition)
         
@@ -880,7 +918,9 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
                 selectionPanelNode = current
             } else {
                 wasAdded = true
-                selectionPanelNode = ChatListSearchMessageSelectionPanelNode(context: self.context, deleteMessages: { [weak self] in
+                selectionPanelNode = ChatListSearchMessageSelectionPanelNode(context: self.context, getSelectedMessageIds: { [weak self] in
+                    return self?.stateValue.selectedMessageIds
+                }, deleteMessages: { [weak self] in
                     guard let strongSelf = self else {
                         return
                     }
@@ -1034,7 +1074,7 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
             isForum = true
         }
         if self.displaySearchFilters {
-            availablePanes = defaultAvailableSearchPanes(isForum: isForum, hasDownloads: self.hasDownloads, hasPublicPosts: self.hasPublicPostsTab)
+            availablePanes = defaultAvailableSearchPanes(isForum: isForum, hasDownloads: self.hasDownloads, hasPublicPosts: self.hasPublicPostsTab, hasGlobalPosts: self.sgIsPremium)
         } else {
             availablePanes = isForum ? [.topics] : [.chats]
         }
@@ -1112,16 +1152,14 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
             
             let items = combineLatest(queue: .mainQueue(),
                 context.sharedContext.chatAvailableMessageActions(engine: context.engine, accountPeerId: context.account.peerId, messageIds: [message.id], messages: [message.id: message], peers: [:]),
-                isCachedValue |> take(1),
-                context.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId))
+                isCachedValue |> take(1)
             )
             |> deliverOnMainQueue
-            |> map { [weak self] actions, isCachedValue, accountPeer -> [ContextMenuItem] in
+            |> map { [weak self] actions, isCachedValue -> [ContextMenuItem] in
                 guard let strongSelf = self else {
                     return []
                 }
-                let isPremium = accountPeer?.isPremium ?? false
-                
+
                 var items: [ContextMenuItem] = []
                 
                 if isCachedValue {
@@ -1138,31 +1176,8 @@ public final class ChatListSearchContainerNode: SearchDisplayControllerContentNo
                         })
                     })))
                 } else {
-                    if !isPremium, let size = downloadResource?.size, size >= 150 * 1024 * 1024 {
-                        items.append(.action(ContextMenuActionItem(text: strongSelf.presentationData.strings.DownloadList_IncreaseSpeed, textColor: .primary, icon: { theme in
-                            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Speed"), color: theme.contextMenu.primaryColor)
-                        }, action: { _, f in
-                            guard let strongSelf = self else {
-                                f(.default)
-                                return
-                            }
-                            
-                            let context = strongSelf.context
-                            var replaceImpl: ((ViewController) -> Void)?
-                            let controller = PremiumDemoScreen(context: context, subject: .fasterDownload, action: {
-                                let controller = PremiumIntroScreen(context: context, source: .fasterDownload)
-                                replaceImpl?(controller)
-                            })
-                            replaceImpl = { [weak controller] c in
-                                controller?.replace(with: c)
-                            }
-                            strongSelf.navigationController?.pushViewController(controller, animated: false, completion: {})
-                                                                                    
-                            f(.default)
-                        })))
-                        items.append(.separator)
-                    }
-                    
+                    // SuperGram: no "Increase Speed" Premium upsell item in the downloads list.
+
                     if let downloadResource = downloadResource, !downloadResource.isFirstInList {
                         items.append(.action(ContextMenuActionItem(text: strongSelf.presentationData.strings.DownloadList_RaisePriority, textColor: .primary, icon: { theme in
                             return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Raise"), color: theme.contextMenu.primaryColor)

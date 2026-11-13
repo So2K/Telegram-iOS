@@ -635,6 +635,10 @@ extension EngineChatList.AdditionalItem.PromoInfo {
 
 extension EngineChatList.AdditionalItem {
     convenience init?(_ entry: ChatListAdditionalItemEntry) {
+        // SuperGram: promo/PSA chats are never surfaced, including rows persisted before the first promo fetch.
+        guard telegramSponsoredContentEnabled else {
+            return nil
+        }
         guard let item = EngineChatList.Item(entry.entry, accountPeerId: nil, isPremium: false, displayAsTopicList: false) else {
             return nil
         }

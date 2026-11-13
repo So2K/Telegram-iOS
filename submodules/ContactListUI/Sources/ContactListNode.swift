@@ -462,9 +462,8 @@ private func contactListNodeEntries(
             let text = strings.Contacts_PermissionsText
             switch authorizationStatus {
                 case .limited:
-                    if displaySortOptions {
-                        entries.append(.permissionLimited(theme, strings))
-                    }
+                    // SuperGram: no "You have limited Telegram from accessing all of your contacts — Manage" banner
+                    break
                 case .denied:
                     entries.append(.permissionInfo(theme, title, text, suppressed))
                     entries.append(.permissionEnable(theme, strings.Permissions_ContactsAllowInSettings_v0))

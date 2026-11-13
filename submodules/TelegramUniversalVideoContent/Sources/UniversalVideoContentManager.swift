@@ -35,7 +35,10 @@ private final class UniversalVideoContentHolder {
     var isNativePictureInPictureActiveValue: Bool = false
     
     var playbackCompletedIndex: Int?
-    
+
+    // SuperGram (GOAL-STREAMING): see `upgradeFetchPolicyIfNeeded` in the manager.
+    var didUpgradeFetchPolicy: Bool = false
+
     init(content: UniversalVideoContent, contentNode: UniversalVideoContentNode & ASDisplayNode, statusUpdated: @escaping (MediaPlayerStatus?) -> Void, bufferingStatusUpdated: @escaping ((RangeSet<Int64>, Int64)?) -> Void, playbackCompleted: @escaping () -> Void, isNativePictureInPictureActiveUpdated: @escaping (Bool) -> Void) {
         self.content = content
         self.contentNode = contentNode
@@ -166,6 +169,7 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
         let holder: UniversalVideoContentHolder
         if let current = self.holders[content.id] {
             holder = current
+            self.upgradeFetchPolicyIfNeeded(holder: current, attachedContent: content)
         } else {
             let foundHolder: UniversalVideoContentHolder? = nil
             for (_, current) in self.holders {
@@ -220,6 +224,33 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
         return (holder.content.id, id)
     }
     
+    /// SuperGram (GOAL-STREAMING): a holder is looked up by `content.id` alone and the node inside it is built once,
+    /// from whichever content attached first. The chat bubble and the gallery build the *same*
+    /// `NativeVideoContentId.message(stableId, fileId)`, and the bubble gets there first whenever the video is
+    /// autoplaying inline — so opening that video in the gallery silently inherits the bubble's
+    /// `fetchAutomatically: false`. That is the policy `FFMpegMediaFrameSourceContext` reads to decide between the
+    /// bounded 8 MB playhead window (right for an inline preview) and the plain background download that every
+    /// gallery/overlay player is supposed to have. The result was a gallery video that streamed but whose download
+    /// never finished, and which had nothing but the window to fall back on when a ranged read stalled.
+    ///
+    /// The content node cannot be rebuilt (that is what keeps "open the playing bubble in the gallery" seamless),
+    /// but it can be told to start the full download — `fetchControl(.fetch)` is exactly that, and it is additive:
+    /// the playhead window and everything already on disk are untouched. Done once per holder, and only for the
+    /// case it describes, so nothing else starts a download it did not ask for.
+    private func upgradeFetchPolicyIfNeeded(holder: UniversalVideoContentHolder, attachedContent: UniversalVideoContent) {
+        if holder.didUpgradeFetchPolicy {
+            return
+        }
+        guard let attachedContent = attachedContent as? NativeVideoContent, attachedContent.fetchAutomatically else {
+            return
+        }
+        guard let existingContent = holder.content as? NativeVideoContent, !existingContent.fetchAutomatically else {
+            return
+        }
+        holder.didUpgradeFetchPolicy = true
+        holder.contentNode.fetchControl(.fetch)
+    }
+
     public func detachUniversalVideoContent(id: AnyHashable, index: Int32) {
         assert(Queue.mainQueue().isCurrent())
         
@@ -260,7 +291,7 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
     public func removePlaybackCompleted(id: AnyHashable, index: Int) {
         if let current = self.holderCallbacks[id] {
             current.playbackCompleted.remove(index)
-            if current.playbackCompleted.isEmpty {
+            if current.isEmpty {
                 self.holderCallbacks.removeValue(forKey: id)
             }
         }
@@ -290,7 +321,7 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
                 Queue.mainQueue().async {
                     if let current = self.holderCallbacks[content.id] {
                         current.status.remove(index)
-                        if current.playbackCompleted.isEmpty {
+                        if current.isEmpty {
                             self.holderCallbacks.removeValue(forKey: content.id)
                         }
                     }
@@ -322,8 +353,8 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
             return ActionDisposable {
                 Queue.mainQueue().async {
                     if let current = self.holderCallbacks[content.id] {
-                        current.status.remove(index)
-                        if current.playbackCompleted.isEmpty {
+                        current.bufferingStatus.remove(index)
+                        if current.isEmpty {
                             self.holderCallbacks.removeValue(forKey: content.id)
                         }
                     }
@@ -355,8 +386,8 @@ public final class UniversalVideoManagerImpl: UniversalVideoManager {
             return ActionDisposable {
                 Queue.mainQueue().async {
                     if let current = self.holderCallbacks[content.id] {
-                        current.status.remove(index)
-                        if current.playbackCompleted.isEmpty {
+                        current.isNativePictureInPictureActive.remove(index)
+                        if current.isEmpty {
                             self.holderCallbacks.removeValue(forKey: content.id)
                         }
                     }

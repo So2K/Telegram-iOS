@@ -4,8 +4,9 @@ import TelegramCore
 import TelegramUIPreferences
 import AccountContext
 
-public let maximumNumberOfAccounts = 3
-public let maximumPremiumNumberOfAccounts = 4
+// SuperGram: the account limit is client-side; allow 10 accounts for everyone
+public let maximumNumberOfAccounts = 10
+public let maximumPremiumNumberOfAccounts = 10
 
 public func activeAccountsAndPeers(context: AccountContext, includePrimary: Bool = false) -> Signal<((AccountContext, EnginePeer)?, [(AccountContext, EnginePeer, Int32)]), NoError> {
     let sharedContext = context.sharedContext

@@ -144,6 +144,10 @@ func chatHistoryEntriesForView(
     loop: for entry in view.entries {
         var message = entry.message
         var isRead = entry.isRead
+
+        if message.adAttribute != nil {
+            continue
+        }
         
         var pinToTop = false
         if message.stableId == pinToTopStableId {
@@ -678,47 +682,6 @@ func chatHistoryEntriesForView(
             }
         }
         
-        if !dynamicAdMessages.isEmpty {
-            assert(entries.sorted() == entries)
-            for message in dynamicAdMessages {
-                entries.append(.MessageEntry(message, presentationData, false, nil, .none, ChatMessageEntryAttributes(rank: nil, isContact: false, contentTypeHint: .generic, updatingMedia: nil, isPlaying: false, isCentered: false, authorStoryStats: nil, displayContinueThreadFooter: false, pinToTop: false)))
-            }
-            entries.sort()
-        }
-
-        if view.laterId == nil && !view.isLoading {
-            if !entries.isEmpty, case let .MessageEntry(lastMessage, _, _, _, _, _) = entries[entries.count - 1], let message = adMessage {
-                var nextAdMessageId: Int32 = 10000
-                let updatedMessage = Message(
-                    stableId: ChatHistoryListNodeImpl.fixedAdMessageStableId,
-                    stableVersion: message.stableVersion,
-                    id: MessageId(peerId: message.id.peerId, namespace: message.id.namespace, id: nextAdMessageId),
-                    globallyUniqueId: nil,
-                    groupingKey: nil,
-                    groupInfo: nil,
-                    threadId: nil,
-                    timestamp: lastMessage.timestamp,
-                    flags: message.flags,
-                    tags: message.tags,
-                    globalTags: message.globalTags,
-                    localTags: message.localTags,
-                    customTags: message.customTags,
-                    forwardInfo: message.forwardInfo,
-                    author: message.author,
-                    text: /*"\(message.adAttribute!.opaqueId.hashValue)" + */message.text,
-                    attributes: message.attributes,
-                    media: message.media,
-                    peers: message.peers,
-                    associatedMessages: message.associatedMessages,
-                    associatedMessageIds: message.associatedMessageIds,
-                    associatedMedia: message.associatedMedia,
-                    associatedThreadInfo: message.associatedThreadInfo,
-                    associatedStories: message.associatedStories
-                )
-                nextAdMessageId += 1
-                entries.append(.MessageEntry(updatedMessage, presentationData, false, nil, .none, ChatMessageEntryAttributes(rank: nil, isContact: false, contentTypeHint: .generic, updatingMedia: nil, isPlaying: false, isCentered: false, authorStoryStats: nil, displayContinueThreadFooter: false, pinToTop: false)))
-            }
-        }
     }
     if addBotForumHeader {
         if let subject, case .pinnedMessages = subject {

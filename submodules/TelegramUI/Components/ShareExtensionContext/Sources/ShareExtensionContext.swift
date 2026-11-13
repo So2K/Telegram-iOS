@@ -533,7 +533,9 @@ public class ShareRootControllerImpl {
                                 switch content[0] {
                                     case let .contact(data):
                                         let controller = deviceContactInfoController(context: context, environment: environment, subject: .filter(peer: nil, contactId: nil, contactData: data, completion: { peer, contactData in
-                                            let phone = contactData.basicData.phoneNumbers[0].value
+                                            // SuperGram: contacts without a phone number (or with an empty list) must not
+                                            // crash the share flow by force-indexing (#2134).
+                                            let phone = contactData.basicData.phoneNumbers.first?.value ?? ""
                                             if let vCardData = contactData.serializedVCard() {
                                                 subscriber.putNext([.media(.media(.standalone(media: TelegramMediaContact(firstName: contactData.basicData.firstName, lastName: contactData.basicData.lastName, phoneNumber: phone, peerId: nil, vCardData: vCardData))))])
                                             }

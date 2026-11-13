@@ -146,6 +146,22 @@ public final class HLSQualitySet {
     }
 }
 
+/// SuperGram: `UniversalVideoManagerImpl` looks a content holder up by `content.id` alone and only creates a node on
+/// a miss, so two contents sharing an id are silently interchangeable. `HLSVideoContent` and `NativeVideoContent`
+/// used to build their `id` from the very same `NativeVideoContentId`, which meant that whenever the chat bubble and
+/// the gallery disagreed about the backend for one file (they can: `sgPreferDownloadedOriginal` is evaluated
+/// separately on each side) the second attacher was handed the first one's node. The gallery then ran all of its
+/// `item.content is HLSVideoContent` branches — scrubber, initial buffering, the quality/save menu — against a player
+/// of the other kind. Wrapping the HLS id keeps the two namespaces apart; contents of the same kind still share ids
+/// and are still reused, which is what keeps "open the playing bubble in the gallery" seamless.
+public struct HLSVideoContentId: Hashable {
+    public let nativeId: NativeVideoContentId
+
+    public init(nativeId: NativeVideoContentId) {
+        self.nativeId = nativeId
+    }
+}
+
 public final class HLSVideoContent: UniversalVideoContent {
     public static func minimizedHLSQuality(file: FileMediaReference, codecConfiguration: HLSCodecConfiguration) -> (playlist: FileMediaReference, file: FileMediaReference)? {
         guard let qualitySet = HLSQualitySet(baseFile: file, codecConfiguration: codecConfiguration) else {
@@ -286,7 +302,8 @@ public final class HLSVideoContent: UniversalVideoContent {
     let codecConfiguration: HLSCodecConfiguration
     
     public init(id: NativeVideoContentId, userLocation: MediaResourceUserLocation, fileReference: FileMediaReference, streamVideo: Bool = false, loopVideo: Bool = false, enableSound: Bool = true, baseRate: Double = 1.0, fetchAutomatically: Bool = true, onlyFullSizeThumbnail: Bool = false, useLargeThumbnail: Bool = false, autoFetchFullSizeThumbnail: Bool = false, codecConfiguration: HLSCodecConfiguration) {
-        self.id = id
+        // SuperGram: namespaced so an HLS holder is never handed out for a NativeVideoContent attach (see HLSVideoContentId).
+        self.id = AnyHashable(HLSVideoContentId(nativeId: id))
         self.userLocation = userLocation
         self.nativeId = id
         self.fileReference = fileReference

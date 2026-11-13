@@ -1,3 +1,6 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+
 import Foundation
 import UIKit
 import AsyncDisplayKit
@@ -68,6 +71,8 @@ import TextProcessingScreen
 import Pasteboard
 import UndoUI
 import BrowserUI
+
+private let superGramVideoUnmuteTipEnabled = false
 
 final class VideoNavigationControllerDropContentItem: NavigationControllerDropContentItem {
     let itemNode: OverlayMediaItemNode
@@ -751,16 +756,14 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         
         self.controllerInteraction.chatIsRotated = historyNodeRotated
         
-        var displayAdPeer: PeerId?
+        let displayAdPeer: PeerId? = nil
         var tag: MessageTags?
         if !isChatPreview {
             switch subject {
             case let .tag(tagValue):
                 tag = tagValue
             case .none, .message:
-                if case let .peer(peerId) = chatLocation {
-                    displayAdPeer = peerId
-                }
+                break
             default:
                 break
             }
@@ -1174,7 +1177,8 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             }
         }
         
-        let isSecret = self.chatPresentationInterfaceState.copyProtectionEnabled || self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat || self.chatLocation.peerId?.isVerificationCodes == true
+        // SuperGram: copy protection honours sgAllowScreenCaptureProtected; secret chats and login codes stay protected.
+        let isSecret = sgShouldDisableScreenCapture(isSecret: self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat || self.chatLocation.peerId?.isVerificationCodes == true, isCopyProtected: self.chatPresentationInterfaceState.copyProtectionEnabled)
         if self.historyNodeContainer.isSecret != isSecret {
             #if DEBUG
             self.historyNodeContainer.isSecret = false
@@ -1410,7 +1414,10 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 footerPanels.append(panel)
             }
         }
-        if self.chatPresentationInterfaceState.search == nil, let mediaPlayback = self.controller?.globalControlPanelsContextState?.mediaPlayback {
+        if self.chatPresentationInterfaceState.search == nil, let mediaPlayback = self.controller?.globalControlPanelsContextState?.mediaPlayback, self.isInFocus {
+            // SuperGram: only the on-screen chat may host the global media playback header. Both the chat
+            // and the chat list mount the same panel from the same global state, so without this check the
+            // bar was drawn twice (once per screen) and stacked with the chat list / folder tabs behind it.
             if let playlistLocation = mediaPlayback.playlistLocation as? PeerMessagesPlaylistLocation, case let .custom(_, _, _, _, hidePanel) = playlistLocation, hidePanel {
                 
             } else {
@@ -1604,7 +1611,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                             return
                         }
                         self.controllerInteraction.openMessageFeeException()
-                    },
+                    }
                 )))
             )
         }
@@ -1783,8 +1790,28 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         var dismissedInputContextPanelNode: ChatInputContextPanelNode?
         var dismissedOverlayContextPanelNode: ChatInputContextPanelNode?
         
-        let inputPanelNodes = inputPanelForChatPresentationIntefaceState(self.chatPresentationInterfaceState, context: self.context, currentPanel: self.inputPanelNode, currentSecondaryPanel: self.secondaryInputPanelNode, textInputPanelNode: self.textInputPanelNode, chatControllerInteraction: self.controllerInteraction, interfaceInteraction: self.interfaceInteraction)
-        
+        // MARK: Swiftgram
+        var inputPanelNodes = inputPanelForChatPresentationIntefaceState(self.chatPresentationInterfaceState, context: self.context, currentPanel: self.inputPanelNode, currentSecondaryPanel: self.secondaryInputPanelNode, textInputPanelNode: self.textInputPanelNode, chatControllerInteraction: self.controllerInteraction, interfaceInteraction: self.interfaceInteraction)
+        // SuperGram: true when the channel Mute/Gift/Direct bottom panel was dropped — the search and scroll buttons
+        // then move to the top right corner, under the avatar.
+        var superGramChannelPanelHidden = false
+        if SGSimpleSettings.shared.hideChannelBottomButton {
+            // We still need the panel for messages multi-select or search. Likely can break in future.
+            if self.chatPresentationInterfaceState.interfaceState.selectionState != nil || self.chatPresentationInterfaceState.search != nil {
+                self.inputPanelBackgroundNode.isHidden = false
+            } else if inputPanelNodes.primary != nil || inputPanelNodes.secondary != nil {
+                // So there should be some panel, but the user doesn't want it. Check whether our rule hides it.
+                inputPanelNodes = inputPanelForChatPresentationIntefaceState(self.chatPresentationInterfaceState, context: self.context, currentPanel: self.inputPanelNode, currentSecondaryPanel: self.secondaryInputPanelNode, textInputPanelNode: self.textInputPanelNode, chatControllerInteraction: self.controllerInteraction, interfaceInteraction: self.interfaceInteraction, forceHideChannelButton: true)
+                if inputPanelNodes.primary == nil && inputPanelNodes.secondary == nil {
+                    // Eligible to hide the panel: remove the safe-area fill as well.
+                    self.inputPanelBackgroundNode.isHidden = true
+                    superGramChannelPanelHidden = true
+                } else {
+                    self.inputPanelBackgroundNode.isHidden = false
+                }
+            }
+        }
+
         let inputPanelBottomInset = max(insets.bottom, inputPanelBottomInsetTerm)
         
         if let inputPanelNode = inputPanelNodes.primary, !previewing {
@@ -2636,6 +2663,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         }
         self.historyNode.scrollEnabled = !(self.isScrollingLockedAtTop || self.chatPresentationInterfaceState.focusedPollAddOptionMessageId != nil)
         
+        self.navigateButtons.isTopAnchored = superGramChannelPanelHidden && !previewing
         let navigateButtonsSize = self.navigateButtons.updateLayout(transition: transition)
         var navigateButtonsFrame = CGRect(origin: CGPoint(x: layout.size.width - layout.safeInsets.right - navigateButtonsSize.width - 8.0, y: layout.size.height - containerInsets.bottom - inputPanelsHeight - navigateButtonsSize.height - 20.0), size: navigateButtonsSize)
         if containerInsets.bottom <= 32.0 {
@@ -2681,7 +2709,13 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         
         if let headerPanelsComponentView = self.headerPanelsView?.view, let headerPanelsSize {
             sidePanelTopInset += 8.0
-            let headerPanelsFrame = CGRect(origin: CGPoint(x: layout.safeInsets.left, y: sidePanelTopInset), size: headerPanelsSize)
+            // SuperGram: keep the header panels (media playback bar and friends) out of the band occupied by
+            // the pinned message / title accessory panel, so that the two can never be stacked on screen.
+            var headerPanelsTopInset = sidePanelTopInset
+            if let titleAccessoryPanelNode = self.currentTitleAccessoryPanelNode, titleAccessoryPanelNode.bounds.height > 0.0 {
+                headerPanelsTopInset = max(headerPanelsTopInset, insets.top + titleAccessoryPanelNode.bounds.height + 4.0)
+            }
+            let headerPanelsFrame = CGRect(origin: CGPoint(x: layout.safeInsets.left, y: headerPanelsTopInset), size: headerPanelsSize)
             var headerPanelsTransition = ComponentTransition(transition)
             if headerPanelsComponentView.superview == nil {
                 headerPanelsTransition.animateAlpha(view: headerPanelsComponentView, from: 0.0, to: 1.0)
@@ -2747,6 +2781,17 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         
         self.inputPanelBottomBackgroundSeparatorBaseOffset = intrinsicInputPanelBackgroundNodeSize.height
         
+        if self.navigateButtons.isTopAnchored {
+            // Centered under the avatar (44 pt wide, 16 pt from the edge), below the pinned / translate / player panels
+            var topButtonsY = insets.top + 8.0
+            if let titleAccessoryPanelNode = self.currentTitleAccessoryPanelNode, titleAccessoryPanelNode.bounds.height > 0.0 {
+                topButtonsY = max(topButtonsY, insets.top + titleAccessoryPanelNode.bounds.height + 8.0)
+            }
+            if let headerPanelsComponentView = self.headerPanelsView?.view, headerPanelsComponentView.superview != nil, headerPanelsSize != nil {
+                topButtonsY = max(topButtonsY, headerPanelsComponentView.frame.maxY + 8.0)
+            }
+            apparentNavigateButtonsFrame = CGRect(origin: CGPoint(x: layout.size.width - layout.safeInsets.right - 16.0 - 22.0 - navigateButtonsSize.width * 0.5, y: topButtonsY), size: navigateButtonsSize)
+        }
         transition.updateFrame(node: self.navigateButtons, frame: apparentNavigateButtonsFrame)
         self.navigateButtons.update(rect: apparentNavigateButtonsFrame, within: layout.size, transition: transition)
         
@@ -5402,6 +5447,10 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         self.historyNode.view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(self.tapGesture(_:))))
         
         self.displayVideoUnmuteTipDisposable?.dispose()
+        guard superGramVideoUnmuteTipEnabled else {
+            self.interfaceInteraction?.displayVideoUnmuteTip(nil)
+            return
+        }
         self.displayVideoUnmuteTipDisposable = (combineLatest(queue: Queue.mainQueue(), ApplicationSpecificNotice.getVolumeButtonToUnmute(accountManager: self.context.sharedContext.accountManager), self.historyNode.hasVisiblePlayableItemNodes, self.historyNode.isInteractivelyScrolling)
         |> mapToSignal { notice, hasVisiblePlayableItemNodes, isInteractivelyScrolling -> Signal<Bool, NoError> in
             let display = !notice && hasVisiblePlayableItemNodes && !isInteractivelyScrolling

@@ -113,9 +113,9 @@ private final class BadgeComponent: Component {
                     UIColor(rgb: 0xffffff, alpha: 0.0).cgColor,
                 ]
                 var locations: [CGFloat] = [0.0, 0.24, 0.76, 1.0]
-                let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations)!
-
-                context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                if let gradient = CGGradient(colorsSpace: deviceColorSpace, colors: colorsArray as CFArray, locations: &locations) {
+                    context.drawLinearGradient(gradient, start: CGPoint(x: 0.0, y: 0.0), end: CGPoint(x: 0.0, y: size.height), options: CGGradientDrawingOptions())
+                }
             })
             
             self.isUserInteractionEnabled = false
@@ -1250,9 +1250,9 @@ private final class ChatSendStarsScreenComponent: Component {
             let force = springForce - frictionForce
             
             // velocity = current velocity + force * time / mass
-            self.badgeAngularSpeed = self.badgeAngularSpeed + force * time
+            self.badgeAngularSpeed += force * time
             // position = current position + velocity * time
-            badgeAngle = badgeAngle + self.badgeAngularSpeed * time
+            badgeAngle += self.badgeAngularSpeed * time
             badgeAngle = badgeAngle.isNaN ? 0.0 : badgeAngle
             
             let epsilon: CGFloat = 0.01
@@ -3102,7 +3102,7 @@ public class ChatSendStarsScreen: ViewControllerComponentContainer {
         return combineLatest(
             context.engine.data.get(
                 TelegramEngine.EngineData.Item.Peer.Peer(id: peerId),
-                TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId),
+                TelegramEngine.EngineData.Item.Peer.Peer(id: context.account.peerId)
             ),
             balance
         )

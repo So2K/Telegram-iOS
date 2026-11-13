@@ -175,6 +175,18 @@ private func loadImage(data: Data) -> UIImage? {
                 return nil
             }
 
+            // SuperGram: validate the geometry before handing the payload to CoreGraphics. There is no writer
+            // for the legacy 0xcaf1 format left in the tree, so a truncated or malformed cached file can
+            // describe more rows/bytes than it carries; drawing such an image reads past the provider.
+            // Mirrors the size check the 0xcaf2 branch below performs.
+            guard width > 0, height > 0 else {
+                return nil
+            }
+            let bytesPerPixel = DeviceGraphicsContextSettings.shared.bitsPerPixel / 8
+            guard Int(bytesPerRow) >= Int(width) * bytesPerPixel, Int(bytesPerRow) * Int(height) <= imageData.count else {
+                return nil
+            }
+
             if let image = CGImage(
                 width: Int(width),
                 height: Int(height),

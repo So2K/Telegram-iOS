@@ -595,7 +595,8 @@ private final class CameraContext {
         
         let orientation = self.simplePreviewView?.videoPreviewLayer.connection?.videoOrientation ?? .portrait
         if self.initialConfiguration.isRoundVideo {
-            return mainDeviceContext.output.startRecording(mode: .roundVideo, orientation: DeviceModel.current.isIpad ? orientation : .portrait, additionalOutput: self.additionalDeviceContext?.output)
+            // SuperGram: pass the real position so a round video that starts with the rear camera is neither mirrored nor taken from the front camera
+            return mainDeviceContext.output.startRecording(mode: .roundVideo, position: self.positionValue, orientation: DeviceModel.current.isIpad ? orientation : .portrait, additionalOutput: self.additionalDeviceContext?.output)
         } else {
             if let additionalDeviceContext = self.additionalDeviceContext {
                 return combineLatest(

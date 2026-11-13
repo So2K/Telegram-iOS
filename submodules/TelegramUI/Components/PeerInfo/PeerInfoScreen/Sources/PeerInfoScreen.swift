@@ -113,6 +113,7 @@ import PeerMessagesMediaPlaylist
 import EdgeEffect
 import Pasteboard
 import AccountPeerContextItem
+import SGSimpleSettings
 
 public enum PeerInfoAvatarEditingMode {
     case generic
@@ -156,6 +157,7 @@ enum PeerInfoSettingsSection {
     case avatar
     case edit
     case proxy
+    case superGram
     case stories
     case savedMessages
     case recentCalls
@@ -284,6 +286,9 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
     let sourceMessageId: MessageId?
     var canDeleteReaction = false
     var dataDisposable: Disposable?
+    // MARK: Swiftgram (PeerInfoScreenSuperGram.swift)
+    var superGramExtras = PeerInfoSuperGramExtras()
+    let superGramExtrasDisposable = MetaDisposable()
     
     let activeActionDisposable = MetaDisposable()
     let resolveUrlDisposable = MetaDisposable()
@@ -772,6 +777,11 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                                 
                                 let currentPeerId = strongSelf.peerId
                                 strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: strongSelf.context, chatLocation: targetLocation, subject: .message(id: .id(message.id), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false), keepStack: .always, useExisting: false, purposefulAction: {
+                                    // SuperGram: upstream drops every other chat and profile from the stack here once the user acts in
+                                    // the opened chat; keep the chain of screens instead
+                                    if SGSimpleSettings.shared.sgKeepNavigationStack {
+                                        return
+                                    }
                                     var viewControllers = navigationController.viewControllers
                                     var indexesToRemove = Set<Int>()
                                     var keptCurrentChatController = false
@@ -939,6 +949,11 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                                         
                                         let currentPeerId = strongSelf.peerId
                                         strongSelf.context.sharedContext.navigateToChatController(NavigateToChatControllerParams(navigationController: navigationController, context: strongSelf.context, chatLocation: targetLocation, subject: .message(id: .id(message.id), highlight: ChatControllerSubject.MessageHighlight(quote: nil), timecode: nil, setupReply: false), keepStack: .always, useExisting: false, purposefulAction: {
+                                            // SuperGram: upstream drops every other chat and profile from the stack here once the user acts in
+                                            // the opened chat; keep the chain of screens instead
+                                            if SGSimpleSettings.shared.sgKeepNavigationStack {
+                                                return
+                                            }
                                             var viewControllers = navigationController.viewControllers
                                             var indexesToRemove = Set<Int>()
                                             var keptCurrentChatController = false
@@ -2257,7 +2272,11 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                 guard !premiumConfiguration.isPremiumDisabled else {
                     return
                 }
-                
+                // SuperGram: tapping someone's premium star / emoji status doesn't open the Premium intro for non-premium users (UPS-11)
+                if superGramHidePremiumUpsell && !strongSelf.context.isPremium {
+                    return
+                }
+
                 let source: Signal<PremiumSource, NoError>
                 if let peerStatus = peerStatus {
                     source = emojiStatusFileAndPack
@@ -2529,7 +2548,9 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
             strongSelf.updateData(data)
             strongSelf.cachedDataPromise.set(.single(data.cachedData))
         })
-        
+
+        self.superGramStartLoadingExtras() // MARK: Swiftgram
+
         self.customStatusDisposable = (self.customStatusPromise.get()
         |> deliverOnMainQueue).startStrict(next: { [weak self] value in
             guard let strongSelf = self else {
@@ -2652,6 +2673,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
     
     deinit {
         self.dataDisposable?.dispose()
+        self.superGramExtrasDisposable.dispose() // MARK: Swiftgram
         self.hiddenMediaDisposable?.dispose()
         self.activeActionDisposable.dispose()
         self.resolveUrlDisposable.dispose()
@@ -2869,7 +2891,8 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
             }
         }
         
-        setLayerDisableScreenshots(self.layer, peerInfoIsCopyProtected(data: data))
+        // SuperGram: copy protection honours sgAllowScreenCaptureProtected.
+        setLayerDisableScreenshotsForContent(self.layer, isSecret: false, isCopyProtected: peerInfoIsCopyProtected(data: data))
     }
     
     func scrollToTop() {
@@ -5198,7 +5221,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
                         subject: .message(id: .id(index.id), highlight: nil, timecode: nil, setupReply: false),
                         botStart: nil,
                         updateTextInputState: nil,
-                        keepStack: .never,
+                        keepStack: SGSimpleSettings.shared.sgKeepNavigationStack ? .default : .never, // SuperGram: .never dropped every screen back to the chat list
                         useExisting: true,
                         purposefulAction: nil,
                         scrollToEndIfExists: false,
@@ -5409,7 +5432,7 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
             insets.left += sectionInset
             insets.right += sectionInset
             
-            let items = self.isSettings ? settingsItems(data: self.data, context: self.context, presentationData: self.presentationData, interaction: self.interaction, isExpanded: self.headerNode.isAvatarExpanded) : infoItems(data: self.data, context: self.context, presentationData: self.presentationData, interaction: self.interaction, reactionSourceMessageId: self.reactionSourceMessageId, canDeleteReaction: self.canDeleteReaction, callMessages: self.callMessages, chatLocation: self.chatLocation, isOpenedFromChat: self.isOpenedFromChat, isMyProfile: self.isMyProfile)
+            let items = self.isSettings ? settingsItems(data: self.data, context: self.context, presentationData: self.presentationData, interaction: self.interaction, isExpanded: self.headerNode.isAvatarExpanded) : infoItems(data: self.data, context: self.context, presentationData: self.presentationData, interaction: self.interaction, reactionSourceMessageId: self.reactionSourceMessageId, canDeleteReaction: self.canDeleteReaction, callMessages: self.callMessages, chatLocation: self.chatLocation, isOpenedFromChat: self.isOpenedFromChat, isMyProfile: self.isMyProfile, superGramExtras: self.superGramExtras)
             
             contentHeight += headerHeight
             if !((self.isSettings || self.isMyProfile) && self.state.isEditing) {
@@ -5846,6 +5869,11 @@ final class PeerInfoScreenNode: ViewControllerTracingNode, PeerInfoScreenNodePro
             } else {
                 if self.isSettings {
                     leftNavigationButtons.append(PeerInfoHeaderNavigationButtonSpec(key: .qrCode, isForExpandedView: false))
+                    // MARK: Swiftgram
+                    // SuperGram (hideTabBar): Settings is pushed from the chat list, so it needs a way back (.back pops it).
+                    if SGSimpleSettings.shared.hideTabBar {
+                        leftNavigationButtons.append(PeerInfoHeaderNavigationButtonSpec(key: .back, isForExpandedView: false))
+                    }
                     rightNavigationButtons.append(PeerInfoHeaderNavigationButtonSpec(key: .edit, isForExpandedView: false))
                 } else if self.isMyProfile {
                     rightNavigationButtons.append(PeerInfoHeaderNavigationButtonSpec(key: .edit, isForExpandedView: false))
@@ -6428,7 +6456,7 @@ public final class PeerInfoScreenImpl: ViewController, PeerInfoScreen, KeyShortc
         switchToGiftsTarget: PeerInfoSwitchToGiftsTarget? = nil,
         switchToGroupsInCommon: Bool = false,
         switchToStoryFolder: Int64? = nil,
-        switchToMediaTarget: PeerInfoSwitchToMediaTarget? = nil,
+        switchToMediaTarget: PeerInfoSwitchToMediaTarget? = nil
     ) {
         self.context = context
         self.updatedPresentationData = updatedPresentationData
@@ -7281,6 +7309,52 @@ public final class PeerInfoScreenImpl: ViewController, PeerInfoScreen, KeyShortc
     
     public func cancelItemSelection() {
         self.controllerNode.cancelItemSelection()
+    }
+}
+
+// MARK: Swiftgram
+// SuperGram (hideTabBar): account switcher for the chat list "more" button that replaces the Settings tab.
+// Ported from Swiftgram's PeerInfoScreenImpl.tabBarItemContextActionRawUIView without the DEBUG "Swiftgram Debug" item.
+extension PeerInfoScreenImpl: SGSettingsButtonContextActionProvider {
+    public func tabBarItemContextActionRawUIView(sourceView: UIView, gesture: ContextGesture?) {
+        guard let (maybePrimary, other) = self.accountsAndPeersValue, let primary = maybePrimary else {
+            return
+        }
+
+        let strings = self.presentationData.strings
+
+        var items: [ContextMenuItem] = []
+        items.append(.action(ContextMenuActionItem(text: strings.Settings_AddAccount, icon: { theme in
+            return generateTintedImage(image: UIImage(bundleImageName: "Chat/Context Menu/Add"), color: theme.contextMenu.primaryColor)
+        }, action: { [weak self] _, f in
+            guard let strongSelf = self else {
+                return
+            }
+            strongSelf.controllerNode.openSettings(section: .addAccount)
+            f(.dismissWithoutContent)
+        })))
+
+        items.append(.custom(AccountPeerContextItem(context: self.context, account: self.context.account, peer: primary.1, action: { _, f in
+            f(.default)
+        }), true))
+
+        if !other.isEmpty {
+            items.append(.separator)
+        }
+
+        for account in other {
+            let id = account.0.account.id
+            items.append(.custom(AccountPeerContextItem(context: self.context, account: account.0.account, peer: account.1, action: { [weak self] _, f in
+                guard let strongSelf = self else {
+                    return
+                }
+                strongSelf.controllerNode.switchToAccount(id: id)
+                f(.dismissWithoutContent)
+            }), true))
+        }
+
+        let controller = makeContextController(presentationData: self.presentationData, source: .reference(HeaderContextReferenceContentSource(controller: self, sourceView: sourceView)), items: .single(ContextController.Items(content: .list(items))), gesture: gesture)
+        self.context.sharedContext.mainWindow?.presentInGlobalOverlay(controller)
     }
 }
 

@@ -94,9 +94,13 @@ private final class PrefetchManagerInnerImpl {
             return prefetchItems
         }
         
-        self.listDisposable = (combineLatest(orderedPreloadMedia, sharedContext.automaticMediaDownloadSettings, networkType)
-        |> deliverOn(self.queue)).startStrict(next: { [weak self] orderedPreloadMedia, automaticDownloadSettings, networkType in
-            self?.updateOrderedPreloadMedia(orderedPreloadMedia, automaticDownloadSettings: automaticDownloadSettings, networkType: networkType)
+        // SuperGram: background prefetch backs off under memory/thermal/power pressure (DL-09)
+        let pressureLevel = MediaDownloadPressure.shared.levelSignal
+        |> distinctUntilChanged
+
+        self.listDisposable = (combineLatest(orderedPreloadMedia, sharedContext.automaticMediaDownloadSettings, networkType, pressureLevel)
+        |> deliverOn(self.queue)).startStrict(next: { [weak self] orderedPreloadMedia, automaticDownloadSettings, networkType, pressureLevel in
+            self?.updateOrderedPreloadMedia(orderedPreloadMedia, automaticDownloadSettings: automaticDownloadSettings, networkType: networkType, pressureLevel: pressureLevel)
         })
     }
     
@@ -105,12 +109,39 @@ private final class PrefetchManagerInnerImpl {
         self.listDisposable?.dispose()
     }
     
-    private func updateOrderedPreloadMedia(_ items: [PrefetchMediaItem], automaticDownloadSettings: MediaAutoDownloadSettings, networkType: MediaAutoDownloadNetworkType) {
+    private func updateOrderedPreloadMedia(_ items: [PrefetchMediaItem], automaticDownloadSettings: MediaAutoDownloadSettings, networkType: MediaAutoDownloadNetworkType, pressureLevel: MediaDownloadPressure.Level) {
         #if DEBUG
         if "".isEmpty {
             return
         }
         #endif
+
+        // SuperGram: items are ordered by preload priority. `reduced` (Low Power Mode, a brief thermal spike)
+        // and `constrained` keep the first half of the chat history media, critical pauses prefetching (existing
+        // contexts are disposed below and restart when pressure drops). Prefetch is exactly the best-effort work
+        // that Low Power Mode should shed — unlike the download lanes, which it must not.
+        var items = items
+        if pressureLevel == .critical {
+            items = []
+        } else if pressureLevel == .constrained || pressureLevel == .reduced {
+            var chatHistoryCount = 0
+            for item in items {
+                if case .chatHistory = item {
+                    chatHistoryCount += 1
+                }
+            }
+            let maxChatHistoryCount = chatHistoryCount / 2
+            var chatHistoryIndex = 0
+            items = items.filter { item in
+                if case .chatHistory = item {
+                    chatHistoryIndex += 1
+                    return chatHistoryIndex <= maxChatHistoryCount
+                } else {
+                    return true
+                }
+            }
+        }
+
         var validIds = Set<EngineMedia.Id>()
         var order: Int32 = 0
         for mediaItem in items {
@@ -184,7 +215,9 @@ private final class PrefetchManagerInnerImpl {
                             }
                         } else if case .prefetch = automaticDownload, mediaItem.media.peer.id.namespace != Namespaces.Peer.SecretChat {
                             if let file = media as? TelegramMediaFile, let _ = file.size {
-                                context.fetchDisposable.set(preloadVideoResource(postbox: self.account.postbox, userLocation: .peer(mediaItem.media.index.id.peerId), userContentType: MediaResourceUserContentType(file: file), resourceReference: FileMediaReference.message(message: MessageReference(peer: mediaItem.media.peer, author: nil, id: mediaItem.media.index.id, timestamp: mediaItem.media.index.timestamp, incoming: true, secret: false, threadId: nil), media: file).resourceReference(file.resource), duration: 4.0).startStrict())
+                                // SuperGram: each preload spins up a thread + FFmpeg demuxer, run only a few at a time
+                                let preloadSignal = preloadVideoResource(postbox: self.account.postbox, userLocation: .peer(mediaItem.media.index.id.peerId), userContentType: MediaResourceUserContentType(file: file), resourceReference: FileMediaReference.message(message: MessageReference(peer: mediaItem.media.peer, author: nil, id: mediaItem.media.index.id, timestamp: mediaItem.media.index.timestamp, incoming: true, secret: false, threadId: nil), media: file).resourceReference(file.resource), duration: 4.0)
+                                context.fetchDisposable.set(MediaPreloadGate.chatListVideoPrefetch.wrap(lane: .background, preloadSignal).startStrict())
                             }
                         }
                     }
@@ -251,7 +284,9 @@ private final class PrefetchManagerInnerImpl {
         self.preloadGreetingStickerDisposable.set((self.preloadedGreetingStickerPromise.get()
         |> mapToSignal { sticker -> Signal<Void, NoError> in
             if let sticker = sticker {
-                return freeMediaFileInteractiveFetched(account: account, userLocation: .other, fileReference: .standalone(media: sticker))
+                // SuperGram: a genuine background preload — nothing is on screen waiting for this sticker, so it
+                // stays in the background part lane rather than competing with what the user is looking at.
+                return freeMediaFileInteractiveFetched(account: account, userLocation: .other, fileReference: .standalone(media: sticker), isInteractive: false)
                 |> map { _ -> Void in
                     return Void()
                 }

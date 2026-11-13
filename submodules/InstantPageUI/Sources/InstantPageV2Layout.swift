@@ -723,7 +723,7 @@ private func layoutBlock(
 
     case let .image(id, caption, url, webpageId):
         if case let .image(image) = context.media[id], let largest = largestImageRepresentation(image.representations) {
-            let naturalSize = CGSize(width: CGFloat(largest.dimensions.width), height: CGFloat(largest.dimensions.height))
+            let naturalSize = instantPageV2NaturalMediaSize(preferred: largest.dimensions, fallbacks: image.representations.map({ $0.dimensions }))
             let mediaUrl: InstantPageUrlItem? = url.flatMap { InstantPageUrlItem(url: $0, webpageId: webpageId) }
             let mediaIndex = context.mediaIndexCounter
             context.mediaIndexCounter += 1
@@ -763,8 +763,12 @@ private func layoutBlock(
         }
 
     case let .video(id, caption, _, _):
-        if case let .file(file) = context.media[id], let dimensions = file.dimensions {
-            let naturalSize = CGSize(width: CGFloat(dimensions.width), height: CGFloat(dimensions.height))
+        // SuperGram (FIX-RICH-MD): a `.video` block whose document carries no usable `DocumentAttributeVideo`
+        // dimensions used to fall into the `else` below and render NOTHING AT ALL — the media simply vanished
+        // from the message. Fall back to the preview thumbnail's dimensions and finally to a 4:3 box (same
+        // reasoning as the `.map` 600x300 fallback), so the video is at least visible and tappable.
+        if case let .file(file) = context.media[id] {
+            let naturalSize = instantPageV2NaturalMediaSize(preferred: file.dimensions, fallbacks: file.previewRepresentations.map({ $0.dimensions }))
             let mediaIndex = context.mediaIndexCounter
             context.mediaIndexCounter += 1
             let instantPageMedia = InstantPageMedia(
@@ -1769,6 +1773,23 @@ private let instantPageV2MediaEdgeBleed: CGFloat = 4.0
 //
 // Returns the frame, the un-bled scaled content size (the caption is offset by
 // `scaledSize.height`), and the effective corner radius to stamp on the item.
+/// SuperGram (FIX-RICH-MD): server/AI-sent rich ("markdown") messages can carry image/video media whose
+/// dimensions are absent or zero (the `.map` 600x300 fallback below exists for exactly this). A zero natural
+/// size collapses the item to a height-0 frame: the media is invisible and the caption slides up into it, so
+/// the message reads as "the media never loaded" *and* as broken layout. Prefer the media's own dimensions,
+/// then any sibling representation that carries real ones, and finally a 4:3 box.
+private let instantPageV2FallbackMediaAspect: CGFloat = 4.0 / 3.0
+
+private func instantPageV2NaturalMediaSize(preferred: PixelDimensions?, fallbacks: [PixelDimensions]) -> CGSize {
+    if let preferred, preferred.width > 0, preferred.height > 0 {
+        return preferred.cgSize
+    }
+    if let fallback = fallbacks.first(where: { $0.width > 0 && $0.height > 0 }) {
+        return fallback.cgSize
+    }
+    return CGSize(width: 600.0, height: floor(600.0 / instantPageV2FallbackMediaAspect))
+}
+
 private func instantPageV2MediaFrame(
     naturalSize: CGSize,
     flush: Bool,
@@ -1782,7 +1803,11 @@ private func instantPageV2MediaFrame(
         let scale = min(availableWidth / naturalSize.width, 1.0)
         scaledSize = CGSize(width: floor(naturalSize.width * scale), height: floor(naturalSize.height * scale))
     } else {
-        scaledSize = CGSize(width: availableWidth, height: naturalSize.height)
+        // SuperGram (FIX-RICH-MD): last-resort guard for the remaining callers (web embeds, post embeds,
+        // channel banners, related articles). A height of 0 makes the item invisible and lets the caption
+        // slide up into it; give it a 4:3 box instead.
+        let fallbackHeight = naturalSize.height > 0.0 ? naturalSize.height : floor(availableWidth / instantPageV2FallbackMediaAspect)
+        scaledSize = CGSize(width: availableWidth, height: fallbackHeight)
     }
 
     if flush {

@@ -642,7 +642,7 @@ open class NavigationController: UINavigationController, ContainableController, 
                         guard let strongSelf = self, let _ = modalContainer else {
                             return
                         }
-                        strongSelf.updateContainersNonReentrant(transition: .animated(duration: 0.5, curve: .spring))
+                        strongSelf.updateContainersNonReentrant(transition: .animated(duration: superGramNavigationTransitionDuration, curve: .spring))
                     }
                 }
                 modalContainer.updateDismissProgress = { [weak self, weak modalContainer] _, transition in
@@ -1701,7 +1701,7 @@ open class NavigationController: UINavigationController, ContainableController, 
             return controller
         }
         if let layout = self.validLayout {
-            self.updateContainers(layout: layout, transition: animated ? .animated(duration: 0.5, curve: .spring) : .immediate, completion: { [weak self] in
+            self.updateContainers(layout: layout, transition: animated ? .animated(duration: superGramNavigationTransitionDuration, curve: .spring) : .immediate, completion: { [weak self] in
                 self?.notifyAccessibilityScreenChanged()
                 completion()
             })

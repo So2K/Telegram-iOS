@@ -538,6 +538,14 @@ public class ChatMessageInstantVideoItemNode: ChatMessageItemView, ASGestureReco
                 ))
             }
                         
+            // SuperGram: hide only the plain share / repost button (the node also renders Comments / navigation).
+            // Round videos never get the bubble's "N Comments" footer, so this node's share button node *is* the
+            // Comments button. It is updated without `disableComments:`, so the default `commentsDisabled: false`
+            // here is the matching value.
+            if !superGramShowsMessageShareButton && !superGramShareButtonActsAsNavigation(item: item) {
+                needsShareButton = false
+            }
+
             var updatedShareButtonNode: ChatMessageShareButton?
             if needsShareButton {
                 if currentShareButtonNode != nil {

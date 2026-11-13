@@ -223,7 +223,8 @@ func _internal_fetchPromoInfo(accountPeerId: EnginePeer.Id, postbox: Postbox, ne
                 }
                 
                 var additionalChatListItems: [AdditionalChatListItem] = []
-                if let kind, let peer, let parsedPeer = transaction.getPeer(peer.peerId) {
+                // SuperGram: never store the proxy-sponsor / PSA promo chat; the replace below also clears rows from older builds.
+                if telegramSponsoredContentEnabled, let kind, let peer, let parsedPeer = transaction.getPeer(peer.peerId) {
                     additionalChatListItems.append(PromoChatListItem(peerId: parsedPeer.id, kind: kind))
                 }
                 transaction.replaceAdditionalChatListItems(additionalChatListItems)
@@ -262,7 +263,19 @@ func managedPromoInfoUpdates(accountPeerId: PeerId, postbox: Postbox, network: N
         }
         
         let updateDisposable = update.start()
-        
+
+        // SuperGram: drop promo chat rows and sponsored-message caches persisted by builds with sponsored content enabled
+        // (both are a single cheap Postbox write; the ad cache collection is never read while the flag is off).
+        let cleanupDisposable: Disposable
+        if !telegramSponsoredContentEnabled {
+            cleanupDisposable = (postbox.transaction { transaction -> Void in
+                transaction.replaceAdditionalChatListItems([])
+                transaction.clearItemCacheCollection(collectionId: Namespaces.CachedItemCollection.cachedAdMessageStates)
+            }).start()
+        } else {
+            cleanupDisposable = EmptyDisposable
+        }
+
         let poll = postbox.combinedView(keys: [.additionalChatListItems])
         |> map { views -> Set<PeerId> in
             if let view = views.views[.additionalChatListItems] as? AdditionalChatListItemsView {
@@ -286,16 +299,30 @@ func managedPromoInfoUpdates(accountPeerId: PeerId, postbox: Postbox, network: N
             }
         }
         
-        let pollDisposable = poll.start()
-        
+        // SuperGram: no background polling of promo channels.
+        let pollDisposable: Disposable
+        if telegramSponsoredContentEnabled {
+            pollDisposable = poll.start()
+        } else {
+            pollDisposable = EmptyDisposable
+        }
+
         return ActionDisposable {
             updateDisposable.dispose()
+            cleanupDisposable.dispose()
             pollDisposable.dispose()
         }
     }
 }
 
 public func hideAccountPromoInfoChat(account: Account, peerId: PeerId) -> Signal<Never, NoError> {
+    guard telegramSponsoredContentEnabled else {
+        // SuperGram: promo chats are never shown; only clear local rows, no help.hidePromoData.
+        return account.postbox.transaction { transaction -> Void in
+            transaction.replaceAdditionalChatListItems([])
+        }
+        |> ignoreValues
+    }
     return account.postbox.transaction { transaction -> Api.InputPeer? in
         return transaction.getPeer(peerId).flatMap(apiInputPeer)
     }

@@ -3,15 +3,22 @@
 #import <ObjCRuntimeUtils/RuntimeUtils.h>
 
 #import <objc/runtime.h>
+#import <stdatomic.h>
 
 #if TARGET_IPHONE_SIMULATOR
 UIKIT_EXTERN float UIAnimationDragCoefficient();
 #endif
 
+// SuperGram: this used to return 0.5 on device (and the simulator drag coefficient halved), which made every
+// animation that routes through it run at double speed. It is a duration *multiplier*, so the three call sites in
+// UIViewController+Navigation.m derived `speed = 1.0 / k` == 2.0 from it, while Display's and ComponentFlow's own
+// `UIView.animationDurationFactor` had already been restored to 1.0 — i.e. some animations ran at 2x and the ones
+// around them at 1x. Back to upstream: no global speed-up, and the simulator's slow-animations coefficient is
+// honoured unscaled.
 double animationDurationFactorImpl() {
 #if TARGET_IPHONE_SIMULATOR
     return (double)UIAnimationDragCoefficient();
-#endif   
+#endif
     return 1.0f;
 }
 
@@ -296,7 +303,62 @@ NSObject * _Nullable makeColorMatrixFilter() {
 
 static const void *layerDisableScreenshotsKey = &layerDisableScreenshotsKey;
 
+// SuperGram: cached "sgAllowScreenCaptureProtected" (default true). The state packs a generation counter with
+// the cached value (low 2 bits: 0 = not read, 1 = false, 2 = true); NSUserDefaultsDidChangeNotification bumps the
+// generation, so a value read before a change is never stored after it.
+static atomic_uint_fast64_t sgAllowScreenCaptureProtectedState = 0;
+
+static void sgInvalidateAllowScreenCaptureProtected(void) {
+    uint_fast64_t current = atomic_load(&sgAllowScreenCaptureProtectedState);
+    while (!atomic_compare_exchange_weak(&sgAllowScreenCaptureProtectedState, &current, ((current >> 2) + 1) << 2)) {
+    }
+}
+
+bool sgAllowScreenCaptureProtected(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // The observer lives for the whole process; NSNotificationCenter retains the returned token.
+        (void)[[NSNotificationCenter defaultCenter] addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil usingBlock:^(__unused NSNotification *notification) {
+            sgInvalidateAllowScreenCaptureProtected();
+        }];
+    });
+
+    uint_fast64_t state = atomic_load(&sgAllowScreenCaptureProtectedState);
+    uint_fast64_t cachedValue = state & 3;
+    if (cachedValue != 0) {
+        return cachedValue == 2;
+    }
+
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:@"sgAllowScreenCaptureProtected"];
+    bool result = true;
+    if ([value respondsToSelector:@selector(boolValue)]) {
+        result = [(NSNumber *)value boolValue];
+    }
+
+    uint_fast64_t expected = state;
+    uint_fast64_t updated = (state & ~((uint_fast64_t)3)) | (result ? 2 : 1);
+    (void)atomic_compare_exchange_strong(&sgAllowScreenCaptureProtectedState, &expected, updated);
+    return result;
+}
+
+bool sgShouldDisableScreenCapture(bool isSecret, bool isCopyProtected) {
+    if (isSecret) {
+        return true;
+    }
+    return isCopyProtected && !sgAllowScreenCaptureProtected();
+}
+
+void setLayerDisableScreenshotsForContent(CALayer * _Nonnull layer, bool isSecret, bool isCopyProtected) {
+    setLayerDisableScreenshots(layer, sgShouldDisableScreenCapture(isSecret, isCopyProtected));
+}
+
 void setLayerDisableScreenshots(CALayer * _Nonnull layer, bool disableScreenshots) {
+    // SuperGram: a layer that was never secured has nothing to undo; skip the private text-field layer swap
+    // (callers such as the gallery scrubbing preview pass false on every update).
+    if (!disableScreenshots && !getLayerDisableScreenshots(layer)) {
+        return;
+    }
+
     static UITextField *textField = nil;
     static UIView *secureView = nil;
     static dispatch_once_t onceToken;

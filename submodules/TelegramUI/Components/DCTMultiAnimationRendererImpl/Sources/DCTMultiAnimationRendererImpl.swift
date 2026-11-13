@@ -890,48 +890,103 @@ public final class DCTMultiAnimationRendererImpl: MultiAnimationRenderer {
     private var frameSkip: Int
     private var displayTimer: Foundation.Timer?
 
+    // SuperGram (MEM-05): the renderer is a process-wide singleton created at launch, so a frame rate chosen
+    // once in init was effectively chosen for the whole session - a device that later entered Low Power Mode
+    // or heated up under sustained use kept animating every emoji and sticker at 60 fps, which is the worst
+    // moment to be doing so. It is recomputed whenever playback starts and whenever the system tells us the
+    // thermal state or the power mode changed.
+    private var powerStateObserver: NSObjectProtocol?
+    private var thermalStateObserver: NSObjectProtocol?
+
+    private static func currentFrameSkip() -> Int {
+        let processInfo = ProcessInfo.processInfo
+        if processInfo.isLowPowerModeEnabled || processInfo.processorCount <= 2 {
+            return 2
+        }
+        if processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.fair.rawValue {
+            return 2
+        }
+        return 1
+    }
+
     private(set) var isPlaying: Bool = false {
         didSet {
             if self.isPlaying != oldValue {
                 if self.isPlaying {
-                    if self.displayTimer == nil {
-                        final class TimerTarget: NSObject {
-                            private let f: () -> Void
-
-                            init(_ f: @escaping () -> Void) {
-                                self.f = f
-                            }
-
-                            @objc func timerEvent() {
-                                self.f()
-                            }
-                        }
-                        let frameInterval = Double(self.frameSkip) / 60.0
-                        let displayTimer = Foundation.Timer(timeInterval: frameInterval, target: TimerTarget { [weak self] in
-                            guard let strongSelf = self else {
-                                return
-                            }
-                            strongSelf.animationTick(frameInterval: frameInterval)
-                        }, selector: #selector(TimerTarget.timerEvent), userInfo: nil, repeats: true)
-                        self.displayTimer = displayTimer
-                        RunLoop.main.add(displayTimer, forMode: .common)
-                    }
+                    self.frameSkip = DCTMultiAnimationRendererImpl.currentFrameSkip()
+                    self.startDisplayTimer()
                 } else {
-                    if let displayTimer = self.displayTimer {
-                        self.displayTimer = nil
-                        displayTimer.invalidate()
-                    }
+                    self.stopDisplayTimer()
                 }
             }
         }
     }
 
-    public init() {
-        if !ProcessInfo.processInfo.isLowPowerModeEnabled && ProcessInfo.processInfo.processorCount > 2 {
-            self.frameSkip = 1
-        } else {
-            self.frameSkip = 2
+    private func startDisplayTimer() {
+        if self.displayTimer != nil {
+            return
         }
+        final class TimerTarget: NSObject {
+            private let f: () -> Void
+
+            init(_ f: @escaping () -> Void) {
+                self.f = f
+            }
+
+            @objc func timerEvent() {
+                self.f()
+            }
+        }
+        let frameInterval = Double(self.frameSkip) / 60.0
+        let displayTimer = Foundation.Timer(timeInterval: frameInterval, target: TimerTarget { [weak self] in
+            guard let strongSelf = self else {
+                return
+            }
+            strongSelf.animationTick(frameInterval: frameInterval)
+        }, selector: #selector(TimerTarget.timerEvent), userInfo: nil, repeats: true)
+        self.displayTimer = displayTimer
+        RunLoop.main.add(displayTimer, forMode: .common)
+    }
+
+    private func stopDisplayTimer() {
+        if let displayTimer = self.displayTimer {
+            self.displayTimer = nil
+            displayTimer.invalidate()
+        }
+    }
+
+    private func updateFrameSkip() {
+        let frameSkip = DCTMultiAnimationRendererImpl.currentFrameSkip()
+        if self.frameSkip == frameSkip {
+            return
+        }
+        self.frameSkip = frameSkip
+        // The interval is baked into the timer, so a changed rate means a new timer.
+        if self.isPlaying {
+            self.stopDisplayTimer()
+            self.startDisplayTimer()
+        }
+    }
+
+    public init() {
+        self.frameSkip = DCTMultiAnimationRendererImpl.currentFrameSkip()
+
+        self.powerStateObserver = NotificationCenter.default.addObserver(forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+            self?.updateFrameSkip()
+        })
+        self.thermalStateObserver = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: OperationQueue.main, using: { [weak self] _ in
+            self?.updateFrameSkip()
+        })
+    }
+
+    deinit {
+        if let powerStateObserver = self.powerStateObserver {
+            NotificationCenter.default.removeObserver(powerStateObserver)
+        }
+        if let thermalStateObserver = self.thermalStateObserver {
+            NotificationCenter.default.removeObserver(thermalStateObserver)
+        }
+        self.stopDisplayTimer()
     }
 
     public func add(target: MultiAnimationRenderTarget, cache: AnimationCache, itemId: String, unique: Bool, size: CGSize, fetch: @escaping (AnimationCacheFetchOptions) -> Disposable) -> Disposable {

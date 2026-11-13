@@ -30,22 +30,7 @@ private final class NotificationInfo {
 }
 
 private func notificationPayloadInt64(_ value: Any?) -> Int64? {
-    switch value {
-    case let value as String:
-        return Int64(value)
-    case let value as NSString:
-        return Int64(value as String)
-    case let value as NSNumber:
-        return value.int64Value
-    case let value as Int:
-        return Int64(value)
-    case let value as Int32:
-        return Int64(value)
-    case let value as Int64:
-        return value
-    default:
-        return nil
-    }
+    return managedNotificationPayloadInt64(value)
 }
 
 private func notificationPayloadInt32(_ value: Any?) -> Int32? {
@@ -56,11 +41,11 @@ private func notificationPayloadInt32(_ value: Any?) -> Int32? {
 }
 
 private func notificationPayloadPeerId(_ payload: [AnyHashable: Any]) -> EnginePeer.Id? {
-    if let value = notificationPayloadInt64(payload["from_id"]), value != 0 {
+    if let value = notificationPayloadInt64(payload["from_id"]), value > 0, value <= 0x00ffffffffffffff {
         return EnginePeer.Id(namespace: Namespaces.Peer.CloudUser, id: EnginePeer.Id.Id._internalFromInt64Value(value))
-    } else if let value = notificationPayloadInt64(payload["chat_id"]), value != 0 {
+    } else if let value = notificationPayloadInt64(payload["chat_id"]), value > 0, value <= 0x00ffffffffffffff {
         return EnginePeer.Id(namespace: Namespaces.Peer.CloudGroup, id: EnginePeer.Id.Id._internalFromInt64Value(value))
-    } else if let value = notificationPayloadInt64(payload["channel_id"]), value != 0 {
+    } else if let value = notificationPayloadInt64(payload["channel_id"]), value > 0, value <= 0x00ffffffffffffff {
         return EnginePeer.Id(namespace: Namespaces.Peer.CloudChannel, id: EnginePeer.Id.Id._internalFromInt64Value(value))
     } else {
         return nil
@@ -351,8 +336,8 @@ public final class SharedNotificationManager {
                         notificationRequestId = .messageId(EngineMessage.Id(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId))
                     } else if let randomId = notificationPayloadInt64(payload["random_id"]) {
                         var peerId: EnginePeer.Id?
-                        if let encryptionId = notificationPayloadInt64(payload["encryption_id"]), encryptionId != 0 {
-                            peerId = EnginePeer.Id(namespace: Namespaces.Peer.SecretChat, id: EnginePeer.Id.Id._internalFromInt64Value(encryptionId))
+                        if let encryptionId = notificationPayloadInt32(payload["encryption_id"]), encryptionId != 0 {
+                            peerId = EnginePeer.Id(namespace: Namespaces.Peer.SecretChat, id: EnginePeer.Id.Id._internalFromInt64Value(Int64(encryptionId)))
                         }
                         notificationRequestId = .globallyUniqueId(randomId, peerId)
                     } else {
@@ -366,12 +351,12 @@ public final class SharedNotificationManager {
             }
             
             if isForcedLogOut {
-                self.clearNotificationsManager?.clearAll()
+                self.clearNotificationsManager?.clearAll(accountId: account.id.int64)
                 
                 if let accountManager = self.accountManager {
                     let _ = logoutFromAccount(id: account.id, accountManager: accountManager, alreadyLoggedOutRemotely: true).startStandalone()
                 }
-                return
+                continue
             }
             
             if notificationRequestId != nil || shouldPollState || isCall {
@@ -386,11 +371,11 @@ public final class SharedNotificationManager {
             }
             
             if let readMessageId = readMessageId {
-                self.clearNotificationsManager?.append(readMessageId)
+                self.clearNotificationsManager?.append(readMessageId, accountId: account.id.int64)
             }
             
             for messageId in messagesDeleted {
-                self.clearNotificationsManager?.append(messageId)
+                self.clearNotificationsManager?.removeExact(messageId, accountId: account.id.int64)
             }
             
             if !messagesDeleted.isEmpty {

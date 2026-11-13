@@ -45,6 +45,8 @@ swift_library(
         "//submodules/Utils/RangeSet",
         "//submodules/MediaResources",
         "//submodules/UIKitRuntimeUtils",
+        # SuperGram (W2-CHATUI-HISTORY): wideChannelPosts
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
     ],
     visibility = [
         "//visibility:public",

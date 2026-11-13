@@ -1,0 +1,383 @@
+"Settings.ContentSettings" = "Content Settings";
+
+"Settings.Tabs.Header" = "TABS";
+"Settings.Tabs.HideTabBar" = "Hide Tab bar";
+"Settings.Tabs.ShowContacts" = "Show Contacts Tab";
+"Settings.Tabs.ShowNames" = "Show Tab Names";
+"Settings.Tabs.SearchButton" = "Search Button";
+"Settings.Tabs.WideTabBar" = "Wide Tab bar";
+"Settings.Tabs.WideTabBar.Notice" = "Keeps the full width of Tab bar when some tabs are hidden.";
+
+"Settings.Folders.BottomTab" = "Folders at Bottom";
+"Settings.Folders.BottomTabStyle" = "Bottom Folders Style";
+
+/* Do not translate */
+"Settings.Folders.BottomTabStyle.ios" = "iOS";
+/* Do not translate */
+"Settings.Folders.BottomTabStyle.telegram" = "Telegram";
+/* Example: Hide "All Chats" */
+"Settings.Folders.AllChatsHidden" = "Hide \"%@\"";
+"Settings.Folders.RememberLast" = "Open Last Folder";
+"Settings.Folders.RememberLast.Notice" = "SuperGram will open the last used folder when you restart the app or switch accounts.";
+
+"Settings.Folders.CompactNames" = "Smaller spacing";
+"Settings.Folders.AllChatsTitle" = "\"All Chats\" title";
+"Settings.Folders.AllChatsTitle.short" = "Short";
+"Settings.Folders.AllChatsTitle.long" = "Long";
+/* Default behaviour for All Chats Folder Title. "All Chats" title: Default */
+"Settings.Folders.AllChatsTitle.none" = "Default";
+
+
+"Settings.ChatList.Header" = "CHAT LIST";
+"Settings.CompactChatList" = "Compact Chat List";
+"Settings.CompactMessagePreview" = "Compact Message Preview";
+
+"Settings.Profiles.Header" = "PROFILES";
+
+"Settings.Stories.Hide" = "Hide Stories";
+"Settings.Stories.WarnBeforeView" = "Ask Before Viewing";
+"Settings.Stories.DisableSwipeToRecord" = "Disable Swipe to Record";
+
+"Settings.Translation.QuickTranslateButton" = "Quick Translate button";
+"Settings.Translation.Backend" = "Service";
+/* Do not translate */
+"Settings.Translation.Backend.default" = "Telegram";
+/* Do not translate */
+"Settings.Translation.Backend.gtranslate" = "GTranslate";
+"Settings.Translation.Backend.system" = "System";
+"Settings.Translation.Backend.Notice" = "SuperGram will fallback to %@ if selected translation service is not available.";
+
+"Settings.Transcription.Header" = "VOICE-TO-TEXT";
+"Settings.Transcription.Backend" = "Service";
+/* Do not translate */
+"Settings.Transcription.Backend.default" = "Telegram";
+/* Do not translate */
+"Settings.Transcription.Backend.apple" = "Apple";
+"Settings.Transcription.Backend.Notice" = "SuperGram will fallback to %@ if selected transcription service is not available.";
+
+"Stories.Warning.Author" = "Author";
+"Stories.Warning.ViewStory" = "View Story?";
+/* Author will be able to see that you viewed their Story */
+"Stories.Warning.Notice" = "%@ WILL BE ABLE TO SEE that you viewed their Story.";
+"Stories.Warning.NoticeStealth" = "%@ will not be able to see that you viewed their Story.";
+
+"Settings.Photo.Quality.Notice" = "Quality of uploaded photos and stories.";
+"Settings.Photo.SendLarge" = "Send HD Photos";
+"Settings.Photo.SendLarge.Notice" = "Increase the side limit on compressed images to 2560px.";
+
+"Settings.VideoNotes.Header" = "ROUND VIDEOS";
+"Settings.VideoNotes.StartWithRearCam" = "Start with Rear Camera";
+
+"Settings.CustomColors.Header" = "ACCOUNT COLORS";
+"Settings.CustomColors.Saturation" = "SATURATION";
+/* Make sure to escape Percentage sign % */
+"Settings.CustomColors.Saturation.Notice" = "Set to 0%% to disable account colors.";
+
+"Settings.UploadsBoost" = "Upload Boost";
+"Settings.DownloadsBoost" = "Download Boost";
+"Settings.DownloadsBoost.Notice" = "Increases number of parallel connections and size of file chunks. In case your network can't handle the load, try different options that suits your connection.";
+"Settings.DownloadsBoost.none" = "Disabled";
+"Settings.DownloadsBoost.medium" = "Medium";
+"Settings.DownloadsBoost.maximum" = "Maximum";
+
+"Settings.ShowProfileID" = "Show Profile ID";
+"Settings.ShowDC" = "Show Data Center";
+"Settings.ShowCreationDate" = "Show Chat Creation Date";
+"Settings.ShowCreationDate.Notice" = "The creation date may be unknown for some chats.";
+
+"Settings.ShowRegDate" = "Show Registration Date";
+"Settings.ShowRegDate.Notice" = "The registration date is approximate.";
+
+"Settings.SendWithReturnKey" = "Send with \"return\" key";
+"Settings.HidePhoneInSettingsUI" = "Hide Phone in Settings";
+"Settings.HidePhoneInSettingsUI.Notice" = "This will only hide your phone number from the settings interface. To hide it from others, go to Privacy and Security.";
+
+"PasscodeSettings.AutoLock.InFiveSeconds" = "If away for 5 seconds";
+
+"ProxySettings.UseSystemDNS" = "Use system DNS";
+"ProxySettings.UseSystemDNS.Notice" = "Use system DNS to bypass timeout if you don't have access to Google DNS";
+
+/* Preserve markdown asterisks! Example: You **don't** need Telegram Premium! */
+"Common.NoTelegramPremiumNeeded" = "You **don't need** %@!";
+"Common.RestartRequired" = "Restart required";
+"Common.RestartNow" = "Restart Now";
+"Common.OpenTelegram" = "Open Telegram";
+"Common.UseTelegramForPremium" = "Please note that to get Telegram Premium, you must use the official Telegram app. Once you have obtained Telegram Premium, all its features will become available in SuperGram.";
+"Common.UpdateOS" = "iOS update required";
+"Common.KnowWhatYouDo" = "Please, change these settings only if you know what they do.";
+
+"Message.HoldToShowOrReport" = "Hold to Show or Report.";
+
+"Auth.AccountBackupReminder" = "Make sure you have a backup access method. Keep a SIM for SMS or an additional session logged in to avoid being locked out.";
+"Auth.UnofficialAppCodeTitle" = "You can get the code only with official app";
+
+"Settings.SmallReactions" = "Small Reactions";
+"Settings.HideReactions" = "Hide Reactions";
+
+"ContextMenu.SaveToCloud" = "Save to Cloud";
+"ContextMenu.SelectFromUser" = "Select from Author";
+
+"Settings.ContextMenu" = "CONTEXT MENU";
+"Settings.ContextMenu.Notice" = "Disabled entries will be available in \"SuperGram\" sub-menu.";
+
+
+"Settings.ChatSwipeOptions" = "Chat List Swipe Options";
+"Settings.DeleteChatSwipeOption" = "Swipe to Delete Chat";
+/* Re-word like this string on offical app https://translations.telegram.org/en/ios/groups_and_channels/Chat.NextChannelSameLocationSwipeProgress */
+"Settings.PullToNextChannel" = "Pull to Next Unread Channel";
+/* Re-word like this string on offical app https://translations.telegram.org/en/ios/groups_and_channels/Chat.NextUnreadTopicSwipeProgress */
+"Settings.PullToNextTopic" = "Pull to Next Topic";
+"Settings.GalleryCamera" = "Camera in Gallery";
+"Settings.GalleryCameraPreview" = "Camera Preview in Gallery";
+/* "Send Message As..." button */
+"Settings.SendAsButton" = "\"%@\" Button";
+"Settings.SnapDeletionEffect" = "Message Deletion Effects";
+
+"Settings.Stickers.Size" = "SIZE";
+"Settings.Stickers.Timestamp" = "Show Timestamp";
+
+"Settings.RecordingButton" = "Voice Recording Button";
+
+"Settings.DefaultEmojisFirst" = "Standard emojis first";
+"Settings.DefaultEmojisFirst.Notice" = "Show standard emojis before premium in emoji keyboard";
+
+/* Date when chat was created. "created: 24 May 2016" */
+"Chat.Created" = "created: %@";
+
+/* Date when user joined the chat. "Joined SuperGram Chat" */
+"Chat.JoinedDateTitle" = "Joined %@";
+/* Date when user registered in Telegram. Will be shown like "Registered\n24 May 2016" */
+"Chat.RegDate" = "Registered";
+
+"Settings.messageDoubleTapActionOutgoingEdit" = "Double-tap to edit message";
+
+"Settings.wideChannelPosts" = "Wide posts in channels";
+"Settings.ForceEmojiTab" = "Emoji tab first";
+
+"Settings.forceBuiltInMic" = "Force Device Microphone";
+"Settings.forceBuiltInMic.Notice" = "If enabled, app will use only device microphone even if headphones are connected.";
+
+"Settings.showChannelBottomButton" = "Channel Bottom Panel";
+
+"Settings.secondsInMessages" = "Seconds in Messages";
+
+"Settings.CallConfirmation" = "Call Confirmation";
+"Settings.CallConfirmation.Notice" = "SuperGram will ask for your confirmation before making a call.";
+
+/* Confirmation before making a Call */
+"CallConfirmation.Audio.Title" = "Make a Call?";
+
+/* Confirmation before making a Video Call */
+"CallConfirmation.Video.Title" = "Make a Video Call?";
+
+"MutualContact.Label" = "mutual contact";
+
+"Settings.swipeForVideoPIP" = "Video PIP with Swipe";
+"Settings.swipeForVideoPIP.Notice" = "If enabled, swiping video will open it in Picture-in-Picture mode.";
+
+
+/* MARK: SuperGram settings screen */
+"SuperGram.Media.Header" = "MEDIA & STREAMING";
+"SuperGram.Media.StreamAllVideos" = "Stream All Videos";
+"SuperGram.Media.StreamAllVideos.Notice" = "Start playing any video while it is still downloading, even if it was not sent as streamable. Secret chats are not affected.";
+"SuperGram.Media.PreferDownloadedOriginal" = "Prefer Downloaded Original";
+"SuperGram.Media.PreferDownloadedOriginal.Notice" = "Play the already downloaded (or partially downloaded) original file instead of switching to adaptive HLS quality.";
+"SuperGram.Media.InlineAutoplayVideos" = "Autoplay Videos in Chats";
+"SuperGram.Media.InlineAutoplayVideos.Notice" = "Automatically play videos and GIFs in the message list. Only the few closest to the middle of the screen play at the same time, and fewer when the device gets hot. Turning this off saves memory, traffic and battery.";
+
+"SuperGram.Downloads.Header" = "DOWNLOADS";
+"SuperGram.Downloads.Speed" = "Download Speed";
+"SuperGram.Downloads.Speed.Standard" = "Standard";
+"SuperGram.Downloads.Speed.Fast" = "Fast";
+"SuperGram.Downloads.Speed.Maximum" = "Maximum";
+"SuperGram.Downloads.Background" = "Download in Background";
+"SuperGram.Downloads.Speed.Notice" = "Fast and Maximum use larger parts and more parallel requests for files you download and videos you watch. Maximum uses more memory and battery. With Download in Background, files keep downloading after you leave the app until they finish.";
+"SuperGram.Downloads.Limiter" = "Limit Parallel Downloads";
+"SuperGram.Downloads.Limiter.Notice" = "Keeps the app responsive when many large files are downloading at once. What you are watching or opened yourself always goes first.";
+"SuperGram.Downloads.PauseUnderPressure" = "Pause When Device Is Busy";
+"SuperGram.Downloads.PauseUnderPressure.Notice" = "Background downloads and preloading pause while memory is low, the device is overheating or Low Power Mode is on.";
+
+"SuperGram.Downloads.Diagnostics" = "Download Diagnostics";
+"SuperGram.Downloads.Diagnostics.RowNotice" = "Shows what the downloader is doing right now. Open it when media will not load and send us the report.";
+"SuperGram.Downloads.Diagnostics.Notice" = "Updates once a second while this screen is open, and stops as soon as you leave it.";
+"SuperGram.Downloads.Diagnostics.State" = "STATE";
+"SuperGram.Downloads.Diagnostics.Pressure" = "Download pressure";
+"SuperGram.Downloads.Diagnostics.Thermal" = "Thermal state";
+"SuperGram.Downloads.Diagnostics.LowPower" = "Low Power Mode";
+"SuperGram.Downloads.Diagnostics.Memory" = "Memory pressure";
+"SuperGram.Downloads.Diagnostics.Memory.Inferred" = "likely (inferred)";
+"SuperGram.Downloads.Diagnostics.SpeedMode" = "Download speed";
+"SuperGram.Downloads.Diagnostics.Limiter" = "Parallel limiter";
+"SuperGram.Downloads.Diagnostics.Budget" = "DOWNLOAD BUDGET";
+"SuperGram.Downloads.Diagnostics.Budget.Interactive" = "Interactive parts";
+"SuperGram.Downloads.Diagnostics.Budget.Background" = "Background parts";
+"SuperGram.Downloads.Diagnostics.Budget.Waiters" = "Waiting for a slot";
+"SuperGram.Downloads.Diagnostics.FetchManager" = "DOWNLOAD QUEUE";
+"SuperGram.Downloads.Diagnostics.FetchManager.Categories" = "Active / queued per type";
+"SuperGram.Downloads.Diagnostics.FetchManager.Entries" = "Downloads you started";
+"SuperGram.Downloads.Diagnostics.Fetches" = "MEDIA IN PROGRESS";
+"SuperGram.Downloads.Diagnostics.Fetches.Empty" = "Nothing is downloading";
+"SuperGram.Downloads.Diagnostics.Fetch.Parts" = "parts";
+"SuperGram.Downloads.Diagnostics.Fetch.Waiting" = "waiting for a slot";
+"SuperGram.Downloads.Diagnostics.Fetch.NoProgress" = "still for";
+"SuperGram.Downloads.Diagnostics.Stalled" = "STUCK";
+"SuperGram.Downloads.Diagnostics.Unavailable" = "n/a in this build";
+"SuperGram.Downloads.Diagnostics.On" = "on";
+"SuperGram.Downloads.Diagnostics.Off" = "off";
+"SuperGram.Downloads.Diagnostics.Copy" = "Copy Report";
+"SuperGram.Downloads.Diagnostics.Copied" = "Report copied";
+"SuperGram.Downloads.Diagnostics.Reset" = "Reset Stuck Downloads";
+"SuperGram.Downloads.Diagnostics.Reset.Notice" = "Resets every download that has not moved for a minute. Nothing already downloaded is lost, and most downloads resume on their own — if one does not, scroll away from its message and back.";
+"SuperGram.Downloads.Diagnostics.Reset.None" = "Nothing is stuck";
+"SuperGram.Downloads.Diagnostics.Reset.Done" = "Downloads reset: %@";
+
+"SuperGram.Transcription.Header" = "VOICE-TO-TEXT";
+"SuperGram.Transcription.Local" = "Free Voice Transcription";
+"SuperGram.Transcription.ShowButton" = "Show Transcription Button";
+"SuperGram.Transcription.OnDeviceOnly" = "Offline Only (Less Accurate)";
+"SuperGram.Transcription.Language" = "Voice Message Language";
+"SuperGram.Transcription.Notice" = "Voice and round video messages are transcribed by iOS and the result is kept only on this device. Telegram Premium is not required. If Offline Only is disabled, iOS may use Apple's online speech service. Offline Only is also what allows transcription inside secret chats — there the audio must never leave the device, so self-destructing and view-once messages are never transcribed.";
+"SuperGram.Transcription.Language.auto" = "Automatic";
+"SuperGram.Transcription.Language.ru-RU" = "Russian";
+"SuperGram.Transcription.Language.en-US" = "English";
+"SuperGram.Transcription.Language.kk-KZ" = "Kazakh";
+"SuperGram.Transcription.Language.uk-UA" = "Ukrainian";
+"SuperGram.Transcription.Language.de-DE" = "German";
+"SuperGram.Transcription.Language.es-ES" = "Spanish";
+
+"SuperGram.ProtectedContent.Header" = "PROTECTED CONTENT";
+"SuperGram.ProtectedContent.AllowSave" = "Allow Saving and Copying";
+"SuperGram.ProtectedContent.AllowScreenCapture" = "Allow Screenshots";
+"SuperGram.ProtectedContent.Notice" = "Applies to channels, groups, private chats and stories that restrict saving content, including sharing documents to other apps and auto-saving media to Photos. Secret chats and view-once media always stay protected. Forwarding is still restricted by Telegram. Screenshot changes apply to screens opened afterwards.";
+"SuperGram.ProtectedContent.StoryHD" = "HD Stories Without Premium";
+"SuperGram.ProtectedContent.StoryHD.Notice" = "Play stories in the best available quality.";
+
+"SuperGram.Sending.Header" = "SENDING";
+"SuperGram.Sending.TelescopeButton" = "Send Video as Round Video";
+"SuperGram.Sending.TelescopeButton.Notice" = "Adds a button to the media editor that sends a video from the gallery as a round video message (up to 60 seconds). Start with Rear Camera opens the round video camera on the back camera instead of the front one.";
+
+/* W2-CONTEXT */
+"SuperGram.Context.SelectionBar.Header" = "SELECTION BAR";
+"SuperGram.Context.SelectionBar.SaveToCloud" = "Save to Cloud Button";
+"SuperGram.Context.SelectionBar.ForwardHideNames" = "Forward Without Names Button";
+"SuperGram.Context.SelectionBar.Notice" = "Extra buttons in the bar shown while messages are selected. Both forward the messages, so they are unavailable where forwarding is restricted.";
+"SuperGram.Context.MessageJson" = "Message JSON";
+"SuperGram.Context.MessageJson.Notice" = "Adds a JSON item to the message menu that shows the raw message data. For debugging.";
+
+/* W2-CHATUI-HISTORY */
+"SuperGram.ChatUI.History.Header" = "MESSAGES";
+"SuperGram.ChatUI.History.ShareButton" = "Share Button Next to Messages";
+"SuperGram.ChatUI.History.Appearance.Notice" = "Hide Reactions removes the reaction buttons under messages. Wide posts use the full screen width for channel posts. The share button next to a message is off by default: it sits right under your thumb and is easy to hit by accident. Changes apply to chats you open afterwards.";
+"SuperGram.ChatUI.History.Effects.Notice" = "Turning off the deletion effect and pulling to the next unread channel or topic saves battery and prevents accidental jumps.";
+"SuperGram.ChatUI.History.DoubleTapOutgoing" = "Double-Tap on Own Message";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Reaction" = "Quick Reaction";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Edit" = "Edit Message";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.None" = "Do Nothing";
+"SuperGram.ChatUI.History.DoubleTapOutgoing.Notice" = "With Edit Message, a double tap opens your message for editing. Messages that can't be edited get the quick reaction instead.";
+"SuperGram.ChatUI.History.MessageFilter" = "Message Filter";
+"SuperGram.ChatUI.History.MessageFilter.Off" = "Off";
+"SuperGram.ChatUI.History.MessageFilter.Notice" = "Incoming messages that contain one of the filter words are dimmed. Nothing is hidden or deleted.";
+"SuperGram.ChatUI.History.MessageFilter.Placeholder" = "One word or phrase per line";
+"SuperGram.ChatUI.History.MessageFilter.EditorNotice" = "Enter one word or phrase per line. Letter case is ignored. Changes apply to messages shown after saving.";
+
+"SuperGram.App.Header" = "APP";
+"SuperGram.App.BackgroundKeepAlive" = "Keep Connection in Background";
+"SuperGram.App.BackgroundKeepAlive.Notice" = "Uses a silent audio track to keep receiving messages and showing local notifications in the background. It stops after a period without new messages or network access, even while charging. Low Power Mode or high device temperature shortens the idle period; critical heat pauses this notification fallback. Active downloads, audio and calls use separate background controls. This can use extra battery. iOS may still suspend the app, so this does not replace push notifications.";
+"SuperGram.App.PerformanceMode" = "Performance Mode";
+"SuperGram.App.PlayVideoInBackground" = "Background Video Playback";
+"SuperGram.App.PerformanceMode.Notice" = "Performance Mode turns off looping animated emoji and translucency effects to save battery.";
+"SuperGram.App.DisableReadMetrics" = "Don't Send Reading Statistics";
+"SuperGram.App.DisableReadMetrics.Notice" = "Channels receive statistics about how long posts are viewed. When enabled, SuperGram doesn't send them.";
+"SuperGram.App.Diagnostics.Header" = "DIAGNOSTICS";
+"SuperGram.App.FileLogging" = "Save App Logs";
+"SuperGram.App.NetworkLogging" = "Network Logs";
+"SuperGram.App.Logging.Notice" = "Logs help to diagnose problems but use storage and battery. Changes apply after restart.";
+
+/* W2-GHOST */
+"SuperGram.Ghost.Header" = "GHOST MODE";
+"SuperGram.Ghost.SkipReadReceipts" = "Don't Send Read Receipts";
+"SuperGram.Ghost.SkipReadReceipts.Notice" = "Messages you open stay unread for the sender and in your chat list, voice and round messages you play stay unlistened, reactions stay unseen. Replying, reacting or \"Mark as Read\" still reveal you. Secret chats and self-destructing media are not affected.";
+"SuperGram.Ghost.StoryGhostMode" = "Ghost Story Viewing";
+"SuperGram.Ghost.StoryGhostMode.Notice" = "Stories you watch are marked as seen only on this device, the author doesn't get your view. If you later watch a newer story of the same person with this option off, the earlier ones are reported too. Reactions and replies reveal you.";
+"SuperGram.Ghost.Stories.Header" = "STORIES";
+"SuperGram.Ghost.RepostToStory" = "Repost to Story in Share Menu";
+"SuperGram.Ghost.WarnOnStoriesOpen.Notice" = "Ask Before Viewing shows a confirmation before someone's story starts playing, so a view is never sent by accident. Repost to Story in Share Menu adds the story row to the share sheet; turn it off so you never post to your story by mistake.";
+"SuperGram.Ghost.ShowJoinedDate" = "Show Join Date";
+"SuperGram.Ghost.Profiles.Notice" = "Tap the ID to copy it. The creation date of channels and groups and the date a member joined the group you came from need one extra request when a profile opens; the join date is asked again on every open, which is why it is off by default. The registration date is approximate and known only for some users.";
+"SuperGram.Ghost.Calls.Header" = "CALLS";
+
+/* W2-TRANSLATE */
+"SuperGram.Translate.Header" = "TRANSLATION";
+"SuperGram.Translate.ChatsWithoutPremium" = "Translate Entire Chats Without Premium";
+"SuperGram.Translate.Service" = "Translation Service";
+"SuperGram.Translate.Service.Telegram" = "Telegram";
+"SuperGram.Translate.Service.OnDevice" = "On-Device";
+"SuperGram.Translate.Notice" = "Chats are translated by Telegram. Telegram may refuse to translate entire chats for accounts without Premium, and SuperGram will tell you when that happens. Messages are never sent to Google or other third-party services.";
+"SuperGram.Translate.Notice.OnDevice" = "Telegram translates on its servers and may refuse to translate entire chats for accounts without Premium. On-Device uses Apple Translation on this iPhone (languages may need to be downloaded first). Messages are never sent to Google or other third-party services.";
+"SuperGram.Translate.QuickTranslateButton" = "Quick Translate Button";
+"SuperGram.Translate.OutgoingTranslation" = "Translate Before Sending";
+"SuperGram.Translate.Messages.Notice" = "Quick Translate Button shows a button next to incoming messages in other languages. Translate Before Sending adds Translate to... to the menu that opens when you hold the Send button.";
+"SuperGram.Translate.OnDeviceMenuItem" = "Translate on This Device";
+"SuperGram.Translate.Failure.Server" = "Telegram couldn't translate this chat. Try again later.";
+"SuperGram.Translate.Failure.ServerNonPremium" = "Telegram declined to translate this chat. Telegram may translate entire chats only for Premium accounts.";
+"SuperGram.Translate.Failure.ServerNonPremium.OnDevice" = "Telegram declined to translate this chat. Telegram may translate entire chats only for Premium accounts. You can translate on this iPhone instead.";
+"SuperGram.Translate.Failure.Unavailable" = "Telegram translation is not available for your account or region.";
+"SuperGram.Translate.Failure.Unavailable.OnDevice" = "Telegram translation is not available for your account or region. You can translate on this iPhone instead.";
+"SuperGram.Translate.Failure.LimitExceeded" = "Too many translation requests. Try again in a few minutes.";
+"SuperGram.Translate.Failure.OnDevice" = "On-device translation failed. This language may not be supported, or its download was cancelled.";
+"SuperGram.Translate.Failure.UseOnDevice" = "On-Device";
+"SuperGram.Translate.Failure.Outgoing" = "Couldn't translate the message.";
+"SuperGram.Translate.Failure.TextTooLong" = "The message is too long to translate.";
+
+/* W2-CHATLIST */
+"SuperGram.ChatList.HideTabBar.Notice" = "With the Tab bar hidden, open Settings with the button in the top right corner of the chat list. The Tab bar appears while you edit the chat list.";
+"SuperGram.ChatList.HideStories.Notice" = "Hide Stories removes stories above the chat list and the new story button, and stops preloading story media.";
+
+/* W2-NET */
+"SuperGram.Network.Browser.Header" = "LINKS";
+"SuperGram.Network.InAppSafari" = "Open Links in In-App Safari";
+"SuperGram.Network.InAppSafari.Notice" = "Links that would leave for an external browser open in a Safari sheet inside SuperGram instead, keeping your Safari cookies and Reader settings. Links that already open in Telegram's own browser are not affected.";
+"SuperGram.Network.Photo.Header" = "OUTGOING PHOTO QUALITY";
+"SuperGram.Network.Camera.Header" = "ATTACHMENT MENU";
+"SuperGram.Network.Camera.Notice" = "The live camera tile in the attachment menu keeps a capture session running the whole time the menu is open. Turning the tile off, or leaving the tile but turning its preview off, saves battery on long sessions.";
+"SuperGram.Network.Connection.Header" = "CONNECTION";
+"SuperGram.Network.Storage.Header" = "STORAGE";
+"SuperGram.Network.CachePresets" = "Aggressive Cache Presets";
+"SuperGram.Network.CachePresets.Notice" = "Adds a 1 GB cache limit and a 1 hour \"Keep Media\" option to Data and Storage. They are only offered, never applied on their own. Picking them deletes partially downloaded videos, so a video you started watching may start over from the beginning. Requires a restart.";
+"SuperGram.Network.Other.Header" = "OTHER";
+"SuperGram.Network.MusicRateButton" = "Playback Speed for All Music";
+"SuperGram.Network.MutePresets" = "More Mute Durations";
+"SuperGram.Network.SessionIP" = "Show IP of Active Sessions";
+"SuperGram.Network.SessionIP.Notice" = "Playback Speed for All Music shows the speed button in the music player for short tracks too. More Mute Durations adds 4 hours, 8 hours and 1 day to the mute menu. Show IP of Active Sessions displays the IP address of your Telegram sessions, which Telegram normally hides.";
+
+/* W2-CHATUI-INPUT */
+"SuperGram.ChatUI.Input.Header" = "INPUT PANEL";
+"SuperGram.ChatUI.Input.RecordingTooltip" = "\"Hold to Record\" Tooltip";
+"SuperGram.ChatUI.Input.Buttons.Notice" = "With the Voice Recording Button off, the send button is always visible and voice messages and video messages can no longer be recorded from this chat. The other switches only hide buttons.";
+"SuperGram.ChatUI.Input.SendWithReturnKey.Notice" = "The keyboard's return key sends the message, so it can no longer add a line break. Turn on the Formatting Panel below to get a line-break button. Applies to chats you open afterwards.";
+"SuperGram.ChatUI.Input.Toolbar" = "Formatting Panel";
+"SuperGram.ChatUI.Input.Toolbar.Notice" = "A row of formatting buttons above the keyboard: bold, italic, underline, strikethrough, monospace, code block, quote, spoiler, link, date and line break. With nothing selected, a button formats the word before the cursor. Applies to chats you open afterwards.";
+"SuperGram.ChatUI.Input.ChannelPanel.Notice" = "The channel bottom panel holds Join, Mute and Unmute. Turning it off gives channels you already follow more reading space; it stays visible while you search or select messages.";
+"SuperGram.ChatUI.Input.Keyboard.Header" = "EMOJI KEYBOARD";
+"SuperGram.ChatUI.Input.Keyboard.Notice" = "Emoji tab first always opens the media keyboard on Emoji and removes the sticker shortcut from the input panel. Standard emojis first moves the plain emoji set ahead of custom and premium packs.";
+"SuperGram.ChatUI.Input.Stickers.Header" = "STICKERS";
+/* Make sure to escape Percentage sign %% */
+"SuperGram.ChatUI.Input.Stickers.Notice" = "Size scales stickers, animated emoji and dice in the chat, down to 20%% of the standard size. Show Timestamp draws the time and delivery status over the sticker.";
+
+/* SuperGram: chat history */
+"SuperGram.History.Title" = "History";
+"SuperGram.History.Empty" = "Chats and channels you open will appear here, so you can get back to them exactly where you left off.";
+"SuperGram.History.Footer" = "Tap a chat to reopen it where you stopped reading. Swipe left to remove it from the history.";
+"SuperGram.History.Clear" = "Clear";
+"SuperGram.History.ClearTitle" = "Clear History";
+"SuperGram.History.ClearText" = "Remove all chats from the history? The chats themselves are not affected.";
+"SuperGram.History.Remove" = "Remove";
+"SuperGram.History.JustNow" = "just now";
+"SuperGram.History.PositionSaved" = "position saved";
+"SuperGram.History.ShowAll" = "Show All";
+"SuperGram.History.Setting" = "History Button in Chat List";
+"SuperGram.History.Setting.Notice" = "Replaces the new story and new message buttons: Edit moves to the right, and a History button on the left lists recently opened chats and reopens them where you left off. Long-press it for the last chats.";
+"SuperGram.Navigation.KeepStack" = "Keep Screen Chain";
+"SuperGram.Navigation.KeepStack.Notice" = "Opening a chat from a channel, comments or a profile adds it on top instead of throwing you back to the chat list, so Back returns step by step. The 12 most recent screens are kept.";
+"SuperGram.ChatUI.DoubleTapSelectsText" = "Double tap selects text";
+"SuperGram.ChatUI.DoubleTapSelectsText.Notice" = "Double tap on a message selects the word under your finger so you can copy or quote it. Reactions stay on long press.";

@@ -65,7 +65,10 @@ final class StoryItemImageView: UIView {
         }
     }
     
-    func update(context: AccountContext, strings: PresentationStrings, peer: EnginePeer, storyId: Int32, media: EngineMedia, size: CGSize, isCaptureProtected: Bool, attemptSynchronous: Bool, transition: ComponentTransition) {
+    func update(context: AccountContext, strings: PresentationStrings, peer: EnginePeer, storyId: Int32, media: EngineMedia, size: CGSize, isCaptureProtected isCaptureProtectedValue: Bool, attemptSynchronous: Bool, transition: ComponentTransition) {
+        // SuperGram: sgAllowScreenCaptureProtected drops the secure container, the dark background and the "screenshot blocked" placeholder
+        let isCaptureProtected = isCaptureProtectedValue && !SuperGramStoryGates.allowScreenCaptureProtected
+
         self.backgroundColor = isCaptureProtected ? UIColor(rgb: 0x181818) : nil
         
         var dimensions: CGSize?

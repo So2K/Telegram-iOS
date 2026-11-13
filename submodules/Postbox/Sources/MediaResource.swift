@@ -55,12 +55,15 @@ public struct MediaResourceFetchParameters {
     public let location: MediaResourceStorageLocation?
     public let contentType: UInt8
     public let isRandomAccessAllowed: Bool
-    
-    public init(tag: MediaResourceFetchTag?, info: MediaResourceFetchInfo?, location: MediaResourceStorageLocation?, contentType: UInt8, isRandomAccessAllowed: Bool) {
+    // SuperGram: set by user-initiated fetch APIs; FetchV2 budgets such fetches as interactive
+    public let isInteractive: Bool
+
+    public init(tag: MediaResourceFetchTag?, info: MediaResourceFetchInfo?, location: MediaResourceStorageLocation?, contentType: UInt8, isRandomAccessAllowed: Bool, isInteractive: Bool = false) {
         self.tag = tag
         self.info = info
         self.location = location
         self.contentType = contentType
         self.isRandomAccessAllowed = isRandomAccessAllowed
+        self.isInteractive = isInteractive
     }
 }

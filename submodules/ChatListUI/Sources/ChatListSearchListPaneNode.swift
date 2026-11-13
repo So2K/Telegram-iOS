@@ -1660,8 +1660,8 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
     
     private var deletedMessagesDisposable: Disposable?
     
-    private var adsHiddenPromise = ValuePromise<Bool>(false)
-    private var adsHidden = false {
+    private var adsHiddenPromise = ValuePromise<Bool>(true)
+    private var adsHidden = true {
         didSet {
             self.adsHiddenPromise.set(self.adsHidden)
         }
@@ -2593,11 +2593,8 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
                         .single((currentRemotePeersValue.0, currentRemotePeersValue.1, currentRemotePeersValue.2, true))
                         |> then(
                             globalPeerSearchContext.searchRemotePeers(engine: context.engine, query: query)
-                            |> mapToSignal { result in
-                                return context.engine.peers.searchAdPeers(query: query)
-                                |> map { adPeers in
-                                    return (result.0, result.1, adPeers, false)
-                                }
+                            |> map { result in
+                                return (result.0, result.1, [] as [AdPeer], false)
                             }
                         )
                     )
@@ -5147,12 +5144,8 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
                                 return
                             }
                             if !self.isPremium {
-                                guard let navigationController = self.navigationController else {
-                                    return
-                                }
-                                let context = self.context
-                                let controller = context.sharedContext.makePremiumIntroController(context: context, source: .ads, forceDark: false, dismissed: nil)
-                                navigationController.pushViewController(controller)
+                                // SuperGram: no Premium intro from global post search.
+                                return
                             } else {
                                 if let searchQueryValue = self.searchQueryValue, !searchQueryValue.isEmpty, self.approvedGlobalPostQueryStateValue?.query != searchQueryValue {
                                     var price: Int?
@@ -5432,7 +5425,8 @@ final class ChatListSearchListPaneNode: ASDisplayNode, ChatListSearchPaneNode {
                         
                         if strongSelf.key == .globalPosts, let globalSearchStateValue = transition.globalSearchStateValue {
                             if !strongSelf.isPremium {
-                                emptyResultsButtonContent = .premiumRequired
+                                // SuperGram: informative placeholder only, no "Subscribe to Premium" button.
+                                emptyResultsButtonContent = nil
                                 emptyResultsTitle = strongSelf.presentationData.strings.ChatList_GlobalSearch_StartPlaceholder_Title
                                 emptyResultsText = strongSelf.presentationData.strings.ChatList_GlobalSearch_StartPlaceholder_Text
                                 emptyResultsButtonSubtitleText = strongSelf.presentationData.strings.ChatList_GlobalSearch_StartPlaceholder_Subtitle

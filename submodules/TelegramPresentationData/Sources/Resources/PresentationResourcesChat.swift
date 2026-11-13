@@ -1182,7 +1182,15 @@ public struct PresentationResourcesChat {
             return generateTintedImage(image: UIImage(bundleImageName: "Chat/Message/CollapseIcon"), color: bubbleVariableColor(variableColor: theme.chat.message.shareButtonForegroundColor, wallpaper: wallpaper))
         })
     }
-    
+
+    // MARK: Swiftgram
+    public static func chatTranslateShareButtonIcon(_ theme: PresentationTheme, wallpaper: TelegramWallpaper, undoTranslate: Bool = false) -> UIImage? {
+        return theme.image(undoTranslate ? PresentationResourceKey.chatUndoTranslateButtonIcon.rawValue : PresentationResourceKey.chatTranslateButtonIcon.rawValue, { _ in
+            // SuperGram: our Display has no `customSize:` overload of generateTintedImage, so tint then scale to 18x18
+            return generateScaledImage(image: generateTintedImage(image: UIImage(bundleImageName: undoTranslate ? "Media Editor/Undo" : "Chat/Context Menu/Translate"), color: bubbleVariableColor(variableColor: theme.chat.message.shareButtonForegroundColor, wallpaper: wallpaper)), size: CGSize(width: 18.0, height: 18.0), opaque: false)
+        })
+    }
+
     public static func chatKeyboardActionButtonMessageIconImage(_ theme: PresentationTheme) -> UIImage? {
         return theme.image(PresentationResourceKey.chatKeyboardActionButtonMessageIcon.rawValue, { theme in
             return generateTintedImage(image: UIImage(bundleImageName: "Chat/Message/BotMessage"), color: theme.chat.inputButtonPanel.buttonTextColor)

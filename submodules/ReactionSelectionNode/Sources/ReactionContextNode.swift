@@ -1909,8 +1909,12 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                                     for i in 0 ..< 2 {
                                         let groupId = i == 0 ? "reactions" : "stickers"
                                         for item in i == 0 ? reactionEffects : stickerEffects {
+                                            // SuperGram: locked premium effects are not listed for non-premium users (UPS-07)
+                                            if superGramHidePremiumUpsell && !hasPremium && item.isPremium {
+                                                continue
+                                            }
                                             let itemFile = item.effectSticker
-                                            
+
                                             var tintMode: EmojiPagerContentComponent.Item.TintMode = .none
                                             if itemFile.isCustomTemplateEmoji {
                                                 tintMode = .primary
@@ -2094,6 +2098,10 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                                                     continue
                                                 }
                                                 existingIds.insert(itemFile.fileId)
+                                                // SuperGram: locked premium emoji are not listed for non-premium users (UPS-07)
+                                                if superGramHidePremiumUpsell && !hasPremium && itemFile.isPremiumEmoji {
+                                                    continue
+                                                }
                                                 let animationData = EntityKeyboardAnimationData(file: itemFile)
                                                 let item = EmojiPagerContentComponent.Item(
                                                     animationData: animationData,
@@ -2150,6 +2158,9 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                                                 
                                                 var groupItems: [EmojiPagerContentComponent.Item] = []
                                                 for item in topItems {
+                                                    if superGramHidePremiumUpsell && !hasPremium && item.file.isPremiumEmoji {
+                                                        continue
+                                                    }
                                                     var tintMode: EmojiPagerContentComponent.Item.TintMode = .none
                                                     if item.file.isCustomTemplateEmoji {
                                                         tintMode = .primary
@@ -2167,7 +2178,10 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                                                     
                                                     groupItems.append(resultItem)
                                                 }
-                                                
+                                                if superGramHidePremiumUpsell && !hasPremium && groupItems.isEmpty {
+                                                    continue
+                                                }
+
                                                 resultGroups.append(EmojiPagerContentComponent.ItemGroup(
                                                     supergroupId: AnyHashable(info.id),
                                                     groupId: AnyHashable(info.id),
@@ -2276,8 +2290,12 @@ public final class ReactionContextNode: ASDisplayNode, ASScrollViewDelegate {
                                 for i in 0 ..< 2 {
                                     let groupId = i == 0 ? "reactions" : "stickers"
                                     for item in i == 0 ? reactionEffects : stickerEffects {
+                                        // SuperGram: locked premium effects are not listed for non-premium users (UPS-07)
+                                        if superGramHidePremiumUpsell && !hasPremium && item.isPremium {
+                                            continue
+                                        }
                                         let itemFile = item.effectSticker
-                                        
+
                                         var tintMode: EmojiPagerContentComponent.Item.TintMode = .none
                                         if itemFile.isCustomTemplateEmoji {
                                             tintMode = .primary

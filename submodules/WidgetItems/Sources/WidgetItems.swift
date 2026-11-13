@@ -354,12 +354,12 @@ public struct WidgetPresentationData: Codable, Equatable {
     
     public static func getForExtension() -> WidgetPresentationData {
         let appBundleIdentifier = Bundle.main.bundleIdentifier!
-        guard let lastDotRange = appBundleIdentifier.range(of: ".", options: [.backwards]) else {
+        guard appBundleIdentifier.range(of: ".", options: [.backwards]) != nil else {
             return WidgetPresentationData.default
         }
-        let baseAppBundleId = String(appBundleIdentifier[..<lastDotRange.lowerBound])
-        
-        let appGroupName = "group.\(baseAppBundleId)"
+
+        // SuperGram: the provisioned app group; must match telegramAppGroupIdentifier (TelegramUI/AppDelegate.swift).
+        let appGroupName = "group.ffcd1c12e1a9728e.1"
         let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
         
         guard let appGroupUrl = maybeAppGroupUrl else {

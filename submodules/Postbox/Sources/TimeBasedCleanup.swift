@@ -130,7 +130,22 @@ private final class TempScanDatabase {
     }
 }
 
-private func scanFiles(at path: String, olderThan minTimestamp: Int32, includeSubdirectories: Bool, performSizeMapping: Bool, tempDatabase: TempScanDatabase, reportMemoryUsageInterval: Int, reportMemoryUsageRemaining: inout Int) -> ScanFilesResult {
+// SuperGram: never unlink a file whose resource has an open MediaBox context (active fetch, status or reader)
+private func unlinkIfUnused(path: String, resourceUsage: MediaBoxResourceUsageRegistry, isResourceRootFile: Bool) -> Bool {
+    let fileName = (path as NSString).lastPathComponent
+    return resourceUsage.performIfUnused(fileName: fileName, isResourceRootFile: isResourceRootFile, {
+        let _ = unlink(path)
+    })
+}
+
+private func unlinkIfUnused(pathBuffer: UnsafeMutablePointer<Int8>, resourceUsage: MediaBoxResourceUsageRegistry, isResourceRootFile: Bool) -> Bool {
+    let fileName = (String(cString: pathBuffer) as NSString).lastPathComponent
+    return resourceUsage.performIfUnused(fileName: fileName, isResourceRootFile: isResourceRootFile, {
+        let _ = unlink(pathBuffer)
+    })
+}
+
+private func scanFiles(at path: String, olderThan minTimestamp: Int32, includeSubdirectories: Bool, performSizeMapping: Bool, tempDatabase: TempScanDatabase, resourceUsage: MediaBoxResourceUsageRegistry, isResourceRootDirectory: Bool, reportMemoryUsageInterval: Int, reportMemoryUsageRemaining: inout Int) -> ScanFilesResult {
     var result = ScanFilesResult()
     
     var subdirectories: [String] = []
@@ -165,8 +180,11 @@ private func scanFiles(at path: String, olderThan minTimestamp: Int32, includeSu
                         }
                     }
                 } else {
+                    var didUnlink = false
                     if value.st_mtimespec.tv_sec < minTimestamp {
-                        unlink(pathBuffer)
+                        didUnlink = unlinkIfUnused(pathBuffer: pathBuffer, resourceUsage: resourceUsage, isResourceRootFile: isResourceRootDirectory)
+                    }
+                    if didUnlink {
                         result.unlinkedCount += 1
                     } else {
                         result.totalSize += UInt64(value.st_size)
@@ -189,7 +207,7 @@ private func scanFiles(at path: String, olderThan minTimestamp: Int32, includeSu
     
     if includeSubdirectories {
         for subPath in subdirectories {
-            let subResult = scanFiles(at: subPath, olderThan: minTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
+            let subResult = scanFiles(at: subPath, olderThan: minTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, resourceUsage: resourceUsage, isResourceRootDirectory: false, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
             result.totalSize += subResult.totalSize
             result.unlinkedCount += subResult.unlinkedCount
         }
@@ -231,7 +249,8 @@ private final class TimeBasedCleanupImpl {
     private let generalPaths: [String]
     private let totalSizeBasedPath: String
     private let shortLivedPaths: [String]
-    
+    private let resourceUsage: MediaBoxResourceUsageRegistry
+
     private var scheduledTouches: [String] = []
     private var scheduledTouchesTimer: SignalKitTimer?
     
@@ -240,12 +259,13 @@ private final class TimeBasedCleanupImpl {
     private var gigabytesLimit: Int32?
     private let scheduledScanDisposable = MetaDisposable()
     
-    init(queue: Queue, storageBox: StorageBox, generalPaths: [String], totalSizeBasedPath: String, shortLivedPaths: [String]) {
+    init(queue: Queue, storageBox: StorageBox, generalPaths: [String], totalSizeBasedPath: String, shortLivedPaths: [String], resourceUsage: MediaBoxResourceUsageRegistry) {
         self.queue = queue
         self.storageBox = storageBox
         self.generalPaths = generalPaths
         self.totalSizeBasedPath = totalSizeBasedPath
         self.shortLivedPaths = shortLivedPaths
+        self.resourceUsage = resourceUsage
     }
     
     deinit {
@@ -275,6 +295,7 @@ private final class TimeBasedCleanupImpl {
         let totalSizeBasedPath = self.totalSizeBasedPath
         let shortLivedPaths = self.shortLivedPaths
         let storageBox = self.storageBox
+        let resourceUsage = self.resourceUsage
         let scanOnce = Signal<Never, NoError> { subscriber in
             let queue = Queue(name: "TimeBasedCleanupScan", qos: .background)
             queue.async {
@@ -353,7 +374,7 @@ private final class TimeBasedCleanupImpl {
                 let oldestShortLivedTimestamp = timestamp - shortLived
                 let oldestGeneralTimestamp = timestamp - general
                 for path in shortLivedPaths {
-                    let scanResult = scanFiles(at: path, olderThan: oldestShortLivedTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
+                    let scanResult = scanFiles(at: path, olderThan: oldestShortLivedTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, resourceUsage: resourceUsage, isResourceRootDirectory: false, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
                     if !paths.contains(path) {
                         paths.append(path)
                     }
@@ -364,7 +385,7 @@ private final class TimeBasedCleanupImpl {
                 
                 if general < Int32.max {
                     for path in generalPaths {
-                        let scanResult = scanFiles(at: path, olderThan: oldestGeneralTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
+                        let scanResult = scanFiles(at: path, olderThan: oldestGeneralTimestamp, includeSubdirectories: true, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, resourceUsage: resourceUsage, isResourceRootDirectory: false, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
                         if !paths.contains(path) {
                             paths.append(path)
                         }
@@ -374,7 +395,7 @@ private final class TimeBasedCleanupImpl {
                 }
                 
                 if gigabytesLimit < Int32.max {
-                    let scanResult = scanFiles(at: totalSizeBasedPath, olderThan: 0, includeSubdirectories: false, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
+                    let scanResult = scanFiles(at: totalSizeBasedPath, olderThan: 0, includeSubdirectories: false, performSizeMapping: performSizeMapping, tempDatabase: tempDatabase, resourceUsage: resourceUsage, isResourceRootDirectory: true, reportMemoryUsageInterval: reportMemoryUsageInterval, reportMemoryUsageRemaining: &reportMemoryUsageRemaining)
                     if !paths.contains(totalSizeBasedPath) {
                         paths.append(totalSizeBasedPath)
                     }
@@ -389,11 +410,15 @@ private final class TimeBasedCleanupImpl {
                 if totalLimitSize > bytesLimit {
                     var remainingSize = Int64(totalLimitSize)
                     tempDatabase.topByAccessTime { size, filePath in
+                        let isResourceRootFile = (filePath as NSString).deletingLastPathComponent == totalSizeBasedPath
+
+                        // SuperGram: files of resources that are being fetched or read stay, evict the next oldest instead
+                        if !unlinkIfUnused(path: filePath, resourceUsage: resourceUsage, isResourceRootFile: isResourceRootFile) {
+                            return true
+                        }
                         remainingSize -= size
-                        
-                        unlink(filePath)
-                        
-                        if (filePath as NSString).deletingLastPathComponent == totalSizeBasedPath {
+
+                        if isResourceRootFile {
                             let fileName = (filePath as NSString).lastPathComponent
                             if let idData = MediaBox.idForFileName(name: fileName).data(using: .utf8) {
                                 unlinkedResourceIds.append(idData)
@@ -469,10 +494,10 @@ final class TimeBasedCleanup {
     private let queue = Queue()
     private let impl: QueueLocalObject<TimeBasedCleanupImpl>
     
-    init(storageBox: StorageBox, generalPaths: [String], totalSizeBasedPath: String, shortLivedPaths: [String]) {
+    init(storageBox: StorageBox, generalPaths: [String], totalSizeBasedPath: String, shortLivedPaths: [String], resourceUsage: MediaBoxResourceUsageRegistry) {
         let queue = self.queue
         self.impl = QueueLocalObject(queue: self.queue, generate: {
-            return TimeBasedCleanupImpl(queue: queue, storageBox: storageBox, generalPaths: generalPaths, totalSizeBasedPath: totalSizeBasedPath, shortLivedPaths: shortLivedPaths)
+            return TimeBasedCleanupImpl(queue: queue, storageBox: storageBox, generalPaths: generalPaths, totalSizeBasedPath: totalSizeBasedPath, shortLivedPaths: shortLivedPaths, resourceUsage: resourceUsage)
         })
     }
     

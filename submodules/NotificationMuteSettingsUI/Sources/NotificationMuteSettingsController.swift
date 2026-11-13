@@ -1,3 +1,5 @@
+// MARK: Swiftgram
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -42,12 +44,19 @@ public func notificationMuteSettingsController(presentationData: PresentationDat
         updateSettings(muteInterval)
     }
     
-    let options: [NotificationMuteOption] = [
+    // MARK: Swiftgram
+    // SuperGram (SGP-10): stock Telegram offers only "1 hour" and "2 days" between "Enable" and "Disable".
+    var options: [NotificationMuteOption] = [
         .enable,
-        .interval(1 * 60 * 60),
-        .interval(2 * 24 * 60 * 60),
-        .disable
+        .interval(1 * 60 * 60)
     ]
+    if SGSimpleSettings.shared.sgExtraMutePresets {
+        options.append(.interval(4 * 60 * 60))
+        options.append(.interval(8 * 60 * 60))
+        options.append(.interval(1 * 24 * 60 * 60))
+    }
+    options.append(.interval(2 * 24 * 60 * 60))
+    options.append(.disable)
     var items: [ActionSheetItem] = []
     for option in options {
         let item: ActionSheetButtonItem

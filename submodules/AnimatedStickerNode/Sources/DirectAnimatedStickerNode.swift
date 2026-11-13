@@ -10,7 +10,16 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
     private static let sharedQueue = Queue(name: "DirectAnimatedStickerNode", qos: .userInteractive)
     
     private final class LoadFrameTask {
-        var isCancelled: Bool = false
+        private let cancelled = Atomic<Bool>(value: false)
+
+        var isCancelled: Bool {
+            get {
+                return self.cancelled.with { $0 }
+            }
+            set {
+                let _ = self.cancelled.swap(newValue)
+            }
+        }
     }
     
     public var automaticallyLoadFirstFrame: Bool = false
@@ -34,8 +43,8 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         get {
             if let lottieInstance = self.lottieInstance {
                 return Int(lottieInstance.frameCount)
-            } else if let videoSource = self.videoSource {
-                return Int(videoSource.frameRate)
+            } else if self.videoSource != nil {
+                return self.videoFrameCount
             } else {
                 return 0
             }
@@ -74,9 +83,12 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
     private var playbackSize: CGSize?
     
     private var lottieInstance: LottieInstance?
-    private var videoSource: AnimatedStickerFrameSource?
+    private var videoSource: QueueLocalObject<AnimatedStickerFrameSourceWrapper>?
+    private var videoFrameCount: Int = 0
+    private var videoFrameRate: Int = 0
     private var frameIndex: Int = 0
     private var playbackMode: AnimatedStickerPlaybackMode = .loop
+    private var isPlaybackPaused: Bool = false
     
     private var frameImages: [Int: UIImage] = [:]
     private var loadFrameTasks: [Int: LoadFrameTask] = [:]
@@ -89,16 +101,19 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
     deinit {
         self.sourceDisposable?.dispose()
         self.nextFrameTimer?.invalidate()
+        for task in self.loadFrameTasks.values {
+            task.isCancelled = true
+        }
     }
     
     public func cloneCurrentFrame(from otherNode: AnimatedStickerNode?) {
     }
     
     public func setup(source: AnimatedStickerNodeSource, width: Int, height: Int, playbackMode: AnimatedStickerPlaybackMode, mode: AnimatedStickerMode) {
-        self.didStart = false
-        self.didComplete = false
-        
-        self.sourceDisposable?.dispose()
+        self.reset()
+        guard width > 0, height > 0 else {
+            return
+        }
         
         self.playbackSize = CGSize(width: CGFloat(width), height: CGFloat(height))
         self.playbackMode = playbackMode
@@ -113,7 +128,12 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
             
             if source.isVideo {
                 if let videoSource = makeVideoStickerDirectFrameSource(queue: DirectAnimatedStickerNode.sharedQueue, path: path, hintVP9: true, width: width, height: height, cachePathPrefix: nil, unpremultiplyAlpha: false) {
-                    strongSelf.setupPlayback(videoSource: videoSource)
+                    let frameCount = videoSource.frameCount
+                    let frameRate = videoSource.frameRate
+                    let source = QueueLocalObject(queue: DirectAnimatedStickerNode.sharedQueue, generate: {
+                        return AnimatedStickerFrameSourceWrapper(videoSource)
+                    })
+                    strongSelf.setupPlayback(videoSource: source, frameCount: frameCount, frameRate: frameRate)
                 }
             } else {
                 guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
@@ -122,7 +142,7 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
                 
                 let decompressedData = TGGUnzipData(data, 8 * 1024 * 1024) ?? data
                 
-                guard let lottieInstance = LottieInstance(data: decompressedData, fitzModifier: .none, colorReplacements: nil, cacheKey: "") else {
+                guard let lottieInstance = LottieInstance(data: decompressedData, fitzModifier: source.fitzModifier?.lottieFitzModifier ?? .none, colorReplacements: nil, cacheKey: "") else {
                     print("Could not load sticker data")
                     return
                 }
@@ -133,7 +153,14 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
     }
     
     private func updatePlayback() {
-        let isPlaying = self.visibility && (self.lottieInstance != nil || self.videoSource != nil)
+        let isVisible = self.visibility
+        let isStill: Bool
+        if case .still = self.playbackMode {
+            isStill = true
+        } else {
+            isStill = false
+        }
+        let isPlaying = isVisible && !isStill && !self.isPlaybackPaused && !self.didComplete && (self.lottieInstance != nil || self.videoSource != nil)
         if self.isPlaying != isPlaying {
             self.isPlaying = isPlaying
             
@@ -147,17 +174,25 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
             
             self.isPlayingChanged(self.isPlaying)
         }
+        if isVisible {
+            self.updateLoadFrameTasks()
+        }
     }
     
     private func startNextFrameTimerIfNeeded() {
+        // A frame render can finish after visibility changed or pause() invalidated the timer.
+        // Only live playback may schedule its replacement.
+        guard self.isPlaying, !self.didComplete else {
+            return
+        }
         var frameRate: Double?
         if let lottieInstance = self.lottieInstance {
             frameRate = Double(lottieInstance.frameRate)
-        } else if let videoSource = self.videoSource {
-            frameRate = Double(videoSource.frameRate)
+        } else if self.videoSource != nil {
+            frameRate = Double(self.videoFrameRate)
         }
         
-        if self.nextFrameTimer == nil, let frameRate = frameRate, self.frameImages[self.frameIndex] != nil {
+        if self.nextFrameTimer == nil, let frameRate = frameRate, frameRate > 0.0, self.frameImages[self.frameIndex] != nil {
             let nextFrameTimer = SwiftSignalKit.Timer(timeout: 1.0 / frameRate, repeat: false, completion: { [weak self] in
                 guard let strongSelf = self else {
                     return
@@ -171,13 +206,16 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
     }
     
     private func advanceFrameIfPossible() {
+        guard self.isPlaying else {
+            return
+        }
         var frameCount: Int?
         if let lottieInstance = self.lottieInstance {
             frameCount = Int(lottieInstance.frameCount)
-        } else if let videoSource = self.videoSource {
-            frameCount = Int(videoSource.frameCount)
+        } else if self.videoSource != nil {
+            frameCount = self.videoFrameCount
         }
-        guard let frameCount = frameCount else {
+        guard let frameCount = frameCount, frameCount > 0 || self.videoSource != nil else {
             return
         }
         
@@ -189,6 +227,7 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
                 if count <= 1 {
                     if !self.didComplete {
                         self.didComplete = true
+                        self.updatePlayback()
                         self.completed(true)
                     }
                     return
@@ -199,6 +238,7 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
             case .once:
                 if !self.didComplete {
                     self.didComplete = true
+                    self.updatePlayback()
                     self.completed(true)
                 }
                 return
@@ -207,7 +247,8 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
             }
         }
         
-        let nextFrameIndex = (self.frameIndex + 1) % frameCount
+        // A video source discovers its frame count on its first pass through the decoder.
+        let nextFrameIndex = frameCount > 0 ? (self.frameIndex + 1) % frameCount : self.frameIndex + 1
         self.frameIndex = nextFrameIndex
         
         self.updateFrameImageIfNeeded()
@@ -218,16 +259,16 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         var frameCount: Int?
         if let lottieInstance = self.lottieInstance {
             frameCount = Int(lottieInstance.frameCount)
-        } else if let videoSource = self.videoSource {
-            frameCount = Int(videoSource.frameCount)
+        } else if self.videoSource != nil {
+            frameCount = self.videoFrameCount
         }
-        guard let frameCount = frameCount else {
+        guard let frameCount = frameCount, frameCount > 0 || self.videoSource != nil else {
             return
         }
         
         var allowedIndices: [Int] = []
         for i in 0 ..< 2 {
-            let mappedIndex = (self.frameIndex + i) % frameCount
+            let mappedIndex = frameCount > 0 ? (self.frameIndex + i) % frameCount : self.frameIndex + i
             allowedIndices.append(mappedIndex)
         }
         
@@ -267,18 +308,18 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         var frameCount: Int?
         if let lottieInstance = self.lottieInstance {
             frameCount = Int(lottieInstance.frameCount)
-        } else if let videoSource = self.videoSource {
-            frameCount = Int(videoSource.frameCount)
+        } else if self.videoSource != nil {
+            frameCount = self.videoFrameCount
         }
-        guard let frameCount = frameCount else {
+        guard let frameCount = frameCount, frameCount > 0 || self.videoSource != nil else {
             return
         }
                 
-        let frameIndex = self.frameIndex % frameCount
+        let frameIndex = frameCount > 0 ? self.frameIndex % frameCount : self.frameIndex
         if self.frameImages[frameIndex] == nil {
             self.maybeStartLoadFrameTask(frameIndex: frameIndex)
-        } else {
-            self.maybeStartLoadFrameTask(frameIndex: (frameIndex + 1) % frameCount)
+        } else if self.isPlaying {
+            self.maybeStartLoadFrameTask(frameIndex: frameCount > 0 ? (frameIndex + 1) % frameCount : frameIndex + 1)
         }
     }
     
@@ -289,7 +330,7 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         guard let playbackSize = self.playbackSize else {
             return
         }
-        if self.loadFrameTasks[frameIndex] != nil {
+        if self.frameImages[frameIndex] != nil || self.loadFrameTasks[frameIndex] != nil {
             return
         }
         
@@ -301,6 +342,7 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         
         DirectAnimatedStickerNode.sharedQueue.async { [weak self] in
             var image: UIImage?
+            var videoFrameCount: Int?
             
             if !task.isCancelled {
                 if let lottieInstance = lottieInstance {
@@ -310,7 +352,12 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
                         image = drawingContext.generateImage()
                     }
                 } else if let videoSource = videoSource {
-                    if let frame = videoSource.takeFrame(draw: true) {
+                    let frame = videoSource.syncWith { source -> AnimatedStickerFrame? in
+                        let frame = source.value.takeFrame(draw: true)
+                        videoFrameCount = source.value.frameCount
+                        return frame
+                    }
+                    if let frame = frame {
                         if let drawingContext = DrawingContext(size: CGSize(width: frame.width, height: frame.height), scale: 1.0, opaque: false, clear: false, bytesPerRow: frame.bytesPerRow) {   
                             frame.data.copyBytes(to: drawingContext.bytes.assumingMemoryBound(to: UInt8.self), from: 0 ..< min(frame.data.count, drawingContext.length))
                             
@@ -325,13 +372,25 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
                     return
                 }
                 
-                if let currentTask = strongSelf.loadFrameTasks[frameIndex], currentTask === task {
-                    strongSelf.loadFrameTasks.removeValue(forKey: frameIndex)
+                guard let currentTask = strongSelf.loadFrameTasks[frameIndex], currentTask === task else {
+                    return
+                }
+                strongSelf.loadFrameTasks.removeValue(forKey: frameIndex)
+                guard !task.isCancelled else {
+                    return
+                }
+                let previousVideoFrameCount = strongSelf.videoFrameCount
+                if let videoFrameCount = videoFrameCount {
+                    strongSelf.videoFrameCount = videoFrameCount
                 }
                 
                 if !task.isCancelled, let image = image {
                     strongSelf.frameImages[frameIndex] = image
                     strongSelf.updateFrameImageIfNeeded()
+                    strongSelf.updateLoadFrameTasks()
+                } else if let videoFrameCount = videoFrameCount, videoFrameCount > 0, previousVideoFrameCount == 0 {
+                    // End-of-stream supplies the previously unknown count without a new frame.
+                    // Allow the timer on the last image to complete or wrap with that count.
                     strongSelf.updateLoadFrameTasks()
                 }
             }
@@ -344,38 +403,78 @@ public final class DirectAnimatedStickerNode: ASDisplayNode, AnimatedStickerNode
         self.updatePlayback()
     }
     
-    private func setupPlayback(videoSource: AnimatedStickerFrameSource) {
+    private func setupPlayback(videoSource: QueueLocalObject<AnimatedStickerFrameSourceWrapper>, frameCount: Int, frameRate: Int) {
         self.videoSource = videoSource
+        self.videoFrameCount = frameCount
+        self.videoFrameRate = frameRate
         
         self.updatePlayback()
     }
     
     public func reset() {
+        self.sourceDisposable?.dispose()
+        self.sourceDisposable = nil
+        self.nextFrameTimer?.invalidate()
+        self.nextFrameTimer = nil
+        for task in self.loadFrameTasks.values {
+            task.isCancelled = true
+        }
+        self.loadFrameTasks.removeAll()
+        self.frameImages.removeAll()
+        self.lottieInstance = nil
+        self.videoSource = nil
+        self.videoFrameCount = 0
+        self.videoFrameRate = 0
+        self.frameIndex = 0
+        self.didStart = false
+        self.didComplete = false
+        self.isPlaybackPaused = false
+        self.layer.contents = nil
+        self.updatePlayback()
     }
     
     public func playOnce() {
+        self.playbackMode = .once
+        self.play(firstFrame: false, fromIndex: 0)
     }
     
     public func playLoop() {
+        self.playbackMode = .loop
+        self.play(firstFrame: false, fromIndex: nil)
     }
     
     public func play(firstFrame: Bool, fromIndex: Int?) {
         if let fromIndex = fromIndex {
-            self.frameIndex = fromIndex
-            self.updateLoadFrameTasks()
+            if self.currentFrameCount > 0 {
+                self.frameIndex = max(0, min(fromIndex, self.currentFrameCount - 1))
+            } else {
+                self.frameIndex = max(0, fromIndex)
+            }
         }
+        self.isPlaybackPaused = firstFrame
+        self.didComplete = false
+        self.updatePlayback()
+        self.updateFrameImageIfNeeded()
+        self.updateLoadFrameTasks()
     }
     
     public func pause() {
+        self.isPlaybackPaused = true
+        self.updatePlayback()
     }
     
     public func stop() {
+        self.pause()
     }
     
     public func seekTo(_ position: AnimatedStickerPlaybackPosition) {
     }
     
     public func playIfNeeded() -> Bool {
+        if !self.isPlaying {
+            self.play(firstFrame: false, fromIndex: nil)
+            return self.isPlaying
+        }
         return false
     }
     

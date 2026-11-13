@@ -369,8 +369,9 @@ public final class SemanticStatusNode: ASControlNode {
         })
     }
     
-    private var animator: ConstantDisplayLinkAnimator?
-    
+    private var animationLink: SharedDisplayLinkDriver.Link?
+    private var animationLinkFramesPerSecond: Int?
+
     private var hasState: Bool = false
     public private(set) var state: SemanticStatusNodeState
     private var transitionContext: SemanticStatusNodeTransitionContext?
@@ -378,7 +379,8 @@ public final class SemanticStatusNode: ASControlNode {
     private var appearanceContext: SemanticStatusNodeAppearanceContext
     
     private let hierarchyTrackingLayer: HierarchyTrackingLayer
-    
+    private var didObserveHierarchyEvent: Bool = false
+
     private var disposable: Disposable?
     private var backgroundNodeImage: UIImage?
     
@@ -411,44 +413,105 @@ public final class SemanticStatusNode: ASControlNode {
     public override func didLoad() {
         super.didLoad()
         
+        // SuperGram: resume/stop the display link when the node enters/leaves the layer tree. Deferred because this
+        // fires while Core Animation is inserting/removing layers and updateAnimations may run transition completions.
+        // Installed before addSublayer so the initial "in hierarchy" event (state set before load) is not missed.
+        self.hierarchyTrackingLayer.isInHierarchyUpdated = { [weak self] _ in
+            self?.didObserveHierarchyEvent = true
+            Queue.mainQueue().justDispatch {
+                self?.updateAnimations()
+            }
+        }
         self.layer.addSublayer(self.hierarchyTrackingLayer)
     }
-    
+
     deinit {
         self.disposable?.dispose()
+        if let animationLink = self.animationLink {
+            animationLink.isPaused = true
+            animationLink.invalidate()
+        }
     }
-    
+
+    /// `HierarchyTrackingLayer` learns about attach/detach only from `action(forKey: kCAOnOrderIn/kCAOnOrderOut)`,
+    /// and Core Animation skips action lookup entirely while implicit actions are disabled
+    /// (`CATransaction.setDisableActions(true)`, which the node/list layout system uses pervasively). So
+    /// `isInHierarchy == false` is *not* proof that this node is off-screen — it can simply mean the event was
+    /// never delivered. Before this gating existed a false negative only cost a cross-fade; now it would freeze
+    /// the spinner for the whole download. Only trust a negative when there is corroborating evidence.
+    private var isEffectivelyInHierarchy: Bool {
+        if self.hierarchyTrackingLayer.isInHierarchy {
+            return true
+        }
+        if !self.isNodeLoaded {
+            // No layer tree yet: assume attached until an order-out is actually observed.
+            return !self.didObserveHierarchyEvent
+        }
+        // ASDisplayNode maintains its own `isInHierarchy` from the view's window transitions
+        // (`willMove(toWindow:)`), which does not depend on Core Animation action lookup and is therefore
+        // the trustworthy signal; `didEnterHierarchy`/`didExitHierarchy` below keep the link in sync with it.
+        return self.isInHierarchy
+    }
+
+    public override func didEnterHierarchy() {
+        super.didEnterHierarchy()
+
+        self.didObserveHierarchyEvent = true
+        // Deferred for the same reason as `isInHierarchyUpdated`: this runs while the view hierarchy is being
+        // mutated and `updateAnimations()` can run transition completions.
+        Queue.mainQueue().justDispatch { [weak self] in
+            self?.updateAnimations()
+        }
+    }
+
+    public override func didExitHierarchy() {
+        super.didExitHierarchy()
+
+        self.didObserveHierarchyEvent = true
+        Queue.mainQueue().justDispatch { [weak self] in
+            self?.updateAnimations()
+        }
+    }
+
     private func updateAnimations() {
         var animate = false
+        // SuperGram: state transitions run at 60 fps, the progress spinner alone at 30 fps
+        var framesPerSecond: Int = 30
         let timestamp = CACurrentMediaTime()
-        
+        let isInHierarchy = self.isEffectivelyInHierarchy
+
         if let transitionContext = self.transitionContext {
-            if transitionContext.startTime + transitionContext.duration < timestamp {
+            if transitionContext.startTime + transitionContext.duration < timestamp || !isInHierarchy {
                 self.transitionContext = nil
                 transitionContext.completion()
             } else {
                 animate = true
+                framesPerSecond = 60
             }
         }
-        if self.stateContext.isAnimating {
+        if self.stateContext.isAnimating && isInHierarchy {
             animate = true
         }
-        
+
         if animate {
-            let animator: ConstantDisplayLinkAnimator
-            if let current = self.animator {
-                animator = current
+            if let animationLink = self.animationLink, self.animationLinkFramesPerSecond == framesPerSecond {
+                animationLink.isPaused = false
             } else {
-                animator = ConstantDisplayLinkAnimator(update: { [weak self] in
+                if let animationLink = self.animationLink {
+                    animationLink.isPaused = true
+                    animationLink.invalidate()
+                }
+                let animationLink = SharedDisplayLinkDriver.shared.add(framesPerSecond: .fps(framesPerSecond), { [weak self] _ in
                     self?.updateAnimations()
                 })
-                self.animator = animator
+                animationLink.isPaused = false
+                self.animationLink = animationLink
+                self.animationLinkFramesPerSecond = framesPerSecond
             }
-            animator.isPaused = false
         } else {
-            self.animator?.isPaused = true
+            self.animationLink?.isPaused = true
         }
-        
+
         self.setNeedsDisplay()
     }
     
@@ -458,7 +521,7 @@ public final class SemanticStatusNode: ASControlNode {
             self.hasState = true
             animated = false
         }
-        if !self.hierarchyTrackingLayer.isInHierarchy {
+        if !self.isEffectivelyInHierarchy {
             animated = false
         }
         if self.state != state || self.appearanceContext.cutout != cutout {
@@ -467,8 +530,11 @@ public final class SemanticStatusNode: ASControlNode {
             let previousAppearanceContext = updateCutout ? self.appearanceContext : nil
             
             self.stateContext = self.state.context(current: self.stateContext, animated: animated)
+            // SuperGram (FIX-MEDIA-UI): the display link is no longer permanently running, so a context that starts
+            // animating on its own (an icon cross-fade, a secret-timeout tick) has to be able to restart it.
+            // updateAnimations() ends in setNeedsDisplay(), so this is a superset of the previous behaviour.
             self.stateContext.requestUpdate = { [weak self] in
-                self?.setNeedsDisplay()
+                self?.updateAnimations()
             }
             if updateCutout {
                 self.appearanceContext = self.appearanceContext.withUpdatedCutout(cutout)

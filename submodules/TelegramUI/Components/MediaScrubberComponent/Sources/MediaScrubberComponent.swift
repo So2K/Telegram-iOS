@@ -1364,7 +1364,8 @@ private class TrackView: UIView, UIScrollViewDelegate, UIGestureRecognizerDelega
                         continue
                     }
                     transparentFrameLayer.contents = frameImage
-                    if let contents = opaqueFrameLayer.contents as? CGImage, contents !== frameImage, opaqueFrameLayer.animation(forKey: "contents") == nil {
+                    if let contents = opaqueFrameLayer.contents, CFGetTypeID(contents as CFTypeRef) == CGImage.typeID, (contents as! CGImage) !== frameImage, opaqueFrameLayer.animation(forKey: "contents") == nil {
+                        let contents = contents as! CGImage
                         opaqueFrameLayer.contents = frameImage
                         opaqueFrameLayer.animate(from: contents as AnyObject, to: frameImage as AnyObject, keyPath: "contents", timingFunction: CAMediaTimingFunctionName.linear.rawValue, duration: 0.2)
                     } else {

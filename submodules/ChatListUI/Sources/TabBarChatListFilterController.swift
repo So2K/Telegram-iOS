@@ -1,3 +1,4 @@
+import SGSimpleSettings
 import Foundation
 import UIKit
 import Display
@@ -10,6 +11,16 @@ import TelegramCore
 
 public func chatListFilterItems(context: AccountContext) -> Signal<(Int, [(ChatListFilter, Int, Bool)]), NoError> {
     return context.engine.peers.updatedChatListFilters()
+    // MARK: Swiftgram
+    // SuperGram: Swiftgram removes "All Chats" in TelegramCore `_internal_updatedChatListFilters`; it is done here instead,
+    // for the folder tabs only, so TelegramCore stays untouched and folder settings still list "All Chats".
+    |> map { filters -> [ChatListFilter] in
+        var filters = filters
+        if filters.count > 1 && SGSimpleSettings.shared.allChatsHidden {
+            filters.removeAll { $0 == .allChats }
+        }
+        return filters
+    }
     |> distinctUntilChanged
     |> mapToSignal { filters -> Signal<(Int, [(ChatListFilter, Int, Bool)]), NoError> in
         var unreadCountItems: [EngineRawUnreadMessageCountsItem] = []

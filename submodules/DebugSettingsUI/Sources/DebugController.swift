@@ -17,6 +17,13 @@ import WebKit
 import InAppPurchaseManager
 import TelegramVoip
 
+// SuperGram: file logging switch shared with the SuperGram settings screen (SGSimpleSettings key, default off)
+private let superGramFileLoggingKey = "sgFileLogging"
+
+private func superGramFileLoggingEnabled() -> Bool {
+    return UserDefaults.standard.object(forKey: superGramFileLoggingKey) as? Bool ?? false
+}
+
 @objc private final class DebugControllerMailComposeDelegate: NSObject, MFMailComposeViewControllerDelegate {
     public func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
         controller.dismiss(animated: true, completion: nil)
@@ -944,6 +951,8 @@ private enum DebugControllerEntry: ItemListNodeEntry {
             })
         case let .logToFile(_, value):
             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Log to File", value: value, sectionId: self.section, style: .blocks, updated: { value in
+                // SuperGram: "sgFileLogging" is the source of truth for file logging (also shown on the SuperGram screen)
+                UserDefaults.standard.set(value, forKey: superGramFileLoggingKey)
                 let _ = updateLoggingSettings(accountManager: arguments.sharedContext.accountManager, {
                     $0.withUpdatedLogToFile(value)
                 }).start()
@@ -951,13 +960,13 @@ private enum DebugControllerEntry: ItemListNodeEntry {
         case let .logToConsole(_, value):
             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Log to Console", value: value, sectionId: self.section, style: .blocks, updated: { value in
                 let _ = updateLoggingSettings(accountManager: arguments.sharedContext.accountManager, {
-                    $0.withUpdatedLogToConsole(value)
+                    $0.withUpdatedLogToConsole(value).withUpdatedLogToFile(superGramFileLoggingEnabled())
                 }).start()
             })
         case let .redactSensitiveData(_, value):
             return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, title: "Remove Sensitive Data", value: value, sectionId: self.section, style: .blocks, updated: { value in
                 let _ = updateLoggingSettings(accountManager: arguments.sharedContext.accountManager, {
-                    $0.withUpdatedRedactSensitiveData(value)
+                    $0.withUpdatedRedactSensitiveData(value).withUpdatedLogToFile(superGramFileLoggingEnabled())
                 }).start()
             })
         case let .keepChatNavigationStack(_, value):
@@ -1566,7 +1575,7 @@ private func debugControllerEntries(context: AccountContext?, sharedContext: Sha
         entries.append(.accounts(presentationData.theme))
     }
     
-    entries.append(.logToFile(presentationData.theme, loggingSettings.logToFile))
+    entries.append(.logToFile(presentationData.theme, superGramFileLoggingEnabled()))
     entries.append(.logToConsole(presentationData.theme, loggingSettings.logToConsole))
     entries.append(.redactSensitiveData(presentationData.theme, loggingSettings.redactSensitiveData))
 
@@ -1683,9 +1692,10 @@ public func debugController(sharedContext: SharedAccountContext, context: Accoun
         return getNavigationControllerImpl?()
     })
     
-    let appGroupName = "group.\(Bundle.main.bundleIdentifier!)"
+    // SuperGram: the provisioned app group; must match telegramAppGroupIdentifier (TelegramUI/AppDelegate.swift).
+    let appGroupName = "group.ffcd1c12e1a9728e.1"
     let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)
-    
+
     var hasLegacyAppData = false
     if let appGroupUrl = maybeAppGroupUrl {
         let statusPath = appGroupUrl.path + "/Documents/importcompleted"

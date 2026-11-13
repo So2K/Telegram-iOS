@@ -1411,7 +1411,9 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
                 }
             }
 
-            let duration: Double = 0.42
+            // SuperGram: 0.3 s instead of 0.42 s — the menu is usable sooner; the spring is compressed proportionally
+            // (CAAnimationUtils scales its speed), so it keeps its shape without a cut-off at the end.
+            let duration: Double = 0.3
             let springDamping: CGFloat = 104.0
             
             self.scroller.contentOffset = CGPoint(x: 0.0, y: defaultScrollY)
@@ -1596,7 +1598,7 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
             }
             
             if let contextExtractableContainer {
-                let transition = ComponentTransition(animation: .curve(duration: 0.5, curve: .spring))
+                let transition = ComponentTransition(animation: .curve(duration: 0.32, curve: .spring))
                 
                 self.actionsStackNode.animateIn(fromExtractableContainer: contextExtractableContainer.container, fromRect: contextExtractableContainer.sourceRect.offsetBy(dx: -self.actionsContainerNode.frame.minX, dy: -self.actionsContainerNode.frame.minY), presentationData: presentationData, transition: transition)
             } else {
@@ -2100,7 +2102,7 @@ final class ContextControllerExtractedPresentationNode: ASDisplayNode, ContextCo
         
         let result: ContextMenuActionResult
         if reducedCurve {
-            result = .custom(.animated(duration: 0.5, curve: .spring))
+            result = .custom(.animated(duration: 0.35, curve: .spring))
         } else {
             result = .default
         }

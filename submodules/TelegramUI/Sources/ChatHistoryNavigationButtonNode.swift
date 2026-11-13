@@ -17,6 +17,8 @@ enum ChatHistoryNavigationButtonType {
     case mentions
     case reactions
     case pollVotes
+    // SuperGram: "search in chat" button shown above the scroll-down button when the channel bottom panel is hidden
+    case search
 }
 
 class ChatHistoryNavigationButtonNode: ContextControllerSourceNode {
@@ -71,7 +73,9 @@ class ChatHistoryNavigationButtonNode: ContextControllerSourceNode {
         case .reactions:
             self.imageView.image = PresentationResourcesChat.chatHistoryReactionsButtonImage(theme)
         case .pollVotes:
-            self.imageView.image = PresentationResourcesChat.chatHistoryPollVotesButtonImage(theme)
+            self.imageView.image = PresentationResourcesChat.chatHistoryPollVotesButtonImage(theme)        case .search:
+            self.imageView.image = UIImage(bundleImageName: "Chat List/SearchIcon")?.withRenderingMode(.alwaysTemplate)
+            self.imageView.contentMode = .center
         }
         
         self.badgeBackgroundView = GlassBackgroundView()
@@ -130,7 +134,8 @@ class ChatHistoryNavigationButtonNode: ContextControllerSourceNode {
             case .reactions:
                 self.imageView.image = PresentationResourcesChat.chatHistoryReactionsButtonImage(theme)
             case .pollVotes:
-                self.imageView.image = PresentationResourcesChat.chatHistoryPollVotesButtonImage(theme)
+                self.imageView.image = PresentationResourcesChat.chatHistoryPollVotesButtonImage(theme)            case .search:
+                self.imageView.image = UIImage(bundleImageName: "Chat List/SearchIcon")?.withRenderingMode(.alwaysTemplate)
             }
             
             self.badgeBackgroundView.update(size: self.badgeBackgroundView.bounds.size, cornerRadius: self.badgeBackgroundView.bounds.height * 0.5, isDark: theme.overallDarkAppearance, tintColor: .init(kind: .custom(style: .default, color: theme.chat.inputPanel.actionControlFillColor)), transition: .immediate)

@@ -1,3 +1,8 @@
+// MARK: Swiftgram
+import SGSimpleSettings
+import SGInputToolbar
+import SwiftUI
+
 import Foundation
 import UniformTypeIdentifiers
 import UIKit
@@ -337,7 +342,16 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     private var strings: PresentationStrings?
     
     private let hapticFeedback = HapticFeedback()
-    
+
+    // MARK: Swiftgram
+    /// `SGSimpleSettings.shared.sendWithReturnKey`, read once per panel: the keyboard return key sends the
+    /// message instead of inserting a newline. Changing the setting applies to chats opened afterwards.
+    private let sendWithReturnKey: Bool
+    /// `SGSimpleSettings.shared.inputToolbar`: the SwiftUI formatting panel shown above the keyboard.
+    private var toolbarNode: ASDisplayNode?
+    /// Retained so the hosting controller outlives its view (Swiftgram leaves it unowned).
+    private var toolbarHostingController: UIViewController?
+
     public var isAIEnabled: Bool = false
     
     public var inputTextState: ChatTextInputState {
@@ -462,11 +476,27 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
     }
             
+    // SuperGram: the gift accessory button in the text field is a promo surface (UPS-02)
+    private static func superGramFilteredAccessoryItems(_ items: [ChatTextInputAccessoryItem]) -> [ChatTextInputAccessoryItem] {
+        if !superGramHidePremiumUpsell {
+            return items
+        }
+        return items.filter { item in
+            if case .gift = item {
+                return false
+            } else {
+                return true
+            }
+        }
+    }
+
     public func updateInputTextState(_ state: ChatTextInputState, keepSendButtonEnabled: Bool, extendedSearchLayout: Bool, accessoryItems: [ChatTextInputAccessoryItem], animated: Bool) {
         if self.ignoreInputStateUpdates {
             return
         }
-        
+
+        let accessoryItems = ChatTextInputPanelNode.superGramFilteredAccessoryItems(accessoryItems)
+
         if let currentState = self.presentationInterfaceState {
             var updateAccessoryButtons = false
             if accessoryItems.count == self.accessoryItemButtons.count {
@@ -626,6 +656,9 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         
         self.textInputViewInternalInsets = UIEdgeInsets(top: 5.0, left: 12.0, bottom: 4.0, right: 11.0)
 
+        // MARK: Swiftgram
+        self.sendWithReturnKey = SGSimpleSettings.shared.sendWithReturnKey
+
         var hasSpoilers = true
         var hasQuotes = true
         if presentationInterfaceState.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat {
@@ -765,6 +798,9 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             self.enableBounceAnimations = false
         }*/
         
+        // MARK: Swiftgram
+        self.initToolbarIfNeeded()
+
         self.sendAsAvatarContainerNode.activated = { [weak self] gesture, _ in
             guard let strongSelf = self else {
                 return
@@ -1070,6 +1106,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.textInputNodeClippingContainer.addSubnode(textInputNode)
         textInputNode.view.disablesInteractiveTransitionGestureRecognizer = true
         textInputNode.isUserInteractionEnabled = !self.sendingTextDisabled
+        // MARK: Swiftgram
+        textInputNode.textView.returnKeyType = self.sendWithReturnKey ? .send : .default
         self.textInputNode = textInputNode
         
         if let textInputBackgroundTapRecognizer = self.textInputBackgroundTapRecognizer {
@@ -2165,10 +2203,12 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             animatedTransition = false
         }
         
+        // SuperGram: filtered accessory items (no gift button), compared against the current buttons
+        let accessoryItems = ChatTextInputPanelNode.superGramFilteredAccessoryItems(interfaceState.inputTextPanelState.accessoryItems)
         var updateAccessoryButtons = false
-        if self.presentationInterfaceState?.inputTextPanelState.accessoryItems.count == self.accessoryItemButtons.count {
-            for i in 0 ..< interfaceState.inputTextPanelState.accessoryItems.count {
-                if interfaceState.inputTextPanelState.accessoryItems[i] != self.accessoryItemButtons[i].0 {
+        if accessoryItems.count == self.accessoryItemButtons.count {
+            for i in 0 ..< accessoryItems.count {
+                if accessoryItems[i] != self.accessoryItemButtons[i].0 {
                     updateAccessoryButtons = true
                     break
                 }
@@ -2176,11 +2216,11 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         } else {
             updateAccessoryButtons = true
         }
-        
+
         var removeAccessoryButtons: [AccessoryItemIconButton]?
         if updateAccessoryButtons {
             var updatedButtons: [(ChatTextInputAccessoryItem, AccessoryItemIconButton)] = []
-            for item in interfaceState.inputTextPanelState.accessoryItems {
+            for item in accessoryItems {
                 var itemAndButton: (ChatTextInputAccessoryItem, AccessoryItemIconButton)?
                 for i in 0 ..< self.accessoryItemButtons.count {
                     if self.accessoryItemButtons[i].0.key == item.key {
@@ -2242,6 +2282,9 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             transition = .animated(duration: 0.3, curve: .easeInOut)
         }
         
+        // MARK: Swiftgram
+        let originalLeftInset = leftInset
+
         let textInputBackgroundWidthOffset: CGFloat = 0.0
         var attachmentButtonX: CGFloat = hideOffset.x + leftInset + leftMenuInset + 8.0
         
@@ -2422,7 +2465,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         if additionalSideInsets.right > 0.0 {
             textFieldInsets.right += additionalSideInsets.right / 3.0
         }
-        if inputHasText || self.extendedSearchLayout || hasMediaDraft || hasForward || hasSlowmodeButton || isEditingMedia {
+        // MARK: Swiftgram
+        if SGSimpleSettings.shared.hideRecordingButton || inputHasText || self.extendedSearchLayout || hasMediaDraft || hasForward || hasSlowmodeButton || isEditingMedia {
         } else {
             if let customRightAction = self.customRightAction, case .empty = customRightAction {
                 textFieldInsets.right = 8.0
@@ -3659,8 +3703,11 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let containerFrame = CGRect(origin: CGPoint(), size: CGSize(width: width, height: contentHeight + 64.0))
         transition.updateFrame(view: self.glassBackgroundContainer, frame: containerFrame)
         self.glassBackgroundContainer.update(size: containerFrame.size, isDark: interfaceState.theme.overallDarkAppearance, transition: ComponentTransition(transition))
-        
-        return contentHeight
+
+        // MARK: Swiftgram
+        let toolbarOffset = self.layoutToolbar(transition: transition, panelHeight: contentHeight, width: width, leftInset: originalLeftInset, rightInset: rightInset, displayBotStartButton: displayBotStartButton)
+
+        return contentHeight + toolbarOffset
     }
     
     @objc private func slowModeButtonPressed() {
@@ -4496,9 +4543,10 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let blurTransitionOut: ComponentTransition = transition.isAnimated ? .easeInOut(duration: 0.18) : .immediate
         let sendButtonBlurOut: CGFloat = 4.0
         
-        var hideMicButton = false
-        var hideMicButtonBackground = false
-        
+        // MARK: Swiftgram
+        var hideMicButton = SGSimpleSettings.shared.hideRecordingButton
+        var hideMicButtonBackground = SGSimpleSettings.shared.hideRecordingButton
+
         if self.customRightAction != nil {
             self.mediaActionButtons.isHidden = true
         }
@@ -4580,7 +4628,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                 }
             }
             
-            if (hasText || keepSendButtonEnabled && !mediaInputIsActive && !hasSlowModeButton) {
+            // MARK: Swiftgram
+            if (SGSimpleSettings.shared.hideRecordingButton || hasText || keepSendButtonEnabled && !mediaInputIsActive && !hasSlowModeButton) {
                 if self.sendActionButtons.sendContainerNode.alpha.isZero && self.rightSlowModeInset.isZero {
                     alphaTransition.updateAlpha(node: self.sendActionButtons.sendContainerNode, alpha: 1.0)
                     blurTransitionIn.setBlur(layer: self.sendActionButtons.sendContainerNode.layer, radius: 0.0)
@@ -5204,6 +5253,23 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
         
         self.updateActivity()
+
+        // MARK: Swiftgram
+        // This is the software-keyboard return key: a hardware Return is swallowed by `ChatInputTextViewImpl`'s
+        // `keyCommands` and routed to `chatInputTextNodeShouldReturn` instead, so the two never both fire.
+        //
+        // SuperGram: gated on the send button actually being on screen, which is the same predicate
+        // `chatInputTextNodeShouldReturn` uses. Without it, Return fires `sendButtonPressed` in states where the
+        // send button is deliberately hidden (empty input, active media input) — an empty send that can still
+        // raise the paid-message confirmation — and, because it also returned `false`, swallowed the keystroke so
+        // the user could not even type a newline. Falling through inserts the newline in those states.
+        if self.sendWithReturnKey && text == "\n" {
+            if self.sendActionButtons.sendButton.supernode != nil && !self.sendActionButtons.sendButton.isHidden && !self.sendActionButtons.sendContainerNode.alpha.isZero {
+                self.sendButtonPressed()
+                return false
+            }
+        }
+
         var cleanText = text
         let removeSequences: [String] = ["\u{202d}", "\u{202c}"]
         for sequence in removeSequences {
@@ -5740,5 +5806,201 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     
     public func makeAttachmentMenuTransition(accessoryPanelNode: ASDisplayNode?) -> AttachmentInputPanelTransition {
         return AttachmentInputPanelTransition(inputNode: self, accessoryPanelNode: accessoryPanelNode, menuButtonNode: self.menuButton, menuButtonBackgroundView: self.menuButtonBackgroundView, menuIconNode: self.menuButtonIconNode, menuTextNode: self.menuButtonTextNode, prepareForDismiss: { self.menuButtonIconNode.enqueueState(.app, animated: false) })
+    }
+}
+
+
+// MARK: Swiftgram
+// SuperGram (W2-CHATUI-INPUT, finding chat-09): the `inputToolbar` formatting panel, ported from Swiftgram with
+// the Pro gate (`context.sharedContext.immediateSGStatus.status > 1`) removed. Swiftgram also wires the same
+// toolbar into AttachmentTextInputPanelNode, MessageInputPanelComponent and TextFieldComponent; those files are
+// outside this stream's zone and are listed as cross-zone requests.
+extension ChatTextInputPanelNode {
+    /// Selects the word before the caret when nothing is selected, so a formatting button has something to apply
+    /// to. Swiftgram puts this on `ChatPanelInterfaceInteraction`; SuperGram keeps it local, because it only
+    /// needs the already-public `updateTextInputStateAndMode`.
+    private func sgSelectLastWordIfIdle() {
+        self.interfaceInteraction?.updateTextInputStateAndMode { current, inputMode in
+            // No changes to current selection
+            if !current.selectionRange.isEmpty {
+                return (current, inputMode)
+            }
+
+            let inputText = (current.inputText.mutableCopy() as? NSMutableAttributedString) ?? NSMutableAttributedString()
+
+            // If text is empty or cursor is at the start, return current state
+            guard inputText.length > 0, current.selectionRange.lowerBound > 0 else {
+                return (current, inputMode)
+            }
+
+            let nsString = inputText.string as NSString
+
+            // Create character set for word boundaries
+            let wordBoundaries = CharacterSet.whitespacesAndNewlines
+
+            // Start from cursor position instead of end of text
+            var endIndex = min(current.selectionRange.lowerBound, nsString.length) - 1
+
+            // Find last non-whitespace character before cursor
+            while endIndex >= 0 && nsString.rangeOfCharacter(from: wordBoundaries, options: [], range: NSRange(location: endIndex, length: 1)).location != NSNotFound {
+                endIndex -= 1
+            }
+
+            // If we only had whitespace before cursor, return current state
+            guard endIndex >= 0 else {
+                return (current, inputMode)
+            }
+
+            // Find start of the current word by looking backwards for whitespace
+            var startIndex = endIndex
+            while startIndex > 0 {
+                if nsString.rangeOfCharacter(from: wordBoundaries, options: [], range: NSRange(location: startIndex - 1, length: 1)).location != NSNotFound {
+                    break
+                }
+                startIndex -= 1
+            }
+
+            let newSelectionRange = startIndex ..< (endIndex + 1)
+            return (ChatTextInputState(inputText: inputText, selectionRange: newSelectionRange), inputMode)
+        }
+    }
+
+    /// Inserts a newline at the caret; with a selection, moves the selected text onto a new line.
+    private func sgSetNewLine() {
+        self.interfaceInteraction?.updateTextInputStateAndMode { current, inputMode in
+            let inputText = (current.inputText.mutableCopy() as? NSMutableAttributedString) ?? NSMutableAttributedString()
+
+            if !current.selectionRange.isEmpty {
+                // Move selected text to new line
+                let selectedText = inputText.attributedSubstring(from: NSRange(current.selectionRange))
+                inputText.replaceCharacters(in: NSRange(current.selectionRange), with: NSAttributedString(string: "\n"))
+                inputText.insert(selectedText, at: current.selectionRange.lowerBound + 1)
+
+                let newPosition = current.selectionRange.lowerBound + 1 + selectedText.length
+                return (ChatTextInputState(inputText: inputText, selectionRange: newPosition ..< newPosition), inputMode)
+            } else {
+                // Simple newline insertion at current position
+                inputText.replaceCharacters(in: NSRange(current.selectionRange), with: NSAttributedString(string: "\n"))
+
+                let newPosition = current.selectionRange.lowerBound + 1
+                return (ChatTextInputState(inputText: inputText, selectionRange: newPosition ..< newPosition), inputMode)
+            }
+        }
+    }
+
+    func initToolbarIfNeeded() {
+        guard SGSimpleSettings.shared.inputToolbar else { return }
+        guard self.toolbarNode == nil else { return }
+        let toolbarView = ChatToolbarView(
+            onQuote: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesQuote(strongSelf)
+            },
+            onSpoiler: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesSpoiler(strongSelf)
+            },
+            onBold: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesBold(strongSelf)
+            },
+            onItalic: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesItalic(strongSelf)
+            },
+            onDate: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesDate(strongSelf)
+            },
+            onMonospace: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesMonospace(strongSelf)
+            },
+            onLink: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesLink(strongSelf)
+            },
+            onStrikethrough: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesStrikethrough(strongSelf)
+            },
+            onUnderline: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesUnderline(strongSelf)
+            },
+            onCode: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.formatAttributesCodeBlock(strongSelf)
+            },
+            onNewLine: { [weak self] in
+                guard let strongSelf = self else { return }
+                strongSelf.sgSetNewLine()
+            },
+            showNewLine: .constant(true),
+            onClearFormatting: { [weak self] in
+                guard let strongSelf = self else { return }
+                // Swiftgram adds a `forceRemoveAll:` flag to `chatTextInputAddFormattingAttribute`; the existing
+                // `chatTextInputClearFormattingAttributes` already removes every attribute in the selection.
+                strongSelf.sgSelectLastWordIfIdle()
+                strongSelf.interfaceInteraction?.updateTextInputStateAndMode { current, inputMode in
+                    return (chatTextInputClearFormattingAttributes(current), inputMode)
+                }
+            }
+        )
+        let toolbarHostingController = UIHostingController(rootView: toolbarView)
+        toolbarHostingController.view.backgroundColor = .clear
+        let toolbarNode = ASDisplayNode(viewBlock: {
+            return toolbarHostingController.view
+        })
+        self.toolbarHostingController = toolbarHostingController
+        self.toolbarNode = toolbarNode
+
+        // Disable horizontal container swipes when touching the toolbar's scroll view, so a horizontal drag
+        // scrolls the toolbar instead.
+        //
+        // SuperGram: `hasHorizontalGestures` treats `true` as "this subtree has its own horizontal gestures" and
+        // only then drops the center swipe directions, so the test has to return `true` *on* the toolbar (the
+        // upstream Swiftgram snippet had it the other way round, which suppressed center swipes over the whole
+        // input panel and left them enabled on the toolbar itself). The point arrives in this node's coordinate
+        // space and has to be converted before `hitTest`, which expects the toolbar's own.
+        self.view.interactiveTransitionGestureRecognizerTest = { [weak self] point in
+            guard let strongSelf = self, let toolbarView = strongSelf.toolbarNode?.view else {
+                return false
+            }
+            return toolbarView.hitTest(strongSelf.view.convert(point, to: toolbarView), with: nil) != nil
+        }
+        self.addSubnode(toolbarNode)
+    }
+
+    func layoutToolbar(transition: ContainedViewLayoutTransition, panelHeight: CGFloat, width: CGFloat, leftInset: CGFloat, rightInset: CGFloat, displayBotStartButton: Bool) -> CGFloat {
+        guard let toolbarNode = self.toolbarNode else {
+            return 0.0
+        }
+        if displayBotStartButton {
+            transition.updateAlpha(node: toolbarNode, alpha: 0.0)
+            return 0.0
+        }
+        if !self.isFocused {
+            transition.updateAlpha(node: toolbarNode, alpha: 0.0)
+            return 0.0
+        }
+        // SuperGram: must match `ChatToolbarView`'s intrinsic height — `ToolbarButtonStyle` lays out 39pt round
+        // buttons and the HStack adds 8pt of vertical padding on each side. A shorter row does not shrink the
+        // SwiftUI content, it just clips it inside the ScrollView (flat-bottomed buttons, dead touch area).
+        let toolbarHeight: CGFloat = 39.0 + 8.0 * 2.0
+        let toolbarSpacing: CGFloat = 6.0
+        transition.updateFrame(node: toolbarNode, frame: CGRect(origin: CGPoint(x: leftInset, y: panelHeight + toolbarSpacing), size: CGSize(width: max(0.0, width - rightInset - leftInset), height: toolbarHeight)))
+        transition.updateAlpha(node: toolbarNode, alpha: 1.0)
+        return toolbarHeight + toolbarSpacing
     }
 }

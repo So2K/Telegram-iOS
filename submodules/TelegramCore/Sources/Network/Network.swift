@@ -1222,12 +1222,9 @@ public final class Network: NSObject, MTRequestMessageServiceDelegate {
     }
     
     func addNetworkSpeedLimitedEvent(event: NetworkSpeedLimitedEvent) {
-        let notify = self.networkSpeedLimitedEventState.with { state in
-            return state.add(event: event)
-        }
-        if notify {
-            self.networkSpeedLimitedEventPipe.putNext(event)
-        }
+        // SuperGram: the "Premium makes downloads/uploads faster" toast is an upsell; never emit the event.
+        // The server-side speed limit itself is unaffected.
+        let _ = event
     }
     
     public func markNetworkSpeedLimitDisplayed() {

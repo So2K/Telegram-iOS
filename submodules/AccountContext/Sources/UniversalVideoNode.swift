@@ -441,13 +441,7 @@ public final class UniversalVideoNode: ASDisplayNode {
     }
     
     public func enterNativePictureInPicture() -> Bool {
-        var result = false
-        self.manager.withUniversalVideoContent(id: self.content.id, { contentNode in
-            if let contentNode = contentNode {
-                result = contentNode.enterNativePictureInPicture()
-            }
-        })
-        return result
+        return false
     }
     
     public func exitNativePictureInPicture() {

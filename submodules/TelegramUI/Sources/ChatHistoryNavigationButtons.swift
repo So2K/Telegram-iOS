@@ -48,6 +48,18 @@ final class ChatHistoryNavigationButtons: ASDisplayNode {
         }
     }
     
+    // SuperGram: with the channel bottom panel hidden, the buttons hang from the top right corner (under the
+    // avatar) and stack downwards: search, scroll down, scroll up, mentions, reactions, poll votes.
+    let searchButton: ChatHistoryNavigationButtonNode
+    var searchPressed: (() -> Void)?
+    var isTopAnchored: Bool = false {
+        didSet {
+            if self.isTopAnchored != oldValue {
+                let _ = self.updateLayout(transition: .immediate)
+            }
+        }
+    }
+
     var reactionsPressed: (() -> Void)?
     var pollVotesPressed: (() -> Void)?
     var mentionsPressed: (() -> Void)?
@@ -137,8 +149,18 @@ final class ChatHistoryNavigationButtons: ASDisplayNode {
         self.upButton = ChatHistoryNavigationButtonNode(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode, type: isChatRotated ? .up : .down)
         self.upButton.alpha = 0.0
         self.upButton.isHidden = true
+
+        self.searchButton = ChatHistoryNavigationButtonNode(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode, type: .search)
+        self.searchButton.alpha = 0.0
+        self.searchButton.isHidden = true
         
         super.init()
+
+        self.addSubnode(self.searchButton)
+        self.searchButton.isGestureEnabled = false
+        self.searchButton.tapped = { [weak self] in
+            self?.searchPressed?()
+        }
         
         self.addSubnode(self.reactionsButton)
         self.addSubnode(self.pollVotesButton)
@@ -176,6 +198,7 @@ final class ChatHistoryNavigationButtons: ASDisplayNode {
         self.mentionsButton.updateTheme(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode)
         self.downButton.updateTheme(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode)
         self.upButton.updateTheme(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode)
+        self.searchButton.updateTheme(theme: theme, preferClearGlass: preferClearGlass, backgroundNode: backgroundNode)
     }
     
     private var absoluteRect: (CGRect, CGSize)?
@@ -300,7 +323,31 @@ final class ChatHistoryNavigationButtons: ASDisplayNode {
             transition.updateTransformScale(node: self.pollVotesButton, scale: 0.2)
         }
         
-        if self.isChatRotated {
+        self.searchButton.isHidden = !self.isTopAnchored
+        self.searchButton.alpha = self.isTopAnchored ? 1.0 : 0.0
+        if self.isTopAnchored {
+            let spacing: CGFloat = buttonSize.height + 12.0
+            var offset: CGFloat = 0.0
+            self.searchButton.position = CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center
+            offset += spacing
+            transition.updatePosition(node: self.downButton, position: CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center)
+            if self.directionButtonState.down != nil {
+                offset += spacing
+            }
+            transition.updatePosition(node: self.upButton, position: CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center)
+            if self.directionButtonState.up != nil {
+                offset += spacing
+            }
+            transition.updatePosition(node: self.mentionsButton, position: CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center)
+            if self.mentionCount != 0 {
+                offset += spacing
+            }
+            transition.updatePosition(node: self.reactionsButton, position: CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center)
+            if self.reactionsCount != 0 {
+                offset += spacing
+            }
+            transition.updatePosition(node: self.pollVotesButton, position: CGRect(origin: CGPoint(x: 0.0, y: offset), size: buttonSize).center)
+        } else if self.isChatRotated {
             transition.updatePosition(node: self.downButton, position: CGRect(origin: CGPoint(x: 0.0, y: completeSize.height - buttonSize.height), size: buttonSize).center)
             transition.updatePosition(node: self.upButton, position: CGRect(origin: CGPoint(x: 0.0, y: completeSize.height - buttonSize.height - upOffset), size: buttonSize).center)
             transition.updatePosition(node: self.mentionsButton, position: CGRect(origin: CGPoint(x: 0.0, y: completeSize.height - buttonSize.height - mentionsOffset), size: buttonSize).center)

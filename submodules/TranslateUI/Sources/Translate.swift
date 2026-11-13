@@ -140,7 +140,15 @@ public var popularTranslationLanguages = [
 ]
 
 @available(iOS 12.0, *)
-private let languageRecognizer = NLLanguageRecognizer()
+func sgTranslationLanguageRecognizer() -> NLLanguageRecognizer {
+    let key = "SuperGram.Translation.LanguageRecognizer"
+    if let recognizer = Thread.current.threadDictionary[key] as? NLLanguageRecognizer {
+        return recognizer
+    }
+    let recognizer = NLLanguageRecognizer()
+    Thread.current.threadDictionary[key] = recognizer
+    return recognizer
+}
 
 public func effectiveIgnoredTranslationLanguages(context: AccountContext, ignoredLanguages: [String]?) -> Set<String> {
     var baseLang = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode
@@ -186,7 +194,9 @@ public func canTranslateChats(context: AccountContext) -> Bool {
     default:
         break
     }
-    return chatTranslationAvailable
+    // MARK: Swiftgram
+    // SuperGram: behind sgTranslateChatsWithoutPremium (Swiftgram: `|| true`). Requests still go to Telegram or on-device, never to Google.
+    return chatTranslationAvailable || sgCanTranslateChatsWithoutPremium()
 }
 
 public func canTranslateText(context: AccountContext, text: String, showTranslate: Bool, showTranslateIfTopical: Bool = false, ignoredLanguages: [String]?) -> (canTranslate: Bool, language: String?) {
@@ -206,7 +216,7 @@ public func canTranslateText(context: AccountContext, text: String, showTranslat
     default:
         break
     }
-    
+
     let showTranslate = showTranslate && translateButtonAvailable
         
     if #available(iOS 12.0, *) {
@@ -217,6 +227,7 @@ public func canTranslateText(context: AccountContext, text: String, showTranslat
         let dontTranslateLanguages = effectiveIgnoredTranslationLanguages(context: context, ignoredLanguages: ignoredLanguages)
         
         let text = String(text.prefix(64))
+        let languageRecognizer = sgTranslationLanguageRecognizer()
         languageRecognizer.processString(text)
         let hypotheses = languageRecognizer.languageHypotheses(withMaximum: 3)
         languageRecognizer.reset()
@@ -267,84 +278,133 @@ private struct TranslationViewImpl: View {
     }
     
     var body: some View {
-        Text("ABC")
+        Color.clear
+        .frame(width: 1.0, height: 1.0)
+        .onAppear {
+            // A request can be enqueued before SwiftUI starts observing the trigger counter.
+            self.scheduleNextTask()
+        }
         .onChange(of: self.externalCondition.shouldInvalidate) { _ in
-            let firstTaskLanguagePair = self.taskContainer.with { taskContainer -> (String, String)? in
-                if let firstTask = taskContainer.tasks.first {
-                    return (firstTask.fromLang, firstTask.toLang)
-                } else {
-                    return nil
-                }
-            }
-            
-            if let firstTaskLanguagePair {
-                if let configuration = self.configuration, configuration.source?.languageCode?.identifier == firstTaskLanguagePair.0, configuration.target?.languageCode?.identifier == firstTaskLanguagePair.1 {
-                    self.configuration?.invalidate()
-                } else {
-                    self.configuration = .init(
-                        source: Locale.Language(identifier: firstTaskLanguagePair.0),
-                        target: Locale.Language(identifier: firstTaskLanguagePair.1)
-                    )
-                }
-            }
+            self.scheduleNextTask()
         }
         .translationTask(self.configuration, action: { session in
-            var task: ExperimentalInternalTranslationServiceImpl.TranslationTask?
-            task = self.taskContainer.with { taskContainer -> ExperimentalInternalTranslationServiceImpl.TranslationTask? in
-                if !taskContainer.tasks.isEmpty {
-                    return taskContainer.tasks.removeFirst()
-                } else {
+            let task = self.taskContainer.with { taskContainer -> ExperimentalInternalTranslationServiceImpl.TranslationTask? in
+                guard taskContainer.activeTask == nil, !taskContainer.tasks.isEmpty else {
                     return nil
                 }
+                let next = taskContainer.tasks[0]
+                guard session.sourceLanguage == Locale.Language(identifier: next.fromLang), session.targetLanguage == Locale.Language(identifier: next.toLang) else {
+                    // An old SwiftUI callback may arrive after a timeout changed the configuration.
+                    return nil
+                }
+                let task = taskContainer.tasks.removeFirst()
+                taskContainer.activeTask = task
+                return task
             }
-            
             guard let task else {
                 return
             }
-            
-            do {
-                var nextClientIdentifier: Int = 0
-                var clientIdentifierMap: [String: AnyHashable] = [:]
-                let translationRequests = task.texts.map { key, value in
-                    let id = nextClientIdentifier
-                    nextClientIdentifier += 1
-                    clientIdentifierMap["\(id)"] = key
-                    return TranslationSession.Request(sourceText: value, clientIdentifier: "\(id)")
-                }
-                
-                let responses = try await session.translations(from: translationRequests)
-                var resultMap: [AnyHashable: String] = [:]
-                for response in responses {
-                    if let clientIdentifier = response.clientIdentifier, let originalKey = clientIdentifierMap[clientIdentifier] {
-                        resultMap[originalKey] = "\(response.targetText)"
-                    }
-                }
-                
-                task.completion(resultMap)
-            } catch let e {
-                print("Translation error: \(e)")
-                task.completion(nil)
-            }
-            
-            let firstTaskLanguagePair = self.taskContainer.with { taskContainer -> (String, String)? in
-                if let firstTask = taskContainer.tasks.first {
-                    return (firstTask.fromLang, firstTask.toLang)
+
+            // An unstructured child gives signal disposal and the watchdog a cancellation handle.
+            // Cancellation of SwiftUI's parent task must also cancel that child explicitly.
+            var clientIdentifierMap: [String: AnyHashable] = [:]
+            var requestTexts: [String: String] = [:]
+            var emptyResults: [AnyHashable: String] = [:]
+            for (key, text) in task.texts {
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    emptyResults[key] = text
                 } else {
+                    let identifier = String(requestTexts.count)
+                    clientIdentifierMap[identifier] = key
+                    requestTexts[identifier] = text
+                }
+            }
+            let sourceLanguage = task.fromLang
+            let targetLanguage = task.toLang
+            // Only String keys cross the async task boundary. Arbitrary AnyHashable keys
+            // stay in this view's main-actor context and are restored after awaiting.
+            let worker = Task { @MainActor () -> [String: String]? in
+                do {
+                    try Task.checkCancellation()
+                    let availability = LanguageAvailability()
+                    let status = await availability.status(from: Locale.Language(identifier: sourceLanguage), to: Locale.Language(identifier: targetLanguage))
+                    guard status != .unsupported else {
+                        return nil
+                    }
+                    try Task.checkCancellation()
+                    let requests = requestTexts.map { identifier, text in
+                        return TranslationSession.Request(sourceText: text, clientIdentifier: identifier)
+                    }
+                    if requests.isEmpty {
+                        return [:]
+                    }
+                    // Apple shows its model-download consent UI when a supported pair is not installed.
+                    let responses = try await session.translations(from: requests)
+                    try Task.checkCancellation()
+                    var result: [String: String] = [:]
+                    for response in responses {
+                        if let identifier = response.clientIdentifier, requestTexts[identifier] != nil {
+                            result[identifier] = response.targetText
+                        }
+                    }
+                    return result.count == requestTexts.count ? result : nil
+                } catch {
+                    // Framework errors can include source text. Do not print message contents.
                     return nil
                 }
             }
-            
-            if let firstTaskLanguagePair {
-                if let configuration = self.configuration, configuration.source?.languageCode?.identifier == firstTaskLanguagePair.0, configuration.target?.languageCode?.identifier == firstTaskLanguagePair.1 {
-                    self.configuration?.invalidate()
-                } else {
-                    self.configuration = .init(
-                        source: Locale.Language(identifier: firstTaskLanguagePair.0),
-                        target: Locale.Language(identifier: firstTaskLanguagePair.1)
-                    )
+            task.setCancellation {
+                worker.cancel()
+            }
+            let translatedTexts = await withTaskCancellationHandler(operation: {
+                return await worker.value
+            }, onCancel: {
+                worker.cancel()
+            })
+            if let translatedTexts {
+                var result = emptyResults
+                for (identifier, text) in translatedTexts {
+                    if let key = clientIdentifierMap[identifier] {
+                        result[key] = text
+                    }
+                }
+                task.finish(result)
+            } else {
+                task.finish(nil)
+            }
+            await MainActor.run {
+                let wasActive = self.taskContainer.with { taskContainer -> Bool in
+                    if taskContainer.activeTask?.id == task.id {
+                        taskContainer.activeTask = nil
+                        return true
+                    }
+                    return false
+                }
+                if wasActive {
+                    self.scheduleNextTask()
                 }
             }
         })
+    }
+
+    private func scheduleNextTask() {
+        let state = self.taskContainer.with { taskContainer -> (isActive: Bool, task: ExperimentalInternalTranslationServiceImpl.TranslationTask?) in
+            return (taskContainer.activeTask != nil, taskContainer.tasks.first)
+        }
+        guard !state.isActive else {
+            // Appending to the queue must not invalidate a session that is already translating.
+            return
+        }
+        guard let task = state.task else {
+            self.configuration = nil
+            return
+        }
+        let next = TranslationSession.Configuration(source: Locale.Language(identifier: task.fromLang), target: Locale.Language(identifier: task.toLang))
+        if self.configuration?.source == next.source, self.configuration?.target == next.target {
+            self.configuration?.invalidate()
+        } else {
+            self.configuration = next
+        }
     }
 }
 
@@ -355,19 +415,86 @@ public final class ExperimentalInternalTranslationServiceImpl: ExperimentalInter
         let texts: [AnyHashable: String]
         let fromLang: String
         let toLang: String
-        let completion: ([AnyHashable: String]?) -> Void
+        private struct State {
+            var completion: (([AnyHashable: String]?) -> Void)?
+            var cancel: (() -> Void)?
+            var isFinished = false
+        }
+        private let state: Atomic<State>
+        private var timeoutTimer: SwiftSignalKit.Timer?
         
         init(id: Int, texts: [AnyHashable: String], fromLang: String, toLang: String, completion: @escaping ([AnyHashable: String]?) -> Void) {
             self.id = id
             self.texts = texts
             self.fromLang = fromLang
             self.toLang = toLang
-            self.completion = completion
+            self.state = Atomic(value: State(completion: completion, cancel: nil))
+        }
+
+        deinit {
+            self.timeoutTimer?.invalidate()
+        }
+
+        func startTimeout(_ expired: @escaping () -> Void) {
+            let timer = SwiftSignalKit.Timer(timeout: 120.0, repeat: false, completion: { [weak self] in
+                guard let self else {
+                    return
+                }
+                if self.finish(nil) {
+                    expired()
+                }
+            }, queue: .mainQueue())
+            self.timeoutTimer = timer
+            timer.start()
+        }
+
+        func setCancellation(_ cancel: @escaping () -> Void) {
+            var isFinished = false
+            let _ = self.state.modify { state in
+                var state = state
+                isFinished = state.isFinished
+                if !state.isFinished {
+                    state.cancel = cancel
+                }
+                return state
+            }
+            if isFinished {
+                cancel()
+            }
+        }
+
+        @discardableResult
+        func finish(_ result: [AnyHashable: String]?, notify: Bool = true) -> Bool {
+            var completion: (([AnyHashable: String]?) -> Void)?
+            var cancel: (() -> Void)?
+            var didFinish = false
+            let _ = self.state.modify { state in
+                var state = state
+                if !state.isFinished {
+                    didFinish = true
+                    state.isFinished = true
+                    completion = state.completion
+                    cancel = state.cancel
+                    state.completion = nil
+                    state.cancel = nil
+                }
+                return state
+            }
+            cancel?()
+            Queue.mainQueue().async {
+                self.timeoutTimer?.invalidate()
+                self.timeoutTimer = nil
+                if notify {
+                    completion?(result)
+                }
+            }
+            return didFinish
         }
     }
     
     fileprivate final class TranslationTaskContainer {
         var tasks: [TranslationTask] = []
+        var activeTask: TranslationTask?
         
         init() {
         }
@@ -388,21 +515,47 @@ public final class ExperimentalInternalTranslationServiceImpl: ExperimentalInter
             ))
             
             view.addSubview(self.hostingController.view)
+            self.hostingController.view.backgroundColor = .clear
+            self.hostingController.view.frame = CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+            self.hostingController.view.isUserInteractionEnabled = false
+        }
+
+        deinit {
+            let tasks = self.taskContainer.with { container -> [TranslationTask] in
+                let tasks = container.tasks + (container.activeTask.map { [$0] } ?? [])
+                container.tasks.removeAll()
+                container.activeTask = nil
+                return tasks
+            }
+            for task in tasks {
+                task.finish(nil)
+            }
+            self.hostingController.view.removeFromSuperview()
         }
         
         func translate(texts: [AnyHashable: String], fromLang: String, toLang: String, onResult: @escaping ([AnyHashable: String]?) -> Void) -> Disposable {
+            #if targetEnvironment(simulator)
+            onResult(nil)
+            return EmptyDisposable
+            #endif
+            guard !fromLang.isEmpty, !toLang.isEmpty else {
+                onResult(nil)
+                return EmptyDisposable
+            }
+            if texts.isEmpty || Locale.Language(identifier: fromLang) == Locale.Language(identifier: toLang) {
+                onResult(texts)
+                return EmptyDisposable
+            }
+            guard self.taskContainer.with({ $0.tasks.count < 64 }) else {
+                onResult(nil)
+                return EmptyDisposable
+            }
             let id = self.nextId
             self.nextId += 1
-            self.taskContainer.with { taskContainer in
-                taskContainer.tasks.append(TranslationTask(
-                    id: id,
-                    texts: texts,
-                    fromLang: fromLang,
-                    toLang: toLang,
-                    completion: { result in
-                        onResult(result)
-                    }
-                ))
+            let task = TranslationTask(id: id, texts: texts, fromLang: fromLang, toLang: toLang, completion: onResult)
+            self.taskContainer.with { $0.tasks.append(task) }
+            task.startTimeout { [weak self] in
+                self?.removeTask(id: id)
             }
             self.taskTrigger.shouldInvalidate += 1
             
@@ -411,11 +564,20 @@ public final class ExperimentalInternalTranslationServiceImpl: ExperimentalInter
                     guard let self else {
                         return
                     }
-                    self.taskContainer.with { taskContainer in
-                        taskContainer.tasks.removeAll(where: { $0.id == id })
-                    }
+                    task.finish(nil, notify: false)
+                    self.removeTask(id: id)
                 }
             }
+        }
+
+        private func removeTask(id: Int) {
+            self.taskContainer.with { container in
+                container.tasks.removeAll(where: { $0.id == id })
+                if container.activeTask?.id == id {
+                    container.activeTask = nil
+                }
+            }
+            self.taskTrigger.shouldInvalidate += 1
         }
     }
     
@@ -428,122 +590,26 @@ public final class ExperimentalInternalTranslationServiceImpl: ExperimentalInter
     }
     
     public func translate(texts: [AnyHashable: String], fromLang: String, toLang: String) -> Signal<[AnyHashable: String]?, NoError> {
-        return self.impl.signalWith { impl, subscriber in
-            return impl.translate(texts: texts, fromLang: fromLang, toLang: toLang, onResult: { result in
+        let impl = self.impl
+        return Signal { subscriber in
+            let signal: Signal<[AnyHashable: String]?, NoError> = impl.signalWith { value, subscriber in
+                return value.translate(texts: texts, fromLang: fromLang, toLang: toLang, onResult: { result in
+                    subscriber.putNext(result)
+                    subscriber.putCompletion()
+                })
+            }
+            let disposable = signal.start(next: { result in
                 subscriber.putNext(result)
+            }, completed: {
                 subscriber.putCompletion()
             })
+            // QueueLocalObject.signalWith only captures itself weakly. Retain the implementation
+            // for both delayed subscription and the entire request so teardown cannot strand it.
+            return ActionDisposable {
+                withExtendedLifetime(impl) {
+                    disposable.dispose()
+                }
+            }
         }
     }
-}
-
-func alternativeTranslateText(text: String, fromLang: String?, toLang: String) -> Signal<(String, [MessageTextEntity])?, TelegramCore.TranslationError> {
-    return Signal { subscriber in
-        var task: URLSessionTask?
-        Queue.concurrentDefaultQueue().async {
-            let effectiveFromLang: String
-            if let fromLang {
-                effectiveFromLang = fromLang
-            } else {
-                languageRecognizer.processString(text)
-                let hypotheses = languageRecognizer.languageHypotheses(withMaximum: 3)
-                languageRecognizer.reset()
-                
-                let filteredLanguages = hypotheses.filter { supportedTranslationLanguages.contains(normalizeTranslationLanguage($0.key.rawValue)) }.sorted(by: { $0.value > $1.value })
-                if let language = filteredLanguages.first {
-                    let languageCode = normalizeTranslationLanguage(language.key.rawValue)
-                    effectiveFromLang = languageCode
-                } else {
-                    effectiveFromLang = "en"
-                }
-            }
-            
-            var uri = "https://translate.goo"
-            uri += "gleapis.com/transl"
-            uri += "ate_a"
-            uri += "/singl"
-            uri += "e?client=gtx&sl=\(effectiveFromLang.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-            uri += "&tl=\(toLang.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
-            uri += "&dt=t&ie=UTF-8&oe=UTF-8&otf=1&ssel=0&tsel=0&kc=7&dt=at&dt=bd&dt=ex&dt=ld&dt=md&dt=qca&dt=rw&dt=rm&dt=ss&q="
-            uri += text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            
-            guard let url = URL(string: uri) else {
-                subscriber.putError(.generic)
-                return
-            }
-            
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.setValue(getRandomUserAgent(), forHTTPHeaderField: "User-Agent")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            
-            task = URLSession.shared.dataTask(with: request) { data, response, error in
-                if let error = error {
-                    print("Translation failed: \(error.localizedDescription)")
-                    subscriber.putError(.generic)
-                    return
-                }
-                
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    subscriber.putError(.generic)
-                    return
-                }
-                
-                if httpResponse.statusCode != 200 {
-                    print("Translation failed with status code: \(httpResponse.statusCode)")
-                    let isRateLimit = httpResponse.statusCode == 429
-                    subscriber.putError(isRateLimit ? .limitExceeded : .generic)
-                    return
-                }
-                
-                guard let data = data else {
-                    subscriber.putError(.generic)
-                    return
-                }
-                
-                do {
-                    guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [Any] else {
-                        subscriber.putError(.generic)
-                        return
-                    }
-                    
-                    guard let translationArray = jsonArray.first as? [Any] else {
-                        subscriber.putError(.generic)
-                        return
-                    }
-                    
-                    var result = ""
-                    for element in translationArray {
-                        if let translationBlock = element as? [Any],
-                           translationBlock.count > 0,
-                           let blockText = translationBlock[0] as? String,
-                           blockText != "null" && !blockText.isEmpty {
-                            result += blockText
-                        }
-                    }
-                    
-                    if text.hasPrefix("\n") {
-                        result = "\n" + result
-                    }
-                    
-                    subscriber.putNext((result, []))
-                    subscriber.putCompletion()
-                } catch {
-                    print("JSON parsing error: \(error)")
-                    subscriber.putError(.generic)
-                }
-            }
-            task?.resume()
-        }
-        return ActionDisposable {
-            task?.cancel()
-        }
-    }
-}
-
-func getRandomUserAgent() -> String {
-    let userAgents = [
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1"
-    ]
-    return userAgents.randomElement() ?? userAgents[0]
 }

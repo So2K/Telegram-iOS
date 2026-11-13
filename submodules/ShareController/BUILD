@@ -49,6 +49,8 @@ swift_library(
         "//submodules/TelegramUI/Components/Chat/ChatMessagePaymentAlertController",
         "//submodules/ChatPresentationInterfaceState",
         "//submodules/CheckNode",
+        # SuperGram (W2-GHOST): showRepostToStoryV2
+        "//Swiftgram/SGSimpleSettings:SGSimpleSettings",
     ],
     visibility = [
         "//visibility:public",
